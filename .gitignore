@@ -25,6 +25,7 @@ Icon
 *.o
 *.dylib
 *.dSYM
+ProjectEcho.app/
 
 # HAL Plugin
 HALPlugin/*.driver/
@@ -46,3 +47,5 @@ Recordings/
 # Temporary files
 *.tmp
 *.log
+test_menu
+test_menu_simple.swift

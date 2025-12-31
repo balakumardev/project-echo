@@ -82,10 +82,10 @@ A privacy-first macOS utility that automatically captures audio from teleconfere
 
 ```bash
 # Build the app
-./build.sh
+./scripts/build.sh
 
 # Launch it
-./run_app.sh
+./scripts/run_app.sh
 ```
 
 ### First Launch
@@ -149,7 +149,9 @@ drifting-pulsar/
 ├── Package.swift            # Swift Package Manager
 ├── Info.plist              # App metadata
 ├── ProjectEcho.entitlements # Permissions
-└── build.sh                # Build script
+└── scripts/                # Build and utility scripts
+    ├── build.sh            # Build script
+    └── run_app.sh          # App launcher
 ```
 
 ## 🔒 Privacy & Security

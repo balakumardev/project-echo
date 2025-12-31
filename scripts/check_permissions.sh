@@ -9,7 +9,7 @@ if ps aux | grep -v grep | grep ProjectEcho > /dev/null; then
     echo "✅ App is running (PID: $PID)"
 else
     echo "❌ App is not running"
-    echo "   Run: ./run_app.sh"
+    echo "   Run: ./scripts/run_app.sh"
     exit 1
 fi
 
@@ -61,7 +61,7 @@ echo "   - Select it and click 'Open'"
 echo "   - Enable the checkbox"
 echo ""
 echo "4. Restart the app:"
-echo "   killall ProjectEcho && ./run_app.sh"
+echo "   killall ProjectEcho && ./scripts/run_app.sh"
 echo ""
 echo "💡 Tip: The app won't appear in System Settings until it"
 echo "   actually tries to use the microphone or screen recording."
