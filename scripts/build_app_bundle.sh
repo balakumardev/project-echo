@@ -72,7 +72,7 @@ done
 shopt -u nullglob
 
 echo "🔏 Codesigning…"
-codesign --force --deep --sign - --entitlements "${ENTITLEMENTS}" "${APP_BUNDLE_PATH}"
+codesign --force --deep --sign "ProjectEcho Development" --entitlements "${ENTITLEMENTS}" "${APP_BUNDLE_PATH}"
 codesign --verify --deep --strict -vv "${APP_BUNDLE_PATH}" >/dev/null
 
 echo ""

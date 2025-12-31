@@ -12,7 +12,7 @@ public actor AppMonitor {
     private var isMonitoring = false
     private var checkTimer: Task<Void, Never>?
     
-    // Default apps to monitor
+    // Default apps to monitor test
     public static let defaultMonitoredApps = [
         "zoom.us",
         "Microsoft Teams", 
