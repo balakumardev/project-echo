@@ -32,22 +32,39 @@
     <key>LSUIElement</key>
     <true/>
     
+    <!-- Privacy Descriptions -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Project Echo needs microphone access to record your audio during meetings.</string>
     
     <key>NSScreenCaptureDescription</key>
     <string>Project Echo needs screen recording permission to capture audio from conferencing apps like Zoom and Teams.</string>
     
+    <!-- App Category -->
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
     
+    <!-- High Resolution -->
     <key>NSHighResolutionCapable</key>
     <true/>
     
+    <!-- Supported -->
     <key>NSSupportsAutomaticTermination</key>
     <true/>
     
     <key>NSSupportsSuddenTermination</key>
     <false/>
+
+    <!-- URL Scheme Handler -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.projectecho.app.url</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>projectecho</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

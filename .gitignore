@@ -26,6 +26,8 @@ Icon
 *.dylib
 *.dSYM
 ProjectEcho.app/
+projectecho.app/
+.home/
 
 # HAL Plugin
 HALPlugin/*.driver/

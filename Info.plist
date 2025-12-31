@@ -53,5 +53,18 @@
     
     <key>NSSupportsSuddenTermination</key>
     <false/>
+
+    <!-- URL Scheme Handler -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.projectecho.app.url</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>projectecho</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

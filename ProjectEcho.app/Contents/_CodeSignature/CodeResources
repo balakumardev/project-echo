@@ -3,9 +3,33 @@
 <plist version="1.0">
 <dict>
 	<key>files</key>
-	<dict/>
+	<dict>
+		<key>Resources/swift-transformers_Hub.bundle/gpt2_tokenizer_config.json</key>
+		<data>
+		plr2ieF2evTyNgcYbN1vth46bv0=
+		</data>
+		<key>Resources/swift-transformers_Hub.bundle/t5_tokenizer_config.json</key>
+		<data>
+		/JfXpkgOZSfRcptPaI/tYgZB42A=
+		</data>
+	</dict>
 	<key>files2</key>
-	<dict/>
+	<dict>
+		<key>Resources/swift-transformers_Hub.bundle/gpt2_tokenizer_config.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			VR4m7GEdjQyO3D73LlGKOEGMtx9A3hNH3UhqWV4VV9c=
+			</data>
+		</dict>
+		<key>Resources/swift-transformers_Hub.bundle/t5_tokenizer_config.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			4K/wsd6QceMNmmChmTA7ar6RamShmTK9HEaZInm0Gh8=
+			</data>
+		</dict>
+	</dict>
 	<key>rules</key>
 	<dict>
 		<key>^Resources/</key>

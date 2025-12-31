@@ -1,32 +1,78 @@
 import SwiftUI
 import AppKit
+import Combine
 import AudioEngine
 import Intelligence
 import Database
 import UI
 import os.log
 
+// MARK: - Window Action Holder
+// Allows AppDelegate to trigger SwiftUI window actions
+@MainActor
+enum WindowActions {
+    static var openLibrary: (() -> Void)?
+    static var openSettings: (() -> Void)?
+}
+
 @main
 @available(macOS 14.0, *)
 struct ProjectEchoApp: App {
-    
+
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+
+    private func handleIncomingURL(_ url: URL) {
+        guard url.scheme == "projectecho" else { return }
+
+        // Activate app and bring to front
+        NSApp.activate(ignoringOtherApps: true)
+
+        // Open the library window via SwiftUI
+        openWindow(id: "library")
+    }
+
     var body: some Scene {
         // Library window
         WindowGroup("Project Echo Library", id: "library") {
             LibraryView()
                 .frame(minWidth: 900, minHeight: 600)
+                .onOpenURL { url in
+                    handleIncomingURL(url)
+                }
+                .onAppear {
+                    // Register window actions when first window appears
+                    registerWindowActions()
+                }
         }
+        .handlesExternalEvents(matching: Set(["library", "*"]))
         .windowResizability(.contentSize)
         .defaultPosition(.center)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
-        
+
         // Settings window
         Settings {
             SettingsView()
+                .onAppear {
+                    // Also register here in case settings opens first
+                    registerWindowActions()
+                }
+        }
+    }
+
+    private func registerWindowActions() {
+        WindowActions.openLibrary = { [openWindow] in
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "library")
+        }
+        WindowActions.openSettings = { [openSettings] in
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            openSettings()
         }
     }
 }
@@ -36,49 +82,62 @@ struct ProjectEchoApp: App {
 @MainActor
 @available(macOS 14.0, *)
 class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
-    
+
     private let logger = Logger(subsystem: "com.projectecho.app", category: "App")
-    
+
     // Core engines
     private var audioEngine: AudioCaptureEngine!
     private var transcriptionEngine: TranscriptionEngine!
     private var database: DatabaseManager!
-    
+
     // UI
     private var menuBarController: MenuBarController!
-    
+
     // Auto Recording
     private var appMonitor: AppMonitor!
     @AppStorage("autoRecord") private var autoRecordEnabled = true
     @AppStorage("monitoredApps") private var monitoredAppsRaw = "Zoom,Microsoft Teams,Google Chrome,FaceTime"
     private var lastActiveApp: String?
-    
+
     // State
     private var currentRecordingURL: URL?
     private var outputDirectory: URL!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("Project Echo starting...")
-        
+
         // Hide dock icon (menu bar only app)
         NSApp.setActivationPolicy(.accessory)
-        
+
         // Setup output directory
         setupOutputDirectory()
-        
+
         // Initialize components
         Task {
             await initializeComponents()
         }
-        
+
         // Setup menu bar
         menuBarController = MenuBarController()
         menuBarController.delegate = self
-        
+
         // Setup App Monitor
         setupAppMonitoring()
-        
+
         logger.info("Project Echo ready")
+    }
+
+    // MARK: - URL Scheme Handling
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard url.scheme == "projectecho" else { continue }
+            logger.info("Handling URL: \(url.absoluteString)")
+
+            // Activate and let SwiftUI's handlesExternalEvents handle the window
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
     
     private func setupOutputDirectory() {
@@ -234,35 +293,35 @@ App location: \(appPath)
     }
     
     func menuBarDidRequestOpenLibrary() {
-        NSApp.activate(ignoringOtherApps: true)
-        
-        // Open or focus library window
-        if let window = NSApp.windows.first(where: { $0.title.contains("Library") || $0.title.contains("Echo") }) {
-            window.makeKeyAndOrderFront(nil)
+        if let action = WindowActions.openLibrary {
+            // Use SwiftUI's openWindow if available
+            action()
         } else {
-            // For menu bar apps, we need to explicitly create the window
-            // Use NSApp to open a new window
+            // Fallback: Open via URL scheme (triggers handlesExternalEvents)
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
             if let url = URL(string: "projectecho://library") {
                 NSWorkspace.shared.open(url)
             }
-            // Fallback: just activate the app - SwiftUI should show the window
-            NSApp.activate(ignoringOtherApps: true)
-            
-            // Try to find and show any window after a brief delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                for window in NSApp.windows {
-                    if !window.title.isEmpty {
-                        window.makeKeyAndOrderFront(nil)
-                        break
-                    }
-                }
-            }
         }
     }
-    
+
     func menuBarDidRequestOpenSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        if let action = WindowActions.openSettings {
+            // Use SwiftUI's openSettings if available
+            action()
+        } else {
+            // Fallback: Use NSApp selector for settings
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            // Try the macOS 14+ settings action
+            if NSApp.responds(to: Selector(("showSettingsWindow:"))) {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            } else {
+                // Fallback for older versions
+                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+            }
+        }
     }
     
     // MARK: - Helper Methods
