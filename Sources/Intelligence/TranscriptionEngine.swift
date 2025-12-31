@@ -9,7 +9,7 @@ public actor TranscriptionEngine {
     
     // MARK: - Types
     
-    public struct TranscriptionResult {
+    public struct TranscriptionResult: Sendable {
         public let text: String
         public let segments: [Segment]
         public let language: String?
@@ -23,7 +23,7 @@ public actor TranscriptionEngine {
         }
     }
     
-    public struct Segment {
+    public struct Segment: Sendable {
         public let start: TimeInterval
         public let end: TimeInterval
         public let text: String
@@ -39,7 +39,7 @@ public actor TranscriptionEngine {
         }
     }
     
-    public enum Speaker {
+    public enum Speaker: Sendable {
         case user
         case system
         case unknown(Int) // For multi-speaker scenarios
@@ -126,7 +126,7 @@ public actor TranscriptionEngine {
                 end: TimeInterval(segment.end),
                 text: segment.text,
                 speaker: speaker,
-                confidence: Float(segment.avgLogprob ?? 0.0)
+                confidence: Float(segment.avgLogprob)
             )
             segments.append(echoSegment)
         }
@@ -166,7 +166,8 @@ public actor TranscriptionEngine {
         // Whisper expects 16kHz mono PCM
         let asset = AVAsset(url: url)
         
-        guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+        // Verify audio track exists
+        guard try await !asset.loadTracks(withMediaType: .audio).isEmpty else {
             throw TranscriptionError.audioConversionFailed
         }
         
@@ -215,7 +216,7 @@ public actor TranscriptionEngine {
 
 // MARK: - Supporting Types
 
-public struct Summary {
+public struct Summary: Sendable {
     public let mainPoints: [String]
     public let actionItems: [String]
     public let keyTopics: [String]

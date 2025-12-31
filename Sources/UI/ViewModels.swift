@@ -12,11 +12,19 @@ class LibraryViewModel: ObservableObject {
     @Published var recordings: [Recording] = []
     @Published var isLoading = false
     
-    private let database: DatabaseManager
+    private var database: DatabaseManager?
     
     init() {
-        // Initialize database
-        database = try! DatabaseManager()
+        // DatabaseManager will be initialized lazily in async context
+    }
+    
+    private func getDatabase() async throws -> DatabaseManager {
+        if let db = database {
+            return db
+        }
+        let db = try await DatabaseManager()
+        database = db
+        return db
     }
     
     func loadRecordings() async {
@@ -24,7 +32,8 @@ class LibraryViewModel: ObservableObject {
         defer { isLoading = false }
         
         do {
-            recordings = try await database.getAllRecordings()
+            let db = try await getDatabase()
+            recordings = try await db.getAllRecordings()
         } catch {
             print("Failed to load recordings: \(error)")
         }
@@ -40,7 +49,8 @@ class LibraryViewModel: ObservableObject {
         defer { isLoading = false }
         
         do {
-            recordings = try await database.searchTranscripts(query: query)
+            let db = try await getDatabase()
+            recordings = try await db.searchTranscripts(query: query)
         } catch {
             print("Search failed: \(error)")
         }
@@ -48,7 +58,8 @@ class LibraryViewModel: ObservableObject {
     
     func deleteRecording(_ recording: Recording) async {
         do {
-            try await database.deleteRecording(id: recording.id)
+            let db = try await getDatabase()
+            try await db.deleteRecording(id: recording.id)
             // Delete file
             try? FileManager.default.removeItem(at: recording.fileURL)
             await loadRecordings()
@@ -62,7 +73,8 @@ class LibraryViewModel: ObservableObject {
     }
     
     func getTranscript(for recording: Recording) async -> Transcript? {
-        try? await database.getTranscript(forRecording: recording.id)
+        guard let db = try? await getDatabase() else { return nil }
+        return try? await db.getTranscript(forRecording: recording.id)
     }
 }
 
@@ -76,12 +88,20 @@ class RecordingDetailViewModel: ObservableObject {
     @Published var isLoadingTranscript = false
     @Published var audioPlayer: AVAudioPlayer?
     
-    private let database: DatabaseManager
+    private var database: DatabaseManager?
     private let transcriptionEngine: TranscriptionEngine
     
     init() {
-        database = try! DatabaseManager()
         transcriptionEngine = TranscriptionEngine()
+    }
+    
+    private func getDatabase() async throws -> DatabaseManager {
+        if let db = database {
+            return db
+        }
+        let db = try await DatabaseManager()
+        database = db
+        return db
     }
     
     func setupAudioPlayer(for recording: Recording) async {
@@ -98,7 +118,8 @@ class RecordingDetailViewModel: ObservableObject {
         defer { isLoadingTranscript = false }
         
         do {
-            transcript = try await database.getTranscript(forRecording: recording.id)
+            let db = try await getDatabase()
+            transcript = try await db.getTranscript(forRecording: recording.id)
             // TODO: Load segments
         } catch {
             print("Failed to load transcript: \(error)")
@@ -129,7 +150,8 @@ class RecordingDetailViewModel: ObservableObject {
                 )
             }
             
-            let transcriptId = try await database.saveTranscript(
+            let db = try await getDatabase()
+            _ = try await db.saveTranscript(
                 recordingId: recording.id,
                 fullText: result.text,
                 language: result.language,

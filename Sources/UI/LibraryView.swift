@@ -86,8 +86,9 @@ public struct LibraryView: View {
     
     private func exportRecording(_ recording: Recording) {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.movie]
-        panel.nameFieldStringValue = recording.title + ".mov"
+        panel.allowedContentTypes = [.audio, .movie]
+        let ext = recording.fileURL.pathExtension
+        panel.nameFieldStringValue = recording.title + "." + (ext.isEmpty ? "m4a" : ext)
         
         panel.begin { response in
             if response == .OK, let url = panel.url {
@@ -336,8 +337,7 @@ struct AudioPlayerView: View {
     
     private func startTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            Task { @MainActor in
                 currentTime = player.currentTime
                 if player.currentTime >= player.duration {
                     isPlaying = false
@@ -420,11 +420,6 @@ struct TranscriptView: View {
 // MARK: - Supporting Types
 
 import Database
-
-typealias Recording = DatabaseManager.Recording
-typealias Transcript = DatabaseManager.Transcript
-typealias TranscriptSegment = DatabaseManager.TranscriptSegment
-
 import AVFoundation
 
-// View Models will be in separate file
+// Type aliases are defined in ViewModels.swift

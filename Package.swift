@@ -7,7 +7,7 @@ let package = Package(
         .macOS(.v14) // Sonoma minimum
     ],
     products: [
-        .executable(name: "ProjectEcho", targets: ["ProjectEcho"])
+        .executable(name: "ProjectEcho", targets: ["App"])
     ],
     dependencies: [
         // WhisperKit for local transcription
@@ -50,7 +50,7 @@ let package = Package(
         
         // Main App
         .executableTarget(
-            name: "ProjectEcho",
+            name: "App",
             dependencies: ["AudioEngine", "Intelligence", "Database", "UI"],
             path: "Sources/App"
         ),

@@ -2,7 +2,9 @@
 
 **The "Black Box" Flight Recorder for Digital Meetings**
 
-A privacy-first macOS utility that captures audio from teleconferencing apps, generates searchable transcripts via local AI, and enables bidirectional audio routing for advanced use cases.
+A privacy-first macOS utility that automatically captures audio from teleconferencing apps (Zoom, Teams, Meet) and generates searchable transcripts using local AI. Everything runs on-device with zero cloud uploads.
+
+**No virtual audio device needed!** Uses ScreenCaptureKit to record both your microphone and meeting audio.
 
 ## ✨ Features
 
@@ -20,11 +22,11 @@ A privacy-first macOS utility that captures audio from teleconferencing apps, ge
 - **Full-text Search** - SQLite FTS5 for instant transcript search
 - **Zero Cloud Uploads** - Everything stays on your device
 
-### Phase 3: Pro Extension (HAL Plugin) ✅
+### Phase 3: Pro Extension (HAL Plugin) ⚠️ OPTIONAL
 - **Virtual Audio Device** - "Echo Mic" for audio injection
 - **Soundboard Support** - Route files or TTS into meetings
-- **Mix-minus Monitoring** - Hear injected audio without feedback
-- **Universal Binary** - arm64 + x86_64 support
+- **NOT REQUIRED** - Main app works perfectly without it
+- See `HAL_PLUGIN_ADVANCED.md` for details
 
 ### Phase 4: Polish & Persistence ✅
 - **Beautiful Library UI** - SwiftUI interface with audio player
@@ -76,44 +78,51 @@ A privacy-first macOS utility that captures audio from teleconferencing apps, ge
 - Xcode Command Line Tools
 - ~2GB disk space for Whisper models
 
-### Building
+### Building & Running
 
 ```bash
-# Clone and build
-cd /path/to/drifting-pulsar
-chmod +x build.sh
+# Build the app
 ./build.sh
 
-# Run the app
-swift run ProjectEcho
+# Launch it
+./run_app.sh
 ```
 
 ### First Launch
 
-1. **Grant Permissions**
-   - System Settings → Privacy & Security → Screen Recording → Enable
-   - System Settings → Privacy & Security → Microphone → Enable
+1. **Grant Permissions** (one-time setup)
+   - Open System Settings → Privacy & Security
+   - **Microphone**: Click "+", add ProjectEcho.app, enable checkbox
+   - **Screen Recording**: Click "+", add ProjectEcho.app, enable checkbox
 
 2. **Start Recording**
-   - Click menu bar icon (waveform)
+   - Click menu bar icon (🎙️)
    - Select "Start Recording"
-   - Join your meeting
+   - Join your Zoom/Teams/Meet meeting
+   - **Both your mic AND meeting audio are recorded automatically!**
    - Click "Stop Recording" when done
 
 3. **View Transcript**
    - Open Library from menu bar
    - Click on your recording
-   - Transcript generates automatically
+   - AI transcript generates automatically (100% local, private)
 
-### Installing Pro Extension (Optional)
+### What You Get Out of the Box
 
-```bash
-cd HALPlugin
-sudo make install
-# Enter password when prompted
-```
+✅ **Records your microphone**
+✅ **Records meeting audio** (other participants)
+✅ **Auto-detects Zoom/Teams/Meet**
+✅ **AI transcription** (WhisperKit, runs locally)
+✅ **Searchable library**
+✅ **No cloud uploads** - everything stays on your Mac
 
-This installs the virtual audio device. Select "Echo Virtual Microphone" in Zoom/Teams to enable audio injection features.
+**No HAL plugin needed!** The app uses ScreenCaptureKit to capture all audio.
+
+### Advanced: HAL Plugin (Optional)
+
+⚠️ **Most users don't need this!** Only install if you want to inject audio INTO meetings (soundboards, etc.).
+
+See `HAL_PLUGIN_ADVANCED.md` for details and installation instructions.
 
 ## 📁 Project Structure
 

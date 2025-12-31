@@ -7,7 +7,7 @@ public actor DatabaseManager {
     
     // MARK: - Types
     
-    public struct Recording: Identifiable {
+    public struct Recording: Identifiable, Hashable, Sendable {
         public let id: Int64
         public let title: String
         public let date: Date
@@ -29,7 +29,7 @@ public actor DatabaseManager {
         }
     }
     
-    public struct Transcript: Identifiable {
+    public struct Transcript: Identifiable, Sendable {
         public let id: Int64
         public let recordingId: Int64
         public let fullText: String
@@ -47,7 +47,7 @@ public actor DatabaseManager {
         }
     }
     
-    public struct TranscriptSegment {
+    public struct TranscriptSegment: Sendable {
         public let id: Int64
         public let transcriptId: Int64
         public let startTime: TimeInterval

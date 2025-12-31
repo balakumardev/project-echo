@@ -133,12 +133,16 @@ extern "C" void* EchoPlugIn_Create(CFAllocatorRef allocator, CFUUIDRef requested
 // MARK: - COM Interface
 
 static HRESULT EchoPlugIn_QueryInterface(void* driver, REFIID iid, LPVOID* ppv) {
-    if (CFEqual(iid, IUnknownUUID) || CFEqual(iid, kAudioServerPlugInDriverInterfaceUUID)) {
+    CFUUIDRef interfaceID = CFUUIDCreateFromUUIDBytes(NULL, iid);
+
+    if (CFEqual(interfaceID, IUnknownUUID) || CFEqual(interfaceID, kAudioServerPlugInDriverInterfaceUUID)) {
         *ppv = driver;
         EchoPlugIn_AddRef(driver);
+        CFRelease(interfaceID);
         return S_OK;
     }
-    
+
+    CFRelease(interfaceID);
     *ppv = NULL;
     return E_NOINTERFACE;
 }
@@ -181,11 +185,11 @@ static OSStatus EchoPlugIn_DestroyDevice(AudioServerPlugInDriverRef driver, Audi
 
 // MARK: - Property Management (Simplified - Full implementation would be extensive)
 
-static Boolean EchoDevice_HasProperty(AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address) {
+static Boolean EchoDevice_HasProperty(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address) {
     // Basic properties only
     switch (address->mSelector) {
-        case kAudioDevicePropertyDeviceName:
-        case kAudioDevicePropertyDeviceManufacturer:
+        case kAudioObjectPropertyName:
+        case kAudioObjectPropertyManufacturer:
         case kAudioDevicePropertyNominalSampleRate:
         case kAudioDevicePropertyStreams:
             return true;
@@ -194,15 +198,15 @@ static Boolean EchoDevice_HasProperty(AudioObjectID objectID, pid_t clientPID, c
     }
 }
 
-static OSStatus EchoDevice_IsPropertySettable(AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, Boolean* outIsSettable) {
+static OSStatus EchoDevice_IsPropertySettable(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, Boolean* outIsSettable) {
     *outIsSettable = false;
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_GetPropertyDataSize(AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32* outDataSize) {
+static OSStatus EchoDevice_GetPropertyDataSize(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32* outDataSize) {
     switch (address->mSelector) {
-        case kAudioDevicePropertyDeviceName:
-        case kAudioDevicePropertyDeviceManufacturer:
+        case kAudioObjectPropertyName:
+        case kAudioObjectPropertyManufacturer:
             *outDataSize = sizeof(CFStringRef);
             break;
         case kAudioDevicePropertyNominalSampleRate:
@@ -211,17 +215,17 @@ static OSStatus EchoDevice_GetPropertyDataSize(AudioObjectID objectID, pid_t cli
         default:
             *outDataSize = 0;
     }
-    
+
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_GetPropertyData(AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, UInt32* outDataSize, void* outData) {
+static OSStatus EchoDevice_GetPropertyData(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, UInt32* outDataSize, void* outData) {
     switch (address->mSelector) {
-        case kAudioDevicePropertyDeviceName:
+        case kAudioObjectPropertyName:
             *((CFStringRef*)outData) = CFSTR(kEchoDeviceName);
             *outDataSize = sizeof(CFStringRef);
             break;
-        case kAudioDevicePropertyDeviceManufacturer:
+        case kAudioObjectPropertyManufacturer:
             *((CFStringRef*)outData) = CFSTR(kEchoDeviceManufacturer);
             *outDataSize = sizeof(CFStringRef);
             break;
@@ -232,11 +236,11 @@ static OSStatus EchoDevice_GetPropertyData(AudioObjectID objectID, pid_t clientP
         default:
             return kAudioHardwareUnknownPropertyError;
     }
-    
+
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_SetPropertyData(AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, const void* inData) {
+static OSStatus EchoDevice_SetPropertyData(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, const void* inData) {
     return kAudioHardwareUnsupportedOperationError;
 }
 
