@@ -137,14 +137,64 @@ class RecordingDetailViewModel: ObservableObject {
     func loadTranscript(for recording: Recording) async {
         isLoadingTranscript = true
         defer { isLoadingTranscript = false }
-        
+
         do {
             let db = try await getDatabase()
-            transcript = try await db.getTranscript(forRecording: recording.id)
-            // TODO: Load segments
+            if var loadedTranscript = try await db.getTranscript(forRecording: recording.id) {
+                // Clean legacy transcripts that may have WhisperKit tokens
+                loadedTranscript = Transcript(
+                    id: loadedTranscript.id,
+                    recordingId: loadedTranscript.recordingId,
+                    fullText: cleanWhisperTokens(loadedTranscript.fullText),
+                    language: loadedTranscript.language,
+                    processingTime: loadedTranscript.processingTime,
+                    createdAt: loadedTranscript.createdAt
+                )
+                transcript = loadedTranscript
+
+                // Load segments
+                let loadedSegments = try await db.getSegments(forTranscriptId: loadedTranscript.id)
+                // Clean segment text as well
+                segments = loadedSegments.map { segment in
+                    TranscriptSegment(
+                        id: segment.id,
+                        transcriptId: segment.transcriptId,
+                        startTime: segment.startTime,
+                        endTime: segment.endTime,
+                        text: cleanWhisperTokens(segment.text),
+                        speaker: segment.speaker,
+                        confidence: segment.confidence
+                    )
+                }.filter { !$0.text.isEmpty }
+            }
         } catch {
             print("Failed to load transcript: \(error)")
         }
+    }
+
+    /// Clean WhisperKit special tokens from text
+    private func cleanWhisperTokens(_ text: String) -> String {
+        var cleaned = text
+
+        // Remove special tokens: <|anything|>
+        if let regex = try? NSRegularExpression(pattern: "<\\|[^|]*\\|>", options: []) {
+            cleaned = regex.stringByReplacingMatches(
+                in: cleaned,
+                options: [],
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Remove [BLANK_AUDIO] markers
+        cleaned = cleaned.replacingOccurrences(of: "[BLANK_AUDIO]", with: "")
+
+        // Clean up multiple spaces
+        while cleaned.contains("  ") {
+            cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+        }
+
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     func generateTranscript(for recording: Recording) async {

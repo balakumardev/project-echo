@@ -1,110 +1,176 @@
 import SwiftUI
+import AppKit
+import AVFoundation
+import Database
 
-/// Main library view showing all recordings
+// MARK: - Main Library View
+
+/// Main library view showing all recordings with modern dark theme
 @available(macOS 14.0, *)
 public struct LibraryView: View {
-    
+
     @StateObject private var viewModel = LibraryViewModel()
     @State private var selectedRecording: Recording?
     @State private var searchText = ""
-    @State private var showingTranscript = false
-    
+    @State private var selectedFilter: RecordingFilter = .all
+    @State private var selectedSort: RecordingSort = .dateDesc
+
     public init() {}
-    
+
     public var body: some View {
         NavigationSplitView {
-            // Sidebar - Recording List
-            VStack(spacing: 0) {
-                // Search bar
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                    TextField("Search recordings...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .onChange(of: searchText) { _, newValue in
-                            Task {
-                                await viewModel.search(query: newValue)
-                            }
-                        }
-                }
-                .padding(12)
-                .background(Color(nsColor: .controlBackgroundColor))
-                
-                Divider()
-                
-                // Recording list
-                List(selection: $selectedRecording) {
-                    ForEach(viewModel.recordings) { recording in
-                        RecordingRow(recording: recording)
-                            .tag(recording)
-                            .contextMenu {
-                                Button("Export Audio...") {
-                                    exportRecording(recording)
-                                }
-                                Button("Export Transcript...") {
-                                    exportTranscript(recording)
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    Task {
-                                        await viewModel.deleteRecording(recording)
-                                    }
-                                }
-                            }
-                    }
-                }
-                .listStyle(.sidebar)
-            }
-            .frame(minWidth: 280)
-            .navigationTitle("Recordings")
-            .toolbar {
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        Task {
-                            await viewModel.refresh()
-                        }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-            }
+            // Sidebar
+            SidebarView(
+                viewModel: viewModel,
+                selectedRecording: $selectedRecording,
+                searchText: $searchText,
+                selectedFilter: $selectedFilter,
+                selectedSort: $selectedSort
+            )
         } detail: {
             // Detail view
-            if let recording = selectedRecording {
-                RecordingDetailView(recording: recording)
-                    .id(recording.id)
-            } else {
-                Text("Select a recording")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            DetailView(recording: selectedRecording)
         }
+        .background(Theme.Colors.background)
         .task {
             await viewModel.loadRecordings()
         }
-        .frame(minWidth: 800, minHeight: 500)
+        .frame(minWidth: 900, minHeight: 600)
     }
-    
+}
+
+// MARK: - Sidebar View
+
+@available(macOS 14.0, *)
+struct SidebarView: View {
+    @ObservedObject var viewModel: LibraryViewModel
+    @Binding var selectedRecording: Recording?
+    @Binding var searchText: String
+    @Binding var selectedFilter: RecordingFilter
+    @Binding var selectedSort: RecordingSort
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            SidebarHeader(
+                searchText: $searchText,
+                onSearch: { query in
+                    Task {
+                        await viewModel.search(query: query)
+                    }
+                },
+                onRefresh: {
+                    Task {
+                        await viewModel.refresh()
+                    }
+                }
+            )
+
+            // Filters
+            VStack(spacing: Theme.Spacing.sm) {
+                FilterChips(selectedFilter: $selectedFilter)
+                    .onChange(of: selectedFilter) { _, _ in
+                        // Filter will be applied in filteredRecordings
+                    }
+
+                HStack {
+                    Spacer()
+                    SortMenu(selectedSort: $selectedSort)
+                }
+                .padding(.horizontal, Theme.Spacing.md)
+            }
+            .padding(.vertical, Theme.Spacing.sm)
+
+            Divider()
+                .background(Theme.Colors.border)
+
+            // Recording list
+            if viewModel.isLoading {
+                LoadingView()
+            } else if filteredRecordings.isEmpty {
+                EmptyStateView(hasSearch: !searchText.isEmpty)
+            } else {
+                RecordingList(
+                    recordings: filteredRecordings,
+                    selectedRecording: $selectedRecording,
+                    onDelete: { recording in
+                        Task {
+                            await viewModel.deleteRecording(recording)
+                            if selectedRecording?.id == recording.id {
+                                selectedRecording = nil
+                            }
+                        }
+                    },
+                    onExportAudio: exportRecording,
+                    onExportTranscript: { recording in
+                        Task {
+                            await exportTranscript(recording)
+                        }
+                    }
+                )
+            }
+        }
+        .frame(minWidth: 320)
+        .background(Theme.Colors.surface.opacity(0.5))
+    }
+
+    private var filteredRecordings: [Recording] {
+        var recordings = viewModel.recordings
+
+        // Apply filter
+        switch selectedFilter {
+        case .all:
+            break
+        case .today:
+            let today = Calendar.current.startOfDay(for: Date())
+            recordings = recordings.filter { $0.date >= today }
+        case .thisWeek:
+            let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+            recordings = recordings.filter { $0.date >= weekAgo }
+        case .hasTranscript:
+            recordings = recordings.filter { $0.hasTranscript }
+        case .favorites:
+            // TODO: Implement favorites
+            break
+        }
+
+        // Apply sort
+        switch selectedSort {
+        case .dateDesc:
+            recordings.sort { $0.date > $1.date }
+        case .dateAsc:
+            recordings.sort { $0.date < $1.date }
+        case .durationDesc:
+            recordings.sort { $0.duration > $1.duration }
+        case .durationAsc:
+            recordings.sort { $0.duration < $1.duration }
+        case .title:
+            recordings.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        }
+
+        return recordings
+    }
+
     private func exportRecording(_ recording: Recording) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.audio, .movie]
         let ext = recording.fileURL.pathExtension
         panel.nameFieldStringValue = recording.title + "." + (ext.isEmpty ? "m4a" : ext)
-        
+
         panel.begin { response in
             if response == .OK, let url = panel.url {
                 try? FileManager.default.copyItem(at: recording.fileURL, to: url)
             }
         }
     }
-    
-    private func exportTranscript(_ recording: Recording) {
-        Task {
-            if let transcript = await viewModel.getTranscript(for: recording) {
+
+    private func exportTranscript(_ recording: Recording) async {
+        if let transcript = await viewModel.getTranscript(for: recording) {
+            await MainActor.run {
                 let panel = NSSavePanel()
                 panel.allowedContentTypes = [.plainText]
                 panel.nameFieldStringValue = recording.title + ".txt"
-                
+
                 panel.begin { response in
                     if response == .OK, let url = panel.url {
                         try? transcript.fullText.write(to: url, atomically: true, encoding: .utf8)
@@ -115,74 +181,227 @@ public struct LibraryView: View {
     }
 }
 
-// MARK: - Recording Row
+// MARK: - Sidebar Header
 
-struct RecordingRow: View {
-    let recording: Recording
-    
+@available(macOS 14.0, *)
+struct SidebarHeader: View {
+    @Binding var searchText: String
+    let onSearch: (String) -> Void
+    let onRefresh: () -> Void
+
     var body: some View {
-        HStack(spacing: 12) {
-            // App icon
-            Image(systemName: appIcon(for: recording.appName))
-                .font(.system(size: 24))
-                .foregroundColor(.accentColor)
-                .frame(width: 40, height: 40)
-                .background(Color.accentColor.opacity(0.1))
-                .cornerRadius(8)
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(recording.title)
-                    .font(.headline)
-                
-                HStack {
-                    Text(recording.date, style: .date)
-                    Text("•")
-                    Text(formatDuration(recording.duration))
-                    
-                    if recording.hasTranscript {
-                        Text("•")
-                        Image(systemName: "text.quote")
-                            .foregroundColor(.green)
+        VStack(spacing: Theme.Spacing.md) {
+            // Title row
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recordings")
+                        .font(Theme.Typography.title2)
+                        .foregroundColor(Theme.Colors.textPrimary)
+                    Text("Your meeting recordings")
+                        .font(Theme.Typography.caption)
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+
+                Spacer()
+
+                IconButton(icon: "arrow.clockwise", size: 28, style: .ghost) {
+                    onRefresh()
+                }
+            }
+
+            // Search
+            SearchField(text: $searchText, placeholder: "Search recordings...") {
+                onSearch(searchText)
+            }
+            .onChange(of: searchText) { _, newValue in
+                onSearch(newValue)
+            }
+        }
+        .padding(Theme.Spacing.lg)
+    }
+}
+
+// MARK: - Recording List
+
+@available(macOS 14.0, *)
+struct RecordingList: View {
+    let recordings: [Recording]
+    @Binding var selectedRecording: Recording?
+    let onDelete: (Recording) -> Void
+    let onExportAudio: (Recording) -> Void
+    let onExportTranscript: (Recording) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: Theme.Spacing.xs) {
+                ForEach(recordings) { recording in
+                    RecordingRow(
+                        recording: recording,
+                        isSelected: selectedRecording?.id == recording.id
+                    )
+                    .onTapGesture {
+                        withAnimation(Theme.Animation.fast) {
+                            selectedRecording = recording
+                        }
+                    }
+                    .contextMenu {
+                        Button {
+                            onExportAudio(recording)
+                        } label: {
+                            Label("Export Audio", systemImage: "square.and.arrow.up")
+                        }
+
+                        if recording.hasTranscript {
+                            Button {
+                                onExportTranscript(recording)
+                            } label: {
+                                Label("Export Transcript", systemImage: "doc.text")
+                            }
+                        }
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            onDelete(recording)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
                 }
-                .font(.caption)
-                .foregroundColor(.secondary)
             }
-            
+            .padding(Theme.Spacing.sm)
+        }
+    }
+}
+
+// MARK: - Recording Row
+
+@available(macOS 14.0, *)
+struct RecordingRow: View {
+    let recording: Recording
+    let isSelected: Bool
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            // App icon
+            AppIconBadge(appName: recording.appName, size: 44)
+
+            // Content
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                // Title
+                Text(recording.title)
+                    .font(Theme.Typography.headline)
+                    .foregroundColor(Theme.Colors.textPrimary)
+                    .lineLimit(1)
+
+                // Metadata
+                HStack(spacing: Theme.Spacing.sm) {
+                    Text(recording.date.formatted(date: .abbreviated, time: .shortened))
+                        .font(Theme.Typography.caption)
+                        .foregroundColor(Theme.Colors.textMuted)
+
+                    Text("•")
+                        .foregroundColor(Theme.Colors.textMuted)
+
+                    Text(formatDuration(recording.duration))
+                        .font(Theme.Typography.monoSmall)
+                        .foregroundColor(Theme.Colors.textSecondary)
+                }
+
+                // Tags
+                HStack(spacing: Theme.Spacing.xs) {
+                    if let app = recording.appName {
+                        StatusBadge(app, color: Theme.Colors.secondary, icon: nil)
+                    }
+
+                    if recording.hasTranscript {
+                        StatusBadge("Transcribed", color: Theme.Colors.success, icon: "checkmark")
+                    }
+                }
+            }
+
             Spacer()
-            
+
+            // File size
             Text(formatFileSize(recording.fileSize))
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(Theme.Typography.caption)
+                .foregroundColor(Theme.Colors.textMuted)
+
+            // Chevron
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Theme.Colors.textMuted)
+                .opacity(isHovered || isSelected ? 1 : 0)
         }
-        .padding(.vertical, 4)
-    }
-    
-    private func appIcon(for appName: String?) -> String {
-        switch appName?.lowercased() {
-        case "zoom": return "video.fill"
-        case "microsoft teams": return "person.2.fill"
-        case "google meet": return "person.3.fill"
-        default: return "waveform"
+        .padding(Theme.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
+                .fill(backgroundColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
+                .stroke(isSelected ? Theme.Colors.primary.opacity(0.5) : .clear, lineWidth: 2)
+        )
+        .overlay(
+            // Selection indicator
+            HStack {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Theme.Colors.primary)
+                    .frame(width: 3)
+                    .opacity(isSelected ? 1 : 0)
+                Spacer()
+            }
+        )
+        .animation(Theme.Animation.fast, value: isSelected)
+        .animation(Theme.Animation.fast, value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
         }
     }
-    
+
+    private var backgroundColor: Color {
+        if isSelected {
+            return Theme.Colors.primaryMuted
+        }
+        if isHovered {
+            return Theme.Colors.surfaceHover
+        }
+        return .clear
+    }
+
     private func formatDuration(_ duration: TimeInterval) -> String {
         let hours = Int(duration) / 3600
         let minutes = Int(duration) / 60 % 60
         let seconds = Int(duration) % 60
-        
+
         if hours > 0 {
-            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            return String(format: "%02d:%02d", minutes, seconds)
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
+        return String(format: "%02d:%02d", minutes, seconds)
     }
-    
+
     private func formatFileSize(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+}
+
+// MARK: - Detail View
+
+@available(macOS 14.0, *)
+struct DetailView: View {
+    let recording: Recording?
+
+    var body: some View {
+        if let recording = recording {
+            RecordingDetailView(recording: recording)
+                .id(recording.id)
+        } else {
+            EmptyDetailView()
+        }
     }
 }
 
@@ -192,224 +411,491 @@ struct RecordingRow: View {
 struct RecordingDetailView: View {
     let recording: Recording
     @StateObject private var viewModel = RecordingDetailViewModel()
-    
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Header
-                VStack(alignment: .leading, spacing: 8) {
+            VStack(spacing: Theme.Spacing.xl) {
+                // Header card
+                DetailHeader(recording: recording)
+
+                // Audio player
+                if let player = viewModel.audioPlayer {
+                    AudioPlayerCard(
+                        player: player,
+                        recording: recording,
+                        onSeek: { time in
+                            player.currentTime = time
+                        }
+                    )
+                }
+
+                // Transcript section
+                TranscriptSection(
+                    recording: recording,
+                    viewModel: viewModel
+                )
+            }
+            .padding(Theme.Spacing.xl)
+        }
+        .background(Theme.Colors.background)
+        .task(id: recording.id) {
+            await viewModel.loadRecording(recording)
+        }
+    }
+}
+
+// MARK: - Detail Header
+
+@available(macOS 14.0, *)
+struct DetailHeader: View {
+    let recording: Recording
+
+    var body: some View {
+        GlassCard(padding: Theme.Spacing.xl) {
+            HStack(spacing: Theme.Spacing.lg) {
+                // App icon
+                AppIconBadge(appName: recording.appName, size: 64)
+
+                // Info
+                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                     Text(recording.title)
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                    
-                    HStack {
+                        .font(Theme.Typography.title1)
+                        .foregroundColor(Theme.Colors.textPrimary)
+
+                    HStack(spacing: Theme.Spacing.lg) {
                         Label(recording.date.formatted(date: .complete, time: .shortened), systemImage: "calendar")
                         Label(formatDuration(recording.duration), systemImage: "clock")
                         if let app = recording.appName {
                             Label(app, systemImage: "app.fill")
                         }
                     }
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .font(Theme.Typography.callout)
+                    .foregroundColor(Theme.Colors.textSecondary)
                 }
-                
-                Divider()
-                
-                // Audio player
-                if let player = viewModel.audioPlayer {
-                    AudioPlayerView(player: player)
-                }
-                
-                Divider()
-                
-                // Transcript
-                if viewModel.isLoadingTranscript {
-                    ProgressView("Loading transcript...")
-                        .frame(maxWidth: .infinity, alignment: .center)
-                } else if let transcript = viewModel.transcript {
-                    TranscriptView(transcript: transcript, segments: viewModel.segments)
-                } else if recording.hasTranscript {
-                    Button("Load Transcript") {
-                        Task {
-                            await viewModel.loadTranscript(for: recording)
-                        }
+
+                Spacer()
+
+                // Actions
+                HStack(spacing: Theme.Spacing.sm) {
+                    IconButton(icon: "square.and.arrow.up", size: 36, style: .ghost) {
+                        exportRecording()
                     }
-                } else {
-                    VStack(spacing: 12) {
-                        Text("No transcript available")
-                            .foregroundColor(.secondary)
-                        
-                        Button("Generate Transcript") {
-                            Task {
-                                await viewModel.generateTranscript(for: recording)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
+                    IconButton(icon: "trash", size: 36, style: .danger) {
+                        // Delete action
                     }
-                    .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
-            .padding(24)
-        }
-        .task(id: recording.id) {
-            await viewModel.loadRecording(recording)
         }
     }
-    
+
     private func formatDuration(_ duration: TimeInterval) -> String {
         let formatter = DateComponentsFormatter()
         formatter.unitsStyle = .abbreviated
         formatter.allowedUnits = [.hour, .minute, .second]
         return formatter.string(from: duration) ?? ""
     }
-}
 
-// MARK: - Audio Player View
+    private func exportRecording() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.audio, .movie]
+        let ext = recording.fileURL.pathExtension
+        panel.nameFieldStringValue = recording.title + "." + (ext.isEmpty ? "m4a" : ext)
 
-struct AudioPlayerView: View {
-    let player: AVAudioPlayer
-    @State private var isPlaying = false
-    @State private var currentTime: TimeInterval = 0
-    @State private var timer: Timer?
-    
-    var body: some View {
-        VStack(spacing: 12) {
-            // Progress bar
-            Slider(value: $currentTime, in: 0...player.duration) { editing in
-                if !editing {
-                    player.currentTime = currentTime
-                }
-            }
-            
-            HStack {
-                Text(formatTime(currentTime))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                // Controls
-                Button {
-                    player.currentTime = max(0, player.currentTime - 10)
-                } label: {
-                    Image(systemName: "gobackward.10")
-                }
-                
-                Button {
-                    togglePlayback()
-                } label: {
-                    Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 32))
-                }
-                
-                Button {
-                    player.currentTime = min(player.duration, player.currentTime + 10)
-                } label: {
-                    Image(systemName: "goforward.10")
-                }
-                
-                Spacer()
-                
-                Text(formatTime(player.duration))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                try? FileManager.default.copyItem(at: recording.fileURL, to: url)
             }
         }
-        .padding()
-        .background(Color(nsColor: .controlBackgroundColor))
-        .cornerRadius(12)
+    }
+}
+
+// MARK: - Audio Player Card
+
+@available(macOS 14.0, *)
+struct AudioPlayerCard: View {
+    let player: AVAudioPlayer
+    let recording: Recording
+    let onSeek: (TimeInterval) -> Void
+
+    @State private var isPlaying = false
+    @State private var currentTime: TimeInterval = 0
+    @State private var playbackRate: Float = 1.0
+    @State private var volume: Float = 1.0
+    @State private var timer: Timer?
+
+    var body: some View {
+        GlassCard(padding: Theme.Spacing.lg) {
+            VStack(spacing: Theme.Spacing.lg) {
+                // Waveform
+                WaveformView(
+                    progress: player.duration > 0 ? currentTime / player.duration : 0,
+                    duration: player.duration,
+                    onSeek: { time in
+                        player.currentTime = time
+                        currentTime = time
+                    }
+                )
+
+                // Time display
+                HStack {
+                    Text(formatTime(currentTime))
+                        .font(Theme.Typography.monoBody)
+                        .foregroundColor(Theme.Colors.textSecondary)
+
+                    Spacer()
+
+                    Text("-" + formatTime(player.duration - currentTime))
+                        .font(Theme.Typography.monoBody)
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+
+                // Controls
+                HStack(spacing: Theme.Spacing.xl) {
+                    // Playback rate
+                    PlaybackRateButton(rate: $playbackRate) { newRate in
+                        player.rate = newRate
+                    }
+
+                    Spacer()
+
+                    // Main controls
+                    HStack(spacing: Theme.Spacing.lg) {
+                        IconButton(icon: "gobackward.10", size: 40, style: .ghost) {
+                            player.currentTime = max(0, player.currentTime - 10)
+                        }
+
+                        // Play/Pause button
+                        Button {
+                            togglePlayback()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(Theme.Colors.primary)
+                                    .frame(width: 56, height: 56)
+
+                                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .offset(x: isPlaying ? 0 : 2)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .shadow(color: Theme.Colors.primary.opacity(0.4), radius: 12, y: 4)
+
+                        IconButton(icon: "goforward.10", size: 40, style: .ghost) {
+                            player.currentTime = min(player.duration, player.currentTime + 10)
+                        }
+                    }
+
+                    Spacer()
+
+                    // Volume
+                    VolumeControl(volume: $volume) { newVolume in
+                        player.volume = newVolume
+                    }
+                }
+            }
+        }
         .onAppear {
             startTimer()
         }
         .onDisappear {
             timer?.invalidate()
+            player.stop()
         }
     }
-    
+
     private func togglePlayback() {
         if isPlaying {
             player.pause()
         } else {
+            player.enableRate = true
+            player.rate = playbackRate
             player.play()
         }
         isPlaying.toggle()
     }
-    
+
     private func startTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] _ in
             Task { @MainActor in
                 currentTime = player.currentTime
-                if player.currentTime >= player.duration {
+                if player.currentTime >= player.duration - 0.1 {
                     isPlaying = false
                 }
             }
         }
     }
-    
+
     private func formatTime(_ time: TimeInterval) -> String {
-        let minutes = Int(time) / 60
+        let hours = Int(time) / 3600
+        let minutes = Int(time) / 60 % 60
         let seconds = Int(time) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 
-// MARK: - Transcript View
+// MARK: - Playback Rate Button
 
-struct TranscriptView: View {
-    let transcript: Transcript
-    let segments: [TranscriptSegment]
-    
+@available(macOS 14.0, *)
+struct PlaybackRateButton: View {
+    @Binding var rate: Float
+    let onChange: (Float) -> Void
+
+    private let rates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Transcript")
-                .font(.title2)
-                .fontWeight(.semibold)
-            
-            if segments.isEmpty {
-                Text(transcript.fullText)
-                    .textSelection(.enabled)
-            } else {
-                ForEach(segments, id: \.id) { segment in
-                    HStack(alignment: .top, spacing: 12) {
-                        // Speaker avatar
-                        Text(segment.speaker.prefix(1))
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .frame(width: 32, height: 32)
-                            .background(speakerColor(for: segment.speaker))
-                            .foregroundColor(.white)
-                            .cornerRadius(16)
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(segment.speaker)
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                
-                                Text(formatTimestamp(segment.startTime))
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Text(segment.text)
-                                .textSelection(.enabled)
+        Menu {
+            ForEach(rates, id: \.self) { r in
+                Button {
+                    rate = r
+                    onChange(r)
+                } label: {
+                    HStack {
+                        Text(formatRate(r))
+                        if rate == r {
+                            Image(systemName: "checkmark")
                         }
                     }
-                    .padding(8)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-                    .cornerRadius(8)
+                }
+            }
+        } label: {
+            Text(formatRate(rate))
+                .font(Theme.Typography.monoSmall)
+                .fontWeight(.medium)
+                .foregroundColor(Theme.Colors.textSecondary)
+                .padding(.horizontal, Theme.Spacing.sm)
+                .padding(.vertical, Theme.Spacing.xs)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.Radius.sm)
+                        .fill(Theme.Colors.surfaceHover)
+                )
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    private func formatRate(_ rate: Float) -> String {
+        if rate == 1.0 {
+            return "1x"
+        }
+        return String(format: "%.2gx", rate)
+    }
+}
+
+// MARK: - Volume Control
+
+@available(macOS 14.0, *)
+struct VolumeControl: View {
+    @Binding var volume: Float
+    let onChange: (Float) -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            if isExpanded {
+                Slider(value: $volume, in: 0...1) { _ in
+                    onChange(volume)
+                }
+                .frame(width: 80)
+                .tint(Theme.Colors.primary)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+
+            Button {
+                withAnimation(Theme.Animation.spring) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                Image(systemName: volumeIcon)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(Theme.Colors.textSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        Circle()
+                            .fill(isExpanded ? Theme.Colors.surfaceHover : .clear)
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var volumeIcon: String {
+        if volume == 0 {
+            return "speaker.slash.fill"
+        } else if volume < 0.5 {
+            return "speaker.wave.1.fill"
+        } else {
+            return "speaker.wave.2.fill"
+        }
+    }
+}
+
+// MARK: - Transcript Section
+
+@available(macOS 14.0, *)
+struct TranscriptSection: View {
+    let recording: Recording
+    @ObservedObject var viewModel: RecordingDetailViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            // Header
+            HStack {
+                Text("Transcript")
+                    .font(Theme.Typography.title3)
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Spacer()
+
+                if let transcript = viewModel.transcript {
+                    Text("\(transcript.fullText.split(separator: " ").count) words")
+                        .font(Theme.Typography.caption)
+                        .foregroundColor(Theme.Colors.textMuted)
+
+                    PillButton("Copy All", icon: "doc.on.doc", style: .ghost, isCompact: true) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(transcript.fullText, forType: .string)
+                    }
+                }
+            }
+
+            // Content
+            if viewModel.isLoadingTranscript {
+                TranscriptLoadingView()
+            } else if let transcript = viewModel.transcript {
+                TranscriptContent(
+                    transcript: transcript,
+                    segments: viewModel.segments,
+                    onSeek: { time in
+                        viewModel.audioPlayer?.currentTime = time
+                        viewModel.audioPlayer?.play()
+                    }
+                )
+            } else if recording.hasTranscript {
+                PillButton("Load Transcript", icon: "arrow.down.doc", style: .secondary) {
+                    Task {
+                        await viewModel.loadTranscript(for: recording)
+                    }
+                }
+            } else {
+                NoTranscriptView {
+                    Task {
+                        await viewModel.generateTranscript(for: recording)
+                    }
                 }
             }
         }
     }
-    
-    private func speakerColor(for speaker: String) -> Color {
-        // Simple hash-based color
-        let hash = speaker.hashValue
-        let hue = Double(abs(hash) % 360) / 360.0
-        return Color(hue: hue, saturation: 0.7, brightness: 0.8)
+}
+
+// MARK: - Transcript Content
+
+@available(macOS 14.0, *)
+struct TranscriptContent: View {
+    let transcript: Transcript
+    let segments: [TranscriptSegment]
+    let onSeek: (TimeInterval) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            // Speaker legend
+            if !uniqueSpeakers.isEmpty {
+                SpeakerLegend(speakers: uniqueSpeakers)
+                    .padding(.bottom, Theme.Spacing.sm)
+            }
+
+            // Segments or full text
+            if segments.isEmpty {
+                Text(transcript.fullText)
+                    .font(Theme.Typography.body)
+                    .foregroundColor(Theme.Colors.textPrimary)
+                    .textSelection(.enabled)
+                    .padding(Theme.Spacing.lg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .surfaceBackground()
+            } else {
+                ForEach(segments, id: \.id) { segment in
+                    TranscriptSegmentRow(segment: segment, onSeek: onSeek)
+                }
+            }
+        }
     }
-    
+
+    private var uniqueSpeakers: [String] {
+        Array(Set(segments.map { $0.speaker })).sorted()
+    }
+}
+
+// MARK: - Transcript Segment Row
+
+@available(macOS 14.0, *)
+struct TranscriptSegmentRow: View {
+    let segment: TranscriptSegment
+    let onSeek: (TimeInterval) -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.md) {
+            // Speaker avatar
+            SpeakerAvatar(name: segment.speaker, size: 36)
+
+            // Content
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                // Header
+                HStack {
+                    Text(segment.speaker)
+                        .font(Theme.Typography.callout)
+                        .fontWeight(.semibold)
+                        .foregroundColor(Theme.Colors.speakerColor(for: segment.speaker))
+
+                    Spacer()
+
+                    // Timestamp button
+                    Button {
+                        onSeek(segment.startTime)
+                    } label: {
+                        HStack(spacing: 4) {
+                            if isHovered {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 8))
+                            }
+                            Text(formatTimestamp(segment.startTime))
+                                .font(Theme.Typography.monoSmall)
+                        }
+                        .foregroundColor(isHovered ? Theme.Colors.primary : Theme.Colors.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Text
+                Text(segment.text)
+                    .font(Theme.Typography.body)
+                    .foregroundColor(Theme.Colors.textPrimary)
+                    .textSelection(.enabled)
+                    .lineSpacing(4)
+            }
+        }
+        .padding(Theme.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
+                .fill(isHovered ? Theme.Colors.surfaceHover : Theme.Colors.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
+                .stroke(Theme.Colors.borderSubtle, lineWidth: 1)
+        )
+        .animation(Theme.Animation.fast, value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
     private func formatTimestamp(_ time: TimeInterval) -> String {
         let minutes = Int(time) / 60
         let seconds = Int(time) % 60
@@ -417,9 +903,129 @@ struct TranscriptView: View {
     }
 }
 
-// MARK: - Supporting Types
+// MARK: - Empty States
 
-import Database
-import AVFoundation
+@available(macOS 14.0, *)
+struct EmptyDetailView: View {
+    @State private var animationPhase: CGFloat = 0
 
-// Type aliases are defined in ViewModels.swift
+    var body: some View {
+        VStack(spacing: Theme.Spacing.xl) {
+            // Animated waveform icon
+            ZStack {
+                Circle()
+                    .fill(Theme.Colors.primaryMuted)
+                    .frame(width: 120, height: 120)
+
+                Image(systemName: "waveform")
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundColor(Theme.Colors.primary)
+                    .scaleEffect(1 + sin(animationPhase) * 0.05)
+            }
+
+            VStack(spacing: Theme.Spacing.sm) {
+                Text("Select a Recording")
+                    .font(Theme.Typography.title2)
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Text("Choose a recording from the sidebar to view details and play audio")
+                    .font(Theme.Typography.body)
+                    .foregroundColor(Theme.Colors.textMuted)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.Colors.background)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 2).repeatForever(autoreverses: true)) {
+                animationPhase = .pi
+            }
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+struct EmptyStateView: View {
+    let hasSearch: Bool
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.lg) {
+            Image(systemName: hasSearch ? "magnifyingglass" : "waveform.path")
+                .font(.system(size: 40, weight: .light))
+                .foregroundColor(Theme.Colors.textMuted)
+
+            Text(hasSearch ? "No Results" : "No Recordings")
+                .font(Theme.Typography.headline)
+                .foregroundColor(Theme.Colors.textSecondary)
+
+            Text(hasSearch
+                 ? "Try a different search term"
+                 : "Start a recording from the menu bar")
+                .font(Theme.Typography.callout)
+                .foregroundColor(Theme.Colors.textMuted)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+@available(macOS 14.0, *)
+struct LoadingView: View {
+    var body: some View {
+        VStack(spacing: Theme.Spacing.lg) {
+            ProgressView()
+                .scaleEffect(1.2)
+                .tint(Theme.Colors.primary)
+
+            Text("Loading recordings...")
+                .font(Theme.Typography.callout)
+                .foregroundColor(Theme.Colors.textMuted)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+@available(macOS 14.0, *)
+struct TranscriptLoadingView: View {
+    var body: some View {
+        VStack(spacing: Theme.Spacing.md) {
+            ProgressView()
+                .tint(Theme.Colors.primary)
+
+            Text("Processing transcript...")
+                .font(Theme.Typography.callout)
+                .foregroundColor(Theme.Colors.textMuted)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(Theme.Spacing.xxl)
+        .surfaceBackground()
+    }
+}
+
+@available(macOS 14.0, *)
+struct NoTranscriptView: View {
+    let onGenerate: () -> Void
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.lg) {
+            Image(systemName: "text.quote")
+                .font(.system(size: 32, weight: .light))
+                .foregroundColor(Theme.Colors.textMuted)
+
+            Text("No transcript available")
+                .font(Theme.Typography.headline)
+                .foregroundColor(Theme.Colors.textSecondary)
+
+            Text("Generate a transcript using on-device AI")
+                .font(Theme.Typography.callout)
+                .foregroundColor(Theme.Colors.textMuted)
+
+            PillButton("Generate Transcript", icon: "sparkles", style: .primary) {
+                onGenerate()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(Theme.Spacing.xxl)
+        .surfaceBackground()
+    }
+}

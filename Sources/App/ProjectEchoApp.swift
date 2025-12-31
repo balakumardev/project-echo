@@ -7,6 +7,9 @@ import Database
 import UI
 import os.log
 
+// Import Theme from UI module
+@_exported import enum UI.Theme
+
 // MARK: - Window Action Holder
 // Allows AppDelegate to trigger SwiftUI window actions
 @MainActor
@@ -467,130 +470,509 @@ App location: \(appPath)
 // MARK: - Settings View
 
 struct SettingsView: View {
-    @AppStorage("autoRecord") private var autoRecord = true
-    @AppStorage("autoTranscribe") private var autoTranscribe = true
-    @AppStorage("whisperModel") private var whisperModel = "base.en"
-    @AppStorage("storageLocation") private var storageLocation = "~/Documents/ProjectEcho"
-    
+    @State private var selectedTab = 0
+
     var body: some View {
-        TabView {
-            GeneralSettingsView(
-                autoRecord: $autoRecord,
-                autoTranscribe: $autoTranscribe,
-                whisperModel: $whisperModel,
-                storageLocation: $storageLocation
-            )
-            .tabItem {
-                Label("General", systemImage: "gear")
+        VStack(spacing: 0) {
+            // Custom tab bar
+            SettingsTabBar(selectedTab: $selectedTab)
+
+            Divider()
+                .background(Theme.Colors.border)
+
+            // Content
+            TabView(selection: $selectedTab) {
+                GeneralSettingsView()
+                    .tag(0)
+
+                PrivacySettingsView()
+                    .tag(1)
+
+                AdvancedSettingsView()
+                    .tag(2)
+
+                AboutSettingsView()
+                    .tag(3)
             }
-            
-            PrivacySettingsView()
-                .tabItem {
-                    Label("Privacy", systemImage: "hand.raised")
-                }
-            
-            AdvancedSettingsView()
-                .tabItem {
-                    Label("Advanced", systemImage: "slider.horizontal.3")
-                }
+            .tabViewStyle(.automatic)
         }
-        .frame(width: 500, height: 400)
+        .frame(width: 560, height: 480)
+        .background(Theme.Colors.background)
     }
 }
 
-struct GeneralSettingsView: View {
-    @Binding var autoRecord: Bool
-    @Binding var autoTranscribe: Bool
-    @Binding var whisperModel: String
-    @Binding var storageLocation: String
-    
+struct SettingsTabBar: View {
+    @Binding var selectedTab: Int
+
+    private let tabs = [
+        ("General", "gear"),
+        ("Privacy", "hand.raised.fill"),
+        ("Advanced", "slider.horizontal.3"),
+        ("About", "info.circle")
+    ]
+
     var body: some View {
-        Form {
-            Section("Recording") {
-                Toggle("Auto-record Configured Apps", isOn: $autoRecord)
-                    .help("Automatically start recording when Zoom, Teams, etc. are launched")
-                
-                Toggle("Auto-transcribe recordings", isOn: $autoTranscribe)
-                    .help("Automatically transcribe recordings when they finish")
-            }
-            
-            Section("Transcription") {
-                Picker("Whisper Model", selection: $whisperModel) {
-                    Text("Tiny (fastest)").tag("tiny.en")
-                    Text("Base (recommended)").tag("base.en")
-                    Text("Small (better quality)").tag("small.en")
-                    Text("Medium (slow)").tag("medium.en")
-                }
-                .help("Larger models are more accurate but slower")
-            }
-            
-            Section("Storage") {
-                HStack {
-                    TextField("Location", text: $storageLocation)
-                    Button("Choose...") {
-                        // TODO: Show folder picker
+        HStack(spacing: Theme.Spacing.xs) {
+            ForEach(0..<tabs.count, id: \.self) { index in
+                SettingsTabButton(
+                    title: tabs[index].0,
+                    icon: tabs[index].1,
+                    isSelected: selectedTab == index
+                ) {
+                    withAnimation(Theme.Animation.fast) {
+                        selectedTab = index
                     }
                 }
             }
         }
-        .formStyle(.grouped)
-        .padding()
+        .padding(Theme.Spacing.md)
+        .background(Theme.Colors.surface)
+    }
+}
+
+struct SettingsTabButton: View {
+    let title: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .medium))
+                Text(title)
+                    .font(Theme.Typography.callout)
+                    .fontWeight(.medium)
+            }
+            .foregroundColor(isSelected ? Theme.Colors.textInverse : (isHovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary))
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.sm)
+            .background(
+                Capsule()
+                    .fill(isSelected ? Theme.Colors.primary : (isHovered ? Theme.Colors.surfaceHover : .clear))
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+struct GeneralSettingsView: View {
+    @AppStorage("autoRecord") private var autoRecord = true
+    @AppStorage("autoTranscribe") private var autoTranscribe = true
+    @AppStorage("whisperModel") private var whisperModel = "base.en"
+    @AppStorage("storageLocation") private var storageLocation = "~/Documents/ProjectEcho"
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: Theme.Spacing.lg) {
+                // Recording Section
+                SettingsSection(title: "Recording", icon: "waveform") {
+                    SettingsToggle(
+                        title: "Auto-record Configured Apps",
+                        subtitle: "Automatically start recording when Zoom, Teams, etc. are launched",
+                        isOn: $autoRecord
+                    )
+
+                    SettingsToggle(
+                        title: "Auto-transcribe recordings",
+                        subtitle: "Automatically transcribe recordings when they finish",
+                        isOn: $autoTranscribe
+                    )
+                }
+
+                // Transcription Section
+                SettingsSection(title: "Transcription", icon: "text.quote") {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        Text("Whisper Model")
+                            .font(Theme.Typography.callout)
+                            .foregroundColor(Theme.Colors.textPrimary)
+
+                        Picker("", selection: $whisperModel) {
+                            Text("Tiny (fastest)").tag("tiny.en")
+                            Text("Base (recommended)").tag("base.en")
+                            Text("Small (better quality)").tag("small.en")
+                            Text("Medium (slow)").tag("medium.en")
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text("Larger models are more accurate but use more resources")
+                            .font(Theme.Typography.caption)
+                            .foregroundColor(Theme.Colors.textMuted)
+                    }
+                }
+
+                // Storage Section
+                SettingsSection(title: "Storage", icon: "folder") {
+                    HStack(spacing: Theme.Spacing.md) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(Theme.Colors.secondary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Storage Location")
+                                .font(Theme.Typography.callout)
+                                .foregroundColor(Theme.Colors.textPrimary)
+                            Text(storageLocation)
+                                .font(Theme.Typography.caption)
+                                .foregroundColor(Theme.Colors.textMuted)
+                        }
+
+                        Spacer()
+
+                        Button("Change...") {
+                            chooseStorageLocation()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
+            .padding(Theme.Spacing.xl)
+        }
+        .background(Theme.Colors.background)
+    }
+
+    private func chooseStorageLocation() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            storageLocation = url.path
+        }
     }
 }
 
 struct PrivacySettingsView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Privacy First")
-                .font(.headline)
-            
-            Text("Project Echo processes all audio locally on your device. No data is sent to external servers.")
-                .foregroundColor(.secondary)
-            
-            Divider()
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Audio stored locally", systemImage: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                Label("Transcription via on-device AI", systemImage: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                Label("No cloud uploads", systemImage: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                Label("No analytics or tracking", systemImage: "checkmark.circle.fill")
-                    .foregroundColor(.green)
+        ScrollView {
+            VStack(spacing: Theme.Spacing.xl) {
+                // Privacy hero
+                VStack(spacing: Theme.Spacing.lg) {
+                    ZStack {
+                        Circle()
+                            .fill(Theme.Colors.successMuted)
+                            .frame(width: 80, height: 80)
+
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 36))
+                            .foregroundColor(Theme.Colors.success)
+                    }
+
+                    VStack(spacing: Theme.Spacing.sm) {
+                        Text("Privacy First")
+                            .font(Theme.Typography.title2)
+                            .foregroundColor(Theme.Colors.textPrimary)
+
+                        Text("Project Echo processes all audio locally on your device.\nNo data is ever sent to external servers.")
+                            .font(Theme.Typography.body)
+                            .foregroundColor(Theme.Colors.textSecondary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(.top, Theme.Spacing.xl)
+
+                // Privacy features
+                VStack(spacing: Theme.Spacing.md) {
+                    PrivacyFeatureRow(
+                        icon: "internaldrive.fill",
+                        title: "Audio stored locally",
+                        description: "All recordings are saved only on your Mac"
+                    )
+
+                    PrivacyFeatureRow(
+                        icon: "cpu.fill",
+                        title: "On-device AI transcription",
+                        description: "WhisperKit runs entirely on your hardware"
+                    )
+
+                    PrivacyFeatureRow(
+                        icon: "icloud.slash.fill",
+                        title: "No cloud uploads",
+                        description: "Your audio never leaves your device"
+                    )
+
+                    PrivacyFeatureRow(
+                        icon: "chart.bar.xaxis",
+                        title: "No analytics or tracking",
+                        description: "Zero telemetry, no usage data collected"
+                    )
+                }
+                .padding(Theme.Spacing.lg)
+                .surfaceBackground()
             }
+            .padding(Theme.Spacing.xl)
         }
-        .padding()
-        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.Colors.background)
+    }
+}
+
+struct PrivacyFeatureRow: View {
+    let icon: String
+    let title: String
+    let description: String
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 20))
+                .foregroundColor(Theme.Colors.success)
+                .frame(width: 32)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Theme.Typography.callout)
+                    .fontWeight(.medium)
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Text(description)
+                    .font(Theme.Typography.caption)
+                    .foregroundColor(Theme.Colors.textMuted)
+            }
+
+            Spacer()
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 18))
+                .foregroundColor(Theme.Colors.success)
+        }
+        .padding(.vertical, Theme.Spacing.sm)
     }
 }
 
 struct AdvancedSettingsView: View {
     @AppStorage("sampleRate") private var sampleRate = 48000
     @AppStorage("audioQuality") private var audioQuality = "high"
-    
+
     var body: some View {
-        Form {
-            Section("Audio Quality") {
-                Picker("Sample Rate", selection: $sampleRate) {
-                    Text("44.1 kHz").tag(44100)
-                    Text("48 kHz (recommended)").tag(48000)
+        ScrollView {
+            VStack(spacing: Theme.Spacing.lg) {
+                // Audio Quality Section
+                SettingsSection(title: "Audio Quality", icon: "waveform.badge.plus") {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            Text("Sample Rate")
+                                .font(Theme.Typography.callout)
+                                .foregroundColor(Theme.Colors.textPrimary)
+
+                            Picker("", selection: $sampleRate) {
+                                Text("44.1 kHz").tag(44100)
+                                Text("48 kHz (recommended)").tag(48000)
+                            }
+                            .pickerStyle(.segmented)
+                        }
+
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            Text("Quality Preset")
+                                .font(Theme.Typography.callout)
+                                .foregroundColor(Theme.Colors.textPrimary)
+
+                            Picker("", selection: $audioQuality) {
+                                Text("Standard").tag("standard")
+                                Text("High").tag("high")
+                                Text("Maximum").tag("maximum")
+                            }
+                            .pickerStyle(.segmented)
+
+                            Text("Higher quality uses more disk space")
+                                .font(Theme.Typography.caption)
+                                .foregroundColor(Theme.Colors.textMuted)
+                        }
+                    }
                 }
-                
-                Picker("Quality", selection: $audioQuality) {
-                    Text("Standard").tag("standard")
-                    Text("High").tag("high")
-                    Text("Maximum").tag("maximum")
+
+                // Performance Section
+                SettingsSection(title: "Performance", icon: "gauge.with.needle") {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        HStack {
+                            Image(systemName: "cpu")
+                                .foregroundColor(Theme.Colors.secondary)
+                            Text("CPU usage optimization and buffer settings")
+                                .font(Theme.Typography.callout)
+                                .foregroundColor(Theme.Colors.textSecondary)
+                        }
+
+                        Text("Coming in a future update")
+                            .font(Theme.Typography.caption)
+                            .foregroundColor(Theme.Colors.textMuted)
+                            .padding(.horizontal, Theme.Spacing.sm)
+                            .padding(.vertical, Theme.Spacing.xs)
+                            .background(Theme.Colors.warningMuted)
+                            .cornerRadius(Theme.Radius.xs)
+                    }
+                }
+
+                // Reset Section
+                SettingsSection(title: "Reset", icon: "arrow.counterclockwise") {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Reset All Settings")
+                                .font(Theme.Typography.callout)
+                                .foregroundColor(Theme.Colors.textPrimary)
+                            Text("Restore all settings to their defaults")
+                                .font(Theme.Typography.caption)
+                                .foregroundColor(Theme.Colors.textMuted)
+                        }
+
+                        Spacer()
+
+                        Button("Reset") {
+                            // Reset settings
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.Colors.error)
+                    }
                 }
             }
-            
-            Section("Performance") {
-                Text("CPU usage optimization and buffer settings will be added here")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            .padding(Theme.Spacing.xl)
+        }
+        .background(Theme.Colors.background)
+    }
+}
+
+struct AboutSettingsView: View {
+    var body: some View {
+        VStack(spacing: Theme.Spacing.xl) {
+            Spacer()
+
+            // App icon and name
+            VStack(spacing: Theme.Spacing.md) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(
+                            LinearGradient(
+                                colors: [Theme.Colors.primary, Theme.Colors.secondary],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 80, height: 80)
+
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.system(size: 44))
+                        .foregroundColor(.white)
+                }
+                .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 12, y: 4)
+
+                Text("Project Echo")
+                    .font(Theme.Typography.title1)
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Text("Version 1.0.0")
+                    .font(Theme.Typography.callout)
+                    .foregroundColor(Theme.Colors.textMuted)
+            }
+
+            // Description
+            Text("Privacy-first meeting recorder with\nlocal AI transcription")
+                .font(Theme.Typography.body)
+                .foregroundColor(Theme.Colors.textSecondary)
+                .multilineTextAlignment(.center)
+
+            // Links
+            HStack(spacing: Theme.Spacing.lg) {
+                AboutLink(title: "Website", icon: "globe")
+                AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right")
+                AboutLink(title: "License", icon: "doc.text")
+            }
+
+            Spacer()
+
+            // Footer
+            Text("Made with privacy in mind")
+                .font(Theme.Typography.caption)
+                .foregroundColor(Theme.Colors.textMuted)
+        }
+        .padding(Theme.Spacing.xl)
+        .background(Theme.Colors.background)
+    }
+}
+
+struct AboutLink: View {
+    let title: String
+    let icon: String
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            // Open link
+        } label: {
+            VStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: icon)
+                    .font(.system(size: 18))
+                Text(title)
+                    .font(Theme.Typography.caption)
+            }
+            .foregroundColor(isHovered ? Theme.Colors.primary : Theme.Colors.textSecondary)
+            .frame(width: 70, height: 50)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.md)
+                    .fill(isHovered ? Theme.Colors.surfaceHover : .clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+// MARK: - Settings Helpers
+
+struct SettingsSection<Content: View>: View {
+    let title: String
+    let icon: String
+    let content: Content
+
+    init(title: String, icon: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            HStack(spacing: Theme.Spacing.sm) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(Theme.Colors.primary)
+                Text(title)
+                    .font(Theme.Typography.headline)
+                    .foregroundColor(Theme.Colors.textPrimary)
+            }
+
+            content
+                .padding(Theme.Spacing.lg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .surfaceBackground()
+        }
+    }
+}
+
+struct SettingsToggle: View {
+    let title: String
+    let subtitle: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Theme.Typography.callout)
+                    .foregroundColor(Theme.Colors.textPrimary)
+                Text(subtitle)
+                    .font(Theme.Typography.caption)
+                    .foregroundColor(Theme.Colors.textMuted)
             }
         }
-        .formStyle(.grouped)
-        .padding()
+        .toggleStyle(.switch)
+        .tint(Theme.Colors.primary)
     }
 }

@@ -307,13 +307,13 @@ public actor DatabaseManager {
     
     public func getTranscript(forRecording recordingId: Int64) async throws -> Transcript? {
         guard let db = db else { throw DatabaseError.initializationFailed }
-        
+
         let query = transcripts.filter(self.recordingId == recordingId)
-        
+
         guard let row = try db.pluck(query) else {
             return nil
         }
-        
+
         return Transcript(
             id: row[id],
             recordingId: row[self.recordingId],
@@ -322,6 +322,30 @@ public actor DatabaseManager {
             processingTime: row[processingTime],
             createdAt: row[createdAt]
         )
+    }
+
+    public func getSegments(forTranscriptId transcriptId: Int64) async throws -> [TranscriptSegment] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = segments
+            .filter(self.transcriptId == transcriptId)
+            .order(startTime.asc)
+
+        var results: [TranscriptSegment] = []
+        for row in try db.prepare(query) {
+            let segment = TranscriptSegment(
+                id: row[id],
+                transcriptId: row[self.transcriptId],
+                startTime: row[startTime],
+                endTime: row[endTime],
+                text: row[text],
+                speaker: row[speaker],
+                confidence: Float(row[confidence])
+            )
+            results.append(segment)
+        }
+
+        return results
     }
     
     public func searchTranscripts(query: String) async throws -> [Recording] {

@@ -121,17 +121,22 @@ public actor TranscriptionEngine {
                 ? identifySpeaker(segmentIndex: index, totalSegments: firstResult.segments.count)
                 : .unknown(0)
             
+            let cleanedText = cleanWhisperTokens(segment.text)
+
+            // Skip empty segments after cleaning
+            guard !cleanedText.isEmpty else { continue }
+
             let echoSegment = Segment(
                 start: TimeInterval(segment.start),
                 end: TimeInterval(segment.end),
-                text: segment.text,
+                text: cleanedText,
                 speaker: speaker,
                 confidence: Float(segment.avgLogprob)
             )
             segments.append(echoSegment)
         }
-        
-        let fullText = segments.map { $0.text }.joined(separator: " ")
+
+        let fullText = segments.map { $0.text }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         let processingTime = Date().timeIntervalSince(startTime)
         
         logger.info("Transcription complete: \(segments.count) segments in \(processingTime)s")
@@ -206,11 +211,39 @@ public actor TranscriptionEngine {
         let words = text.lowercased()
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { $0.count > 5 } // Ignore short words
-        
+
         let frequencies = Dictionary(grouping: words, by: { $0 }).mapValues { $0.count }
         let topWords = frequencies.sorted { $0.value > $1.value }.prefix(5).map { $0.key }
-        
+
         return Array(topWords)
+    }
+
+    /// Clean WhisperKit special tokens from transcript text
+    /// Removes tokens like <|startoftranscript|>, <|0.00|>, <|endoftext|>, etc.
+    private func cleanWhisperTokens(_ text: String) -> String {
+        var cleaned = text
+
+        // Remove special tokens with regex pattern: <|anything|>
+        // This handles: <|startoftranscript|>, <|endoftext|>, <|notimestamps|>,
+        // <|transcribe|>, <|translate|>, <|en|>, <|0.00|>, etc.
+        if let regex = try? NSRegularExpression(pattern: "<\\|[^|]*\\|>", options: []) {
+            cleaned = regex.stringByReplacingMatches(
+                in: cleaned,
+                options: [],
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Also remove [BLANK_AUDIO] markers
+        cleaned = cleaned.replacingOccurrences(of: "[BLANK_AUDIO]", with: "")
+
+        // Clean up multiple spaces and trim
+        while cleaned.contains("  ") {
+            cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+        }
+
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

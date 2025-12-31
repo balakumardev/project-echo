@@ -4,24 +4,26 @@ import AppKit
 /// Menu bar controller for quick recording access
 @MainActor
 public class MenuBarController: NSObject {
-    
+
     // MARK: - Properties
-    
+
     private var statusItem: NSStatusItem?
     private var menu: NSMenu?
     private var isRecording = false
-    
+    private var recordingStartTime: Date?
+    private var recordingTimer: Timer?
+
     public weak var delegate: MenuBarDelegate?
-    
+
     // MARK: - Initialization
-    
+
     public override init() {
         super.init()
         setupMenuBar()
     }
-    
+
     // MARK: - Setup
-    
+
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -35,65 +37,131 @@ public class MenuBarController: NSObject {
         constructMenu()
         statusItem?.menu = menu
     }
-    
+
     private func constructMenu() {
-        guard let menu = menu else {
-            print("DEBUG: menu is nil!")
-            return
-        }
+        guard let menu = menu else { return }
         menu.removeAllItems()
 
-        print("DEBUG: Constructing menu, isRecording=\(isRecording)")
-
-        // Header
-        let headerItem = NSMenuItem(title: "Project Echo", action: nil, keyEquivalent: "")
-        headerItem.isEnabled = false
+        // Header with status
+        let headerView = createHeaderView()
+        let headerItem = NSMenuItem()
+        headerItem.view = headerView
         menu.addItem(headerItem)
         menu.addItem(NSMenuItem.separator())
 
         // Recording control
         if isRecording {
-            let stopItem = NSMenuItem(title: "⏹ Stop Recording", action: #selector(stopRecording), keyEquivalent: "s")
-            stopItem.target = self
-            stopItem.isEnabled = true
+            let stopItem = createMenuItem(
+                title: "Stop Recording",
+                icon: "stop.circle.fill",
+                action: #selector(stopRecording),
+                keyEquivalent: "s"
+            )
             menu.addItem(stopItem)
-            print("DEBUG: Added Stop Recording - target=\(String(describing: stopItem.target)), enabled=\(stopItem.isEnabled)")
 
-            let markerItem = NSMenuItem(title: "🔖 Mark Moment", action: #selector(insertMarker), keyEquivalent: "m")
-            markerItem.target = self
-            markerItem.isEnabled = true
+            let markerItem = createMenuItem(
+                title: "Mark Moment",
+                icon: "bookmark.fill",
+                action: #selector(insertMarker),
+                keyEquivalent: "m"
+            )
             menu.addItem(markerItem)
         } else {
-            let startItem = NSMenuItem(title: "⏺ Start Recording", action: #selector(startRecording), keyEquivalent: "r")
-            startItem.target = self
-            startItem.isEnabled = true
+            let startItem = createMenuItem(
+                title: "Start Recording",
+                icon: "record.circle",
+                action: #selector(startRecording),
+                keyEquivalent: "r"
+            )
             menu.addItem(startItem)
-            print("DEBUG: Added Start Recording - target=\(String(describing: startItem.target)), enabled=\(startItem.isEnabled)")
         }
 
         menu.addItem(NSMenuItem.separator())
 
-        // Library
-        let libraryItem = NSMenuItem(title: "📚 Open Library", action: #selector(openLibrary), keyEquivalent: "l")
-        libraryItem.target = self
-        libraryItem.isEnabled = true
+        // Navigation
+        let libraryItem = createMenuItem(
+            title: "Open Library",
+            icon: "rectangle.stack.fill",
+            action: #selector(openLibrary),
+            keyEquivalent: "l"
+        )
         menu.addItem(libraryItem)
-        print("DEBUG: Added Open Library - target=\(String(describing: libraryItem.target)), enabled=\(libraryItem.isEnabled)")
 
-        let settingsItem = NSMenuItem(title: "⚙️ Settings", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        settingsItem.isEnabled = true
+        let settingsItem = createMenuItem(
+            title: "Settings",
+            icon: "gearshape.fill",
+            action: #selector(openSettings),
+            keyEquivalent: ","
+        )
         menu.addItem(settingsItem)
 
         menu.addItem(NSMenuItem.separator())
 
         // Quit
-        let quitItem = NSMenuItem(title: "Quit Project Echo", action: #selector(quit), keyEquivalent: "q")
-        quitItem.target = self
-        quitItem.isEnabled = true
+        let quitItem = createMenuItem(
+            title: "Quit Project Echo",
+            icon: "power",
+            action: #selector(quit),
+            keyEquivalent: "q"
+        )
         menu.addItem(quitItem)
+    }
 
-        print("DEBUG: Menu constructed with \(menu.items.count) items")
+    private func createMenuItem(title: String, icon: String, action: Selector, keyEquivalent: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        item.target = self
+        item.isEnabled = true
+
+        // Create attributed title with icon
+        if let image = NSImage(systemSymbolName: icon, accessibilityDescription: title) {
+            image.isTemplate = true
+            item.image = image
+        }
+
+        return item
+    }
+
+    private func createHeaderView() -> NSView {
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 44))
+
+        // App name label
+        let titleLabel = NSTextField(labelWithString: "Project Echo")
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.frame = NSRect(x: 14, y: 22, width: 120, height: 18)
+
+        // Status label
+        let statusLabel = NSTextField(labelWithString: isRecording ? "Recording..." : "Ready")
+        statusLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        statusLabel.textColor = isRecording ? .systemRed : .secondaryLabelColor
+        statusLabel.frame = NSRect(x: 14, y: 6, width: 100, height: 14)
+
+        // Duration label (when recording)
+        if isRecording, let startTime = recordingStartTime {
+            let duration = Date().timeIntervalSince(startTime)
+            let durationLabel = NSTextField(labelWithString: formatDuration(duration))
+            durationLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            durationLabel.textColor = .systemRed
+            durationLabel.frame = NSRect(x: 160, y: 14, width: 50, height: 16)
+            durationLabel.alignment = .right
+            containerView.addSubview(durationLabel)
+        }
+
+        containerView.addSubview(titleLabel)
+        containerView.addSubview(statusLabel)
+
+        return containerView
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let hours = Int(duration) / 3600
+        let minutes = Int(duration) / 60 % 60
+        let seconds = Int(duration) % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
     }
     
     // MARK: - Actions
@@ -134,6 +202,15 @@ public class MenuBarController: NSObject {
 
     public func setRecording(_ recording: Bool) {
         isRecording = recording
+
+        if recording {
+            recordingStartTime = Date()
+            startRecordingTimer()
+        } else {
+            recordingStartTime = nil
+            stopRecordingTimer()
+        }
+
         constructMenu()
 
         // Update status bar icon
@@ -142,6 +219,19 @@ public class MenuBarController: NSObject {
             button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Project Echo")
             button.image?.isTemplate = true
         }
+    }
+
+    private func startRecordingTimer() {
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.constructMenu()
+            }
+        }
+    }
+
+    private func stopRecordingTimer() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
     }
 }
 
