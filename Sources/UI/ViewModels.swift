@@ -104,6 +104,27 @@ class RecordingDetailViewModel: ObservableObject {
         return db
     }
     
+    func loadRecording(_ recording: Recording) async {
+        // Reset state for new recording
+        audioPlayer?.stop()
+        audioPlayer = nil
+        transcript = nil
+        segments = []
+
+        // Setup audio player
+        do {
+            audioPlayer = try AVAudioPlayer(contentsOf: recording.fileURL)
+            audioPlayer?.prepareToPlay()
+        } catch {
+            print("Failed to setup audio player: \(error)")
+        }
+
+        // Load transcript if available
+        if recording.hasTranscript {
+            await loadTranscript(for: recording)
+        }
+    }
+
     func setupAudioPlayer(for recording: Recording) async {
         do {
             audioPlayer = try AVAudioPlayer(contentsOf: recording.fileURL)

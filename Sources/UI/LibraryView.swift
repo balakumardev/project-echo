@@ -72,6 +72,7 @@ public struct LibraryView: View {
             // Detail view
             if let recording = selectedRecording {
                 RecordingDetailView(recording: recording)
+                    .id(recording.id)
             } else {
                 Text("Select a recording")
                     .foregroundColor(.secondary)
@@ -250,9 +251,8 @@ struct RecordingDetailView: View {
             }
             .padding(24)
         }
-        .task {
-            let vm = viewModel
-            await vm.setupAudioPlayer(for: recording)
+        .task(id: recording.id) {
+            await viewModel.loadRecording(recording)
         }
     }
     
