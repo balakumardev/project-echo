@@ -28,39 +28,55 @@ final class AudioWriter: @unchecked Sendable {
     private let logger = Logger(subsystem: "com.projectecho.app", category: "AudioWriter")
     
     private var assetWriter: AVAssetWriter?
-    private var audioInput: AVAssetWriterInput?
+    private var microphoneInput: AVAssetWriterInput?
+    private var systemAudioInput: AVAssetWriterInput?
     private var isWriting = false
     
-    private var bufferCount = 0
-    private var recordingStartTime: CMTime?
+    private var micBufferCount = 0
+    private var systemBufferCount = 0
+    private var micStartTime: CMTime?
+    private var systemStartTime: CMTime?
     
-    func configure(outputURL: URL, targetSampleRate: Double, targetChannels: Int) throws {
+    func configure(outputURL: URL, targetSampleRate: Double) throws {
         lock.lock()
         defer { lock.unlock() }
         
-        // Use M4A format for better compatibility with audio players
-        assetWriter = try AVAssetWriter(url: outputURL, fileType: .m4a)
+        // Use MOV format to support multiple audio tracks
+        assetWriter = try AVAssetWriter(url: outputURL, fileType: .mov)
         
-        // Single audio track - use MONO (1 channel) to match microphone input
-        // The microphone on Mac outputs 1 channel, so we must match that
-        let audioSettings: [String: Any] = [
+        // Track 1: Microphone (MONO)
+        let micSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: targetSampleRate,
-            AVNumberOfChannelsKey: 1,  // MONO - matches microphone output
+            AVNumberOfChannelsKey: 1,  // Mono for mic
             AVEncoderBitRateKey: 128_000
         ]
         
-        audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-        audioInput?.expectsMediaDataInRealTime = true
+        microphoneInput = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings)
+        microphoneInput?.expectsMediaDataInRealTime = true
         
-        if let input = audioInput, assetWriter?.canAdd(input) == true {
+        if let input = microphoneInput, assetWriter?.canAdd(input) == true {
             assetWriter?.add(input)
-            print("✅ [AudioWriter] Added audio input with mono settings")
-        } else {
-            print("❌ [AudioWriter] Failed to add audio input!")
+            debugLog("[AudioWriter] Added microphone track (mono)")
         }
         
-        logger.info("Audio writer configured with mono audio track")
+        // Track 2: System Audio (STEREO)
+        let systemSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: targetSampleRate,
+            AVNumberOfChannelsKey: 2,  // Stereo for system audio
+            AVEncoderBitRateKey: 192_000
+        ]
+        
+        systemAudioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: systemSettings)
+        systemAudioInput?.expectsMediaDataInRealTime = true
+        
+        if let input = systemAudioInput, assetWriter?.canAdd(input) == true {
+            assetWriter?.add(input)
+            debugLog("[AudioWriter] Added system audio track (stereo)")
+        }
+        
+        logger.info("Audio writer configured with 2 audio tracks")
     }
     
     func startWriting() -> Bool {
@@ -73,8 +89,10 @@ final class AudioWriter: @unchecked Sendable {
         }
         assetWriter?.startSession(atSourceTime: .zero)
         isWriting = true
-        recordingStartTime = nil
-        bufferCount = 0
+        micStartTime = nil
+        systemStartTime = nil
+        micBufferCount = 0
+        systemBufferCount = 0
         logger.info("Audio writer started")
         return true
     }
@@ -85,68 +103,69 @@ final class AudioWriter: @unchecked Sendable {
             lock.lock()
             defer { lock.unlock() }
             isWriting = false
-            audioInput?.markAsFinished()
+            microphoneInput?.markAsFinished()
+            systemAudioInput?.markAsFinished()
             return assetWriter
         }()
         
         await writer?.finishWriting()
-        logger.info("Audio writer finished. Total buffers: \(self.bufferCount)")
+        logger.info("Audio writer finished. Mic buffers: \(self.micBufferCount), System buffers: \(self.systemBufferCount)")
     }
     
-    /// Write audio buffer - called synchronously from delegate callback
-    /// Works for both system audio and microphone
-    func writeAudio(_ sampleBuffer: CMSampleBuffer, source: String) {
+    /// Write microphone audio buffer
+    func writeMicrophoneAudio(_ sampleBuffer: CMSampleBuffer) {
         lock.lock()
         defer { lock.unlock() }
         
-        guard isWriting else { 
-            if bufferCount == 0 {
-                debugLog("[\(source)] writeAudio called but isWriting=false")
-            }
-            return 
-        }
+        guard isWriting else { return }
+        guard let input = microphoneInput, input.isReadyForMoreMediaData else { return }
         
-        guard let input = audioInput else {
-            debugLog("[\(source)] audioInput is nil!")
-            return
-        }
-        
-        guard input.isReadyForMoreMediaData else {
-            return
-        }
-        
-        // Adjust timing for first buffer
-        let adjustedBuffer = adjustTiming(sampleBuffer)
+        let adjustedBuffer = adjustTiming(sampleBuffer, startTime: &micStartTime)
         
         if input.append(adjustedBuffer) {
-            bufferCount += 1
-            if bufferCount == 1 {
-                debugLog("[\(source)] ✅ First buffer written!")
-            } else if bufferCount % 100 == 0 {
-                debugLog("[\(source)] \(bufferCount) buffers written")
+            micBufferCount += 1
+            if micBufferCount == 1 {
+                debugLog("[Mic] ✅ First buffer written!")
+            } else if micBufferCount % 100 == 0 {
+                debugLog("[Mic] \(micBufferCount) buffers written")
             }
-        } else {
-            let errorMsg = assetWriter?.error?.localizedDescription ?? "unknown error"
-            debugLog("[\(source)] ❌ Failed to append: \(errorMsg)")
+        }
+    }
+    
+    /// Write system audio buffer
+    func writeSystemAudio(_ sampleBuffer: CMSampleBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        guard isWriting else { return }
+        guard let input = systemAudioInput, input.isReadyForMoreMediaData else { return }
+        
+        let adjustedBuffer = adjustTiming(sampleBuffer, startTime: &systemStartTime)
+        
+        if input.append(adjustedBuffer) {
+            systemBufferCount += 1
+            if systemBufferCount == 1 {
+                debugLog("[System] ✅ First buffer written!")
+            } else if systemBufferCount % 100 == 0 {
+                debugLog("[System] \(systemBufferCount) buffers written")
+            }
         }
     }
     
     /// Adjust sample buffer timing to start from zero
-    private func adjustTiming(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer {
+    private func adjustTiming(_ sampleBuffer: CMSampleBuffer, startTime: inout CMTime?) -> CMSampleBuffer {
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         
-        if recordingStartTime == nil {
-            recordingStartTime = presentationTime
+        if startTime == nil {
+            startTime = presentationTime
         }
         
-        guard let startTime = recordingStartTime else {
+        guard let start = startTime else {
             return sampleBuffer
         }
         
-        // Calculate offset from recording start
-        let offset = CMTimeSubtract(presentationTime, startTime)
+        let offset = CMTimeSubtract(presentationTime, start)
         
-        // Create new timing info
         var timingInfo = CMSampleTimingInfo(
             duration: CMSampleBufferGetDuration(sampleBuffer),
             presentationTimeStamp: offset,
@@ -174,9 +193,11 @@ final class AudioWriter: @unchecked Sendable {
         defer { lock.unlock() }
         
         assetWriter = nil
-        audioInput = nil
+        microphoneInput = nil
+        systemAudioInput = nil
         isWriting = false
-        recordingStartTime = nil
+        micStartTime = nil
+        systemStartTime = nil
     }
 }
 
@@ -283,14 +304,14 @@ public actor AudioCaptureEngine {
         debugLog("[AudioEngine] Starting recording session...")
         logger.info("Starting recording session...")
         
-        // Create output file with .m4a extension for better compatibility
+        // Create output file with .mov extension (supports multiple audio tracks)
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let filename = "Echo_\(timestamp).m4a"
+        let filename = "Echo_\(timestamp).mov"
         let fileURL = outputDirectory.appendingPathComponent(filename)
         outputURL = fileURL
         
-        // Configure the audio writer
-        try audioWriter.configure(outputURL: fileURL, targetSampleRate: targetSampleRate, targetChannels: targetChannels)
+        // Configure the audio writer with separate tracks for mic and system audio
+        try audioWriter.configure(outputURL: fileURL, targetSampleRate: targetSampleRate)
         
         // Setup microphone capture FIRST (this is what most users need)
         try await setupMicrophoneCapture()
@@ -308,12 +329,10 @@ public actor AudioCaptureEngine {
         microphoneCaptureSession?.startRunning()
         debugLog("[AudioEngine] Microphone session isRunning: \(microphoneCaptureSession?.isRunning ?? false)")
         
-        // NOTE: Disabled ScreenCaptureKit for now - it uses 2 channels which conflicts with mic's 1 channel
-        // TODO: Either use separate tracks, or resample system audio to mono
-        // debugLog("[AudioEngine] Starting screen capture...")
-        // try await screenStream?.startCapture()
-        // debugLog("[AudioEngine] Screen capture started")
-        debugLog("[AudioEngine] Screen capture DISABLED (format conflict with mic)")
+        // Start system audio capture (ScreenCaptureKit)
+        debugLog("[AudioEngine] Starting screen capture for system audio...")
+        try await screenStream?.startCapture()
+        debugLog("[AudioEngine] Screen capture started")
         
         isRecording = true
         recordingStartTime = Date()
@@ -349,7 +368,7 @@ public actor AudioCaptureEngine {
             sampleRate: targetSampleRate,
             channels: targetChannels,
             fileSize: fileSize,
-            format: "M4A/AAC"
+            format: "QuickTime/AAC"
         )
         
         // Cleanup
@@ -505,11 +524,11 @@ private final class ScreenCaptureDelegate: NSObject, SCStreamOutput {
         
         bufferCount += 1
         if bufferCount == 1 {
-            logger.info("ScreenCaptureKit: First audio buffer received!")
+            debugLog("[ScreenCapture] First audio buffer received!")
         }
 
-        // Write synchronously - CMSampleBuffer is only valid within this callback
-        audioWriter.writeAudio(sampleBuffer, source: "System")
+        // Write synchronously to system audio track
+        audioWriter.writeSystemAudio(sampleBuffer)
     }
 }
 
@@ -528,13 +547,13 @@ private final class MicrophoneCaptureDelegate: NSObject, AVCaptureAudioDataOutpu
     nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         bufferCount += 1
         if bufferCount == 1 {
-            debugLog("[MicDelegate] First audio buffer received from capture!")
+            debugLog("[MicDelegate] First audio buffer received!")
         }
         if bufferCount % 100 == 0 {
             debugLog("[MicDelegate] \(bufferCount) buffers received")
         }
 
-        // Write synchronously - CMSampleBuffer is only valid within this callback
-        audioWriter.writeAudio(sampleBuffer, source: "Mic")
+        // Write synchronously to microphone track
+        audioWriter.writeMicrophoneAudio(sampleBuffer)
     }
 }
