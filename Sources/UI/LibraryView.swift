@@ -18,7 +18,7 @@ public struct LibraryView: View {
     public init() {}
 
     public var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             // Sidebar
             SidebarView(
                 viewModel: viewModel,
@@ -27,9 +27,16 @@ public struct LibraryView: View {
                 selectedFilter: $selectedFilter,
                 selectedSort: $selectedSort
             )
-        } detail: {
+            .frame(width: 340)
+
+            // Divider
+            Rectangle()
+                .fill(Theme.Colors.border)
+                .frame(width: 1)
+
             // Detail view
             DetailView(recording: selectedRecording)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Theme.Colors.background)
         .task {
@@ -110,8 +117,7 @@ struct SidebarView: View {
                 )
             }
         }
-        .frame(minWidth: 320)
-        .background(Theme.Colors.surface.opacity(0.5))
+        .background(Theme.Colors.surface)
     }
 
     private var filteredRecordings: [Recording] {
@@ -232,45 +238,41 @@ struct RecordingList: View {
     let onExportTranscript: (Recording) -> Void
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: Theme.Spacing.xs) {
-                ForEach(recordings) { recording in
-                    RecordingRow(
-                        recording: recording,
-                        isSelected: selectedRecording?.id == recording.id
-                    )
-                    .onTapGesture {
-                        withAnimation(Theme.Animation.fast) {
-                            selectedRecording = recording
-                        }
-                    }
-                    .contextMenu {
-                        Button {
-                            onExportAudio(recording)
-                        } label: {
-                            Label("Export Audio", systemImage: "square.and.arrow.up")
-                        }
+        List(recordings, selection: $selectedRecording) { recording in
+            RecordingRow(
+                recording: recording,
+                isSelected: selectedRecording?.id == recording.id
+            )
+            .tag(recording)
+            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .contextMenu {
+                Button {
+                    onExportAudio(recording)
+                } label: {
+                    Label("Export Audio", systemImage: "square.and.arrow.up")
+                }
 
-                        if recording.hasTranscript {
-                            Button {
-                                onExportTranscript(recording)
-                            } label: {
-                                Label("Export Transcript", systemImage: "doc.text")
-                            }
-                        }
-
-                        Divider()
-
-                        Button(role: .destructive) {
-                            onDelete(recording)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
+                if recording.hasTranscript {
+                    Button {
+                        onExportTranscript(recording)
+                    } label: {
+                        Label("Export Transcript", systemImage: "doc.text")
                     }
                 }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    onDelete(recording)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
-            .padding(Theme.Spacing.sm)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -281,15 +283,18 @@ struct RecordingRow: View {
     let recording: Recording
     let isSelected: Bool
 
-    @State private var isHovered = false
-
     var body: some View {
         HStack(spacing: Theme.Spacing.md) {
+            // Selection indicator
+            RoundedRectangle(cornerRadius: 2)
+                .fill(isSelected ? Theme.Colors.primary : .clear)
+                .frame(width: 3)
+
             // App icon
-            AppIconBadge(appName: recording.appName, size: 44)
+            AppIconBadge(appName: recording.appName, size: 40)
 
             // Content
-            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            VStack(alignment: .leading, spacing: 3) {
                 // Title
                 Text(recording.title)
                     .font(Theme.Typography.headline)
@@ -297,32 +302,29 @@ struct RecordingRow: View {
                     .lineLimit(1)
 
                 // Metadata
-                HStack(spacing: Theme.Spacing.sm) {
+                HStack(spacing: Theme.Spacing.xs) {
                     Text(recording.date.formatted(date: .abbreviated, time: .shortened))
-                        .font(Theme.Typography.caption)
-                        .foregroundColor(Theme.Colors.textMuted)
-
                     Text("•")
-                        .foregroundColor(Theme.Colors.textMuted)
-
                     Text(formatDuration(recording.duration))
-                        .font(Theme.Typography.monoSmall)
-                        .foregroundColor(Theme.Colors.textSecondary)
+                        .fontDesign(.monospaced)
                 }
+                .font(Theme.Typography.caption)
+                .foregroundColor(Theme.Colors.textMuted)
 
                 // Tags
-                HStack(spacing: Theme.Spacing.xs) {
-                    if let app = recording.appName {
-                        StatusBadge(app, color: Theme.Colors.secondary, icon: nil)
-                    }
-
-                    if recording.hasTranscript {
-                        StatusBadge("Transcribed", color: Theme.Colors.success, icon: "checkmark")
+                if recording.appName != nil || recording.hasTranscript {
+                    HStack(spacing: Theme.Spacing.xs) {
+                        if let app = recording.appName {
+                            SmallBadge(text: app, color: Theme.Colors.secondary)
+                        }
+                        if recording.hasTranscript {
+                            SmallBadge(text: "Transcribed", color: Theme.Colors.success)
+                        }
                     }
                 }
             }
 
-            Spacer()
+            Spacer(minLength: Theme.Spacing.sm)
 
             // File size
             Text(formatFileSize(recording.fileSize))
@@ -331,51 +333,19 @@ struct RecordingRow: View {
 
             // Chevron
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(Theme.Colors.textMuted)
-                .opacity(isHovered || isSelected ? 1 : 0)
         }
-        .padding(Theme.Spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.md)
-                .fill(backgroundColor)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.md)
-                .stroke(isSelected ? Theme.Colors.primary.opacity(0.5) : .clear, lineWidth: 2)
-        )
-        .overlay(
-            // Selection indicator
-            HStack {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Theme.Colors.primary)
-                    .frame(width: 3)
-                    .opacity(isSelected ? 1 : 0)
-                Spacer()
-            }
-        )
-        .animation(Theme.Animation.fast, value: isSelected)
-        .animation(Theme.Animation.fast, value: isHovered)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-    }
-
-    private var backgroundColor: Color {
-        if isSelected {
-            return Theme.Colors.primaryMuted
-        }
-        if isHovered {
-            return Theme.Colors.surfaceHover
-        }
-        return .clear
+        .padding(.vertical, Theme.Spacing.sm)
+        .padding(.trailing, Theme.Spacing.md)
+        .background(isSelected ? Theme.Colors.primaryMuted : .clear)
+        .contentShape(Rectangle())
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
         let hours = Int(duration) / 3600
         let minutes = Int(duration) / 60 % 60
         let seconds = Int(duration) % 60
-
         if hours > 0 {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
@@ -386,6 +356,23 @@ struct RecordingRow: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+}
+
+// Simple badge without hover effects
+@available(macOS 14.0, *)
+struct SmallBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundColor(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .clipShape(Capsule())
     }
 }
 

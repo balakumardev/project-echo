@@ -10,6 +10,8 @@ public class MenuBarController: NSObject {
     private var statusItem: NSStatusItem?
     private var menu: NSMenu?
     private var isRecording = false
+    private var isMonitoring = false
+    private var monitoredAppName: String?
     private var recordingStartTime: Date?
     private var recordingTimer: Timer?
 
@@ -122,7 +124,7 @@ public class MenuBarController: NSObject {
     }
 
     private func createHeaderView() -> NSView {
-        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 44))
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 44))
 
         // App name label
         let titleLabel = NSTextField(labelWithString: "Project Echo")
@@ -130,11 +132,28 @@ public class MenuBarController: NSObject {
         titleLabel.textColor = .labelColor
         titleLabel.frame = NSRect(x: 14, y: 22, width: 120, height: 18)
 
-        // Status label
-        let statusLabel = NSTextField(labelWithString: isRecording ? "Recording..." : "Ready")
+        // Status label with contextual text
+        let statusText: String
+        let statusColor: NSColor
+
+        if isRecording {
+            statusText = "Recording..."
+            statusColor = .systemRed
+        } else if isMonitoring, let appName = monitoredAppName {
+            statusText = "Monitoring \(appName)"
+            statusColor = .systemOrange
+        } else if isMonitoring {
+            statusText = "Monitoring..."
+            statusColor = .systemOrange
+        } else {
+            statusText = "Ready"
+            statusColor = .secondaryLabelColor
+        }
+
+        let statusLabel = NSTextField(labelWithString: statusText)
         statusLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        statusLabel.textColor = isRecording ? .systemRed : .secondaryLabelColor
-        statusLabel.frame = NSRect(x: 14, y: 6, width: 100, height: 14)
+        statusLabel.textColor = statusColor
+        statusLabel.frame = NSRect(x: 14, y: 6, width: 160, height: 14)
 
         // Duration label (when recording)
         if isRecording, let startTime = recordingStartTime {
@@ -142,7 +161,7 @@ public class MenuBarController: NSObject {
             let durationLabel = NSTextField(labelWithString: formatDuration(duration))
             durationLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             durationLabel.textColor = .systemRed
-            durationLabel.frame = NSRect(x: 160, y: 14, width: 50, height: 16)
+            durationLabel.frame = NSRect(x: 180, y: 14, width: 50, height: 16)
             durationLabel.alignment = .right
             containerView.addSubview(durationLabel)
         }
@@ -205,6 +224,8 @@ public class MenuBarController: NSObject {
 
         if recording {
             recordingStartTime = Date()
+            isMonitoring = false  // Stop monitoring when recording starts
+            monitoredAppName = nil
             startRecordingTimer()
         } else {
             recordingStartTime = nil
@@ -212,12 +233,49 @@ public class MenuBarController: NSObject {
         }
 
         constructMenu()
+        updateStatusBarIcon()
+    }
 
-        // Update status bar icon
-        if let button = statusItem?.button {
-            let iconName = recording ? "waveform.circle.fill" : "waveform.circle"
-            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Project Echo")
-            button.image?.isTemplate = true
+    public func setMonitoring(_ monitoring: Bool, app: String?) {
+        isMonitoring = monitoring
+        monitoredAppName = app
+
+        constructMenu()
+        updateStatusBarIcon()
+    }
+
+    private func updateStatusBarIcon() {
+        guard let button = statusItem?.button else { return }
+
+        let iconName: String
+        let iconColor: NSColor?
+
+        if isRecording {
+            iconName = "waveform.circle.fill"
+            iconColor = .systemRed
+        } else if isMonitoring {
+            iconName = "waveform.badge.magnifyingglass"
+            iconColor = .systemOrange
+        } else {
+            iconName = "waveform.circle"
+            iconColor = nil
+        }
+
+        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Project Echo") {
+            if let color = iconColor {
+                // Create a colored version of the icon
+                let coloredImage = image.copy() as! NSImage
+                coloredImage.lockFocus()
+                color.set()
+                let imageRect = NSRect(origin: .zero, size: coloredImage.size)
+                imageRect.fill(using: .sourceAtop)
+                coloredImage.unlockFocus()
+                button.image = coloredImage
+                button.image?.isTemplate = false
+            } else {
+                button.image = image
+                button.image?.isTemplate = true
+            }
         }
     }
 

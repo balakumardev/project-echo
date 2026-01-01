@@ -96,15 +96,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     // UI
     private var menuBarController: MenuBarController!
 
-    // Auto Recording
-    private var appMonitor: AppMonitor!
+    // Meeting Detection (new)
+    private var meetingDetector: MeetingDetector!
+    private var systemEventHandler: SystemEventHandler!
+    private var systemEventTask: Task<Void, Never>?
+
+    // Auto Recording Settings
     @AppStorage("autoRecord") private var autoRecordEnabled = true
+    @AppStorage("enabledMeetingApps") private var enabledMeetingAppsRaw = "zoom,teams,meet,slack,discord"
+    @AppStorage("silenceTimeoutSeconds") private var silenceTimeout: Double = 45.0
+    @AppStorage("audioActivitySeconds") private var audioActivityDuration: Double = 2.0
+    @AppStorage("silenceThresholdDB") private var silenceThreshold: Double = -40.0
+    @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
+
+    // Legacy (kept for migration)
     @AppStorage("monitoredApps") private var monitoredAppsRaw = "Zoom,Microsoft Teams,Google Chrome,FaceTime"
-    private var lastActiveApp: String?
 
     // State
     private var currentRecordingURL: URL?
     private var outputDirectory: URL!
+    private var currentRecordingApp: String?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("Project Echo starting...")
@@ -124,8 +135,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         menuBarController = MenuBarController()
         menuBarController.delegate = self
 
-        // Setup App Monitor
-        setupAppMonitoring()
+        // Setup Meeting Detection
+        setupMeetingDetection()
 
         logger.info("Project Echo ready")
     }
@@ -382,89 +393,147 @@ App location: \(appPath)
         alert.runModal()
     }
     
-    // MARK: - Auto Recording Logic
-    
-    private func setupAppMonitoring() {
-        appMonitor = AppMonitor()
-        
-        // Parse monitored apps
-        let apps = monitoredAppsRaw.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+    // MARK: - Meeting Detection
+
+    private func setupMeetingDetection() {
+        // Parse enabled apps
+        let enabledApps = Set(enabledMeetingAppsRaw.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+
+        // Create meeting detector with configuration
+        let config = MeetingDetector.Configuration(
+            sustainedAudioDuration: audioActivityDuration,
+            silenceDurationToEnd: silenceTimeout,
+            silenceThresholdDB: Float(silenceThreshold),
+            audioThresholdDB: Float(silenceThreshold + 5), // Activity threshold slightly above silence
+            enabledApps: enabledApps,
+            checkOnWake: autoRecordOnWake
+        )
+
+        meetingDetector = MeetingDetector(configuration: config)
+
+        // Set delegate callbacks
         Task {
-            await appMonitor.startMonitoring(apps: apps)
+            await meetingDetector.setDelegate(
+                stateChanged: { [weak self] detector, state in
+                    self?.handleMeetingStateChange(state)
+                },
+                startRecording: { [weak self] detector, appName in
+                    guard let self = self else { throw MeetingDetectorError.delegateNotAvailable }
+                    return try await self.startMeetingRecording(for: appName)
+                },
+                stopRecording: { [weak self] detector in
+                    guard let self = self else { return }
+                    try await self.stopMeetingRecording()
+                },
+                error: { [weak self] detector, error in
+                    self?.logger.error("Meeting detector error: \(error.localizedDescription)")
+                }
+            )
+
+            // Start detector if auto-record is enabled
+            if autoRecordEnabled {
+                await meetingDetector.start()
+                logger.info("Meeting detector started")
+            }
         }
-        
-        // Listen for app activation
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(appDidActivate(_:)),
-            name: NSWorkspace.didActivateApplicationNotification,
-            object: nil
-        )
-        
-        // Listen for app termination
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(appDidTerminate(_:)),
-            name: NSWorkspace.didTerminateApplicationNotification,
-            object: nil
-        )
-    }
-    
-    @objc private func appDidActivate(_ notification: Notification) {
-        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-              let appName = app.localizedName,
-              autoRecordEnabled else { return }
-        
-        // Check if we should record this app
-        let targetApps = monitoredAppsRaw.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        
-        if targetApps.contains(where: { appName.localizedCaseInsensitiveContains($0) }) {
-            logger.info("Detected monitored app activation: \(appName)")
-            
-            if currentRecordingURL == nil {
-                startAutoRecording(for: appName)
+
+        // Setup system event handler for sleep/wake
+        systemEventHandler = SystemEventHandler()
+        systemEventTask = Task {
+            for await event in systemEventHandler.eventStream() {
+                await handleSystemEvent(event)
             }
         }
     }
-    
-    @objc private func appDidTerminate(_ notification: Notification) {
-        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-              let appName = app.localizedName else { return }
-        
-        // If the app we were recording closed, stop recording
-        // Note: This logic assumes we only record one thing at a time
-        if let current = detectActiveApp(), current == appName {
-             // Logic to stop if necessary, but usually we prefer manual stop or stop when meeting ends (hard to detect)
-             // For now, let's keep recording running until user stops or we implement silence detection
+
+    private func handleMeetingStateChange(_ state: MeetingDetector.State) {
+        switch state {
+        case .idle:
+            menuBarController.setRecording(false)
+            menuBarController.setMonitoring(false, app: nil)
+        case .monitoring(let app):
+            menuBarController.setRecording(false)
+            menuBarController.setMonitoring(true, app: app)
+        case .meetingDetected(let app):
+            logger.info("Meeting detected for: \(app)")
+        case .recording(let app):
+            menuBarController.setRecording(true)
+            menuBarController.setMonitoring(false, app: nil)
+            currentRecordingApp = app
+        case .endingMeeting(let app):
+            logger.info("Meeting ending for: \(app)")
         }
     }
-    
-    private func startAutoRecording(for appName: String) {
-        logger.info("Auto-starting recording for \(appName)")
-        // We reuse the existing start logic but need to be careful about not blocking main thread
-        // or showing alerts in a way that disrupts the user
-        
-        let engine = audioEngine
-        let dir = outputDirectory
-        
-        Task {
-            do {
-                // Ensure output directory exists (captured safely?)
-                // outputDirectory is a var, so capturing it is tricky if we are in MainActor context it is fine?
-                // Yes, we are MainActor isolated.
-                
-                // Let's use the property directly since we are in Task inheriting MainActor
-                currentRecordingURL = try await engine?.startRecording(targetApp: appName, outputDirectory: dir!)
-                logger.info("Auto-recording started for \(appName)")
-                
-                // Update Menu Bar
-                menuBarController.setRecording(true)
-                
-            } catch {
-                logger.error("Failed to auto-start recording: \(error.localizedDescription)")
+
+    private func startMeetingRecording(for appName: String) async throws -> URL {
+        logger.info("Starting meeting recording for: \(appName)")
+
+        // Request permissions if needed
+        try await audioEngine.requestPermissions()
+
+        // Start recording
+        let url = try await audioEngine.startRecording(targetApp: appName, outputDirectory: outputDirectory)
+        currentRecordingURL = url
+        currentRecordingApp = appName
+
+        return url
+    }
+
+    private func stopMeetingRecording() async throws {
+        logger.info("Stopping meeting recording")
+
+        let metadata = try await audioEngine.stopRecording()
+
+        // Save to database
+        if let url = currentRecordingURL {
+            let title = url.deletingPathExtension().lastPathComponent
+            let recordingId = try await database.saveRecording(
+                title: title,
+                date: Date(),
+                duration: metadata.duration,
+                fileURL: url,
+                fileSize: metadata.fileSize,
+                appName: currentRecordingApp
+            )
+
+            logger.info("Meeting recording saved: ID \(recordingId)")
+
+            // Auto-transcribe in background
+            Task { [weak self] in
+                await self?.transcribeRecording(id: recordingId, url: url)
+            }
+        }
+
+        currentRecordingURL = nil
+        currentRecordingApp = nil
+    }
+
+    private func handleSystemEvent(_ event: SystemEventHandler.SystemEvent) async {
+        switch event {
+        case .didWake:
+            logger.info("System woke from sleep")
+            if autoRecordEnabled && autoRecordOnWake {
+                await meetingDetector.handleSystemWake()
+            }
+        case .willSleep:
+            logger.info("System going to sleep")
+            await meetingDetector.handleSystemSleep()
+        case .screenLocked:
+            logger.info("Screen locked")
+        case .screenUnlocked:
+            logger.info("Screen unlocked")
+            // Optionally check for meetings when screen unlocks
+            if autoRecordEnabled && autoRecordOnWake {
+                await meetingDetector.handleSystemWake()
             }
         }
     }
+}
+
+// MARK: - Meeting Detector Error
+
+enum MeetingDetectorError: Error {
+    case delegateNotAvailable
 }
 
 // MARK: - Settings View
@@ -567,6 +636,9 @@ struct GeneralSettingsView: View {
     @AppStorage("autoTranscribe") private var autoTranscribe = true
     @AppStorage("whisperModel") private var whisperModel = "base.en"
     @AppStorage("storageLocation") private var storageLocation = "~/Documents/ProjectEcho"
+    @AppStorage("silenceTimeoutSeconds") private var silenceTimeout: Double = 45.0
+    @AppStorage("audioActivitySeconds") private var audioActivityDuration: Double = 2.0
+    @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
 
     var body: some View {
         ScrollView {
@@ -574,8 +646,8 @@ struct GeneralSettingsView: View {
                 // Recording Section
                 SettingsSection(title: "Recording", icon: "waveform") {
                     SettingsToggle(
-                        title: "Auto-record Configured Apps",
-                        subtitle: "Automatically start recording when Zoom, Teams, etc. are launched",
+                        title: "Auto-record Meetings",
+                        subtitle: "Automatically start recording when audio activity is detected in meeting apps",
                         isOn: $autoRecord
                     )
 
@@ -584,6 +656,66 @@ struct GeneralSettingsView: View {
                         subtitle: "Automatically transcribe recordings when they finish",
                         isOn: $autoTranscribe
                     )
+
+                    SettingsToggle(
+                        title: "Resume on wake",
+                        subtitle: "Check for active meetings when your Mac wakes from sleep",
+                        isOn: $autoRecordOnWake
+                    )
+                }
+
+                // Meeting Apps Section
+                if autoRecord {
+                    SettingsSection(title: "Meeting Apps", icon: "app.badge.checkmark") {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            Text("Select which apps to monitor for meetings:")
+                                .font(Theme.Typography.caption)
+                                .foregroundColor(Theme.Colors.textMuted)
+
+                            MeetingAppsPickerView()
+                        }
+                    }
+
+                    // Detection Settings
+                    SettingsSection(title: "Detection", icon: "waveform.badge.magnifyingglass") {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                HStack {
+                                    Text("Start recording after")
+                                        .font(Theme.Typography.callout)
+                                        .foregroundColor(Theme.Colors.textPrimary)
+                                    Spacer()
+                                    Text("\(Int(audioActivityDuration))s of audio")
+                                        .font(Theme.Typography.callout)
+                                        .foregroundColor(Theme.Colors.textSecondary)
+                                }
+                                Slider(value: $audioActivityDuration, in: 1...10, step: 1)
+                                    .tint(Theme.Colors.primary)
+                                Text("How long audio must be detected before recording starts")
+                                    .font(Theme.Typography.caption)
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            Divider()
+
+                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                HStack {
+                                    Text("Stop recording after")
+                                        .font(Theme.Typography.callout)
+                                        .foregroundColor(Theme.Colors.textPrimary)
+                                    Spacer()
+                                    Text("\(Int(silenceTimeout))s of silence")
+                                        .font(Theme.Typography.callout)
+                                        .foregroundColor(Theme.Colors.textSecondary)
+                                }
+                                Slider(value: $silenceTimeout, in: 15...120, step: 15)
+                                    .tint(Theme.Colors.primary)
+                                Text("How long silence must continue before recording stops")
+                                    .font(Theme.Typography.caption)
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+                        }
+                    }
                 }
 
                 // Transcription Section
