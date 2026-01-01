@@ -10,6 +10,8 @@ import os.log
 // Import Theme from UI module
 @_exported import enum UI.Theme
 
+// Note: debugLog is defined in MeetingDetector.swift and is available here
+
 // MARK: - Window Action Holder
 // Allows AppDelegate to trigger SwiftUI window actions
 @MainActor
@@ -108,6 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     @AppStorage("audioActivitySeconds") private var audioActivityDuration: Double = 2.0
     @AppStorage("silenceThresholdDB") private var silenceThreshold: Double = -40.0
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
+    @AppStorage("enableWindowTitleDetection") private var enableWindowTitleDetection: Bool = true
 
     // Legacy (kept for migration)
     @AppStorage("monitoredApps") private var monitoredAppsRaw = "Zoom,Microsoft Teams,Google Chrome,FaceTime"
@@ -406,7 +409,8 @@ App location: \(appPath)
             silenceThresholdDB: Float(silenceThreshold),
             audioThresholdDB: Float(silenceThreshold + 5), // Activity threshold slightly above silence
             enabledApps: enabledApps,
-            checkOnWake: autoRecordOnWake
+            checkOnWake: autoRecordOnWake,
+            enableWindowTitleDetection: enableWindowTitleDetection
         )
 
         meetingDetector = MeetingDetector(configuration: config)
@@ -431,9 +435,14 @@ App location: \(appPath)
             )
 
             // Start detector if auto-record is enabled
+            debugLog("autoRecordEnabled = \(autoRecordEnabled)")
             if autoRecordEnabled {
+                debugLog("Calling meetingDetector.start()...")
                 await meetingDetector.start()
+                debugLog("meetingDetector.start() completed")
                 logger.info("Meeting detector started")
+            } else {
+                debugLog("Auto-record is DISABLED, not starting detector")
             }
         }
 
@@ -640,6 +649,9 @@ struct GeneralSettingsView: View {
     @AppStorage("silenceTimeoutSeconds") private var silenceTimeout: Double = 45.0
     @AppStorage("audioActivitySeconds") private var audioActivityDuration: Double = 2.0
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
+    @AppStorage("enableWindowTitleDetection") private var enableWindowTitleDetection: Bool = true
+
+    @State private var isAccessibilityTrusted = WindowTitleMonitor.isAccessibilityTrusted(prompt: false)
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -720,6 +732,46 @@ struct GeneralSettingsView: View {
                                 Text("How long silence must continue before recording stops")
                                     .font(.system(size: 11))
                                     .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            Divider()
+
+                            // Window Title Detection
+                            VStack(alignment: .leading, spacing: 8) {
+                                SettingsToggle(
+                                    title: "Window Title Detection",
+                                    subtitle: "Detect Zoom meetings by window title (more reliable)",
+                                    isOn: $enableWindowTitleDetection
+                                )
+
+                                if enableWindowTitleDetection {
+                                    HStack(spacing: 8) {
+                                        if isAccessibilityTrusted {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(.green)
+                                            Text("Accessibility permission granted")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(Theme.Colors.textMuted)
+                                        } else {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .foregroundColor(.orange)
+                                            Text("Accessibility permission required")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.orange)
+                                            Spacer()
+                                            Button("Grant Access") {
+                                                _ = WindowTitleMonitor.isAccessibilityTrusted(prompt: true)
+                                                // Refresh state after a delay
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                                    isAccessibilityTrusted = WindowTitleMonitor.isAccessibilityTrusted(prompt: false)
+                                                }
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                        }
+                                    }
+                                    .padding(.leading, 4)
+                                }
                             }
                         }
                     }

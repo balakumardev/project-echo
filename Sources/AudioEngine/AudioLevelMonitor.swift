@@ -3,6 +3,24 @@ import Foundation
 import Accelerate
 import os.log
 
+// Debug file logging for AudioLevelMonitor
+private func audioDebugLog(_ message: String) {
+    let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_debug.log")
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let line = "[\(timestamp)] [Audio] \(message)\n"
+    if let data = line.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: logFile.path) {
+            if let handle = try? FileHandle(forWritingTo: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            }
+        } else {
+            try? data.write(to: logFile)
+        }
+    }
+}
+
 /// Lightweight audio monitoring for detecting meeting activity without recording to disk
 @available(macOS 14.0, *)
 public actor AudioLevelMonitor {
@@ -103,20 +121,23 @@ public actor AudioLevelMonitor {
     /// Start monitoring audio from a specific app
     public func startMonitoring(for appName: String) async throws {
         guard !isMonitoring else {
+            audioDebugLog("Already monitoring, throwing error")
             throw MonitorError.alreadyMonitoring
         }
 
-        logger.info("Starting audio monitoring for: \(appName)")
+        audioDebugLog("Starting audio monitoring for: \(appName)")
         monitoredAppName = appName
 
         try await setupMonitoringStream(for: appName)
+        audioDebugLog("Stream setup complete for: \(appName)")
 
         try await screenStream?.startCapture()
+        audioDebugLog("Screen capture started")
         isMonitoring = true
         currentState = .monitoring
         stateContinuation?.yield(.monitoring)
 
-        logger.info("Audio monitoring started for: \(appName)")
+        audioDebugLog("Audio monitoring started successfully for: \(appName)")
     }
 
     /// Start monitoring all system audio
@@ -215,9 +236,12 @@ public actor AudioLevelMonitor {
     }
 
     private func setupMonitoringStream(for appName: String?) async throws {
+        audioDebugLog("setupMonitoringStream called for: \(appName ?? "system")")
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        audioDebugLog("Got \(content.applications.count) applications from SCShareableContent")
 
         guard let display = content.displays.first else {
+            audioDebugLog("ERROR: No display available")
             throw MonitorError.noDisplayAvailable
         }
 
@@ -225,17 +249,26 @@ public actor AudioLevelMonitor {
         let filter: SCContentFilter
         if let appName = appName {
             // Find target app by name (case-insensitive partial match)
+            audioDebugLog("Looking for app containing: \(appName)")
+
+            // Log all apps for debugging
+            for app in content.applications.prefix(20) {
+                audioDebugLog("  Available app: \(app.applicationName) (\(app.bundleIdentifier))")
+            }
+
             guard let app = content.applications.first(where: {
                 $0.applicationName.localizedCaseInsensitiveContains(appName)
             }) else {
-                logger.error("App not found: \(appName)")
+                audioDebugLog("ERROR: App not found: \(appName)")
                 throw MonitorError.appNotFound
             }
+
+            audioDebugLog("Found app: \(app.applicationName) with bundleId: \(app.bundleIdentifier)")
 
             // Filter to just this app
             let excludedApps = content.applications.filter { $0.bundleIdentifier != app.bundleIdentifier }
             filter = SCContentFilter(display: display, excludingApplications: excludedApps, exceptingWindows: [])
-            logger.info("Monitoring audio from: \(app.applicationName)")
+            audioDebugLog("Created filter excluding \(excludedApps.count) other apps")
         } else {
             // Global capture (all system audio)
             filter = SCContentFilter(display: display, excludingWindows: [])
@@ -289,6 +322,11 @@ public actor AudioLevelMonitor {
         let hasActivity = level.decibels >= configuration.activityThresholdDB
         let isSilent = level.decibels < configuration.silenceThresholdDB
 
+        // Debug: log audio levels every 3 seconds
+        if Int(now.timeIntervalSince1970) % 3 == 0 {
+            audioDebugLog("dB=\(String(format: "%.1f", level.decibels)), hasActivity=\(hasActivity), state=\(currentState), threshold=\(configuration.activityThresholdDB)")
+        }
+
         switch currentState {
         case .idle:
             break // Should not receive levels while idle
@@ -298,6 +336,7 @@ public actor AudioLevelMonitor {
                 // Start tracking activity duration
                 if audioActivityStartTime == nil {
                     audioActivityStartTime = now
+                    audioDebugLog("Activity started tracking at dB=\(String(format: "%.1f", level.decibels))")
                 }
                 silenceStartTime = nil
 
@@ -306,10 +345,14 @@ public actor AudioLevelMonitor {
                    now.timeIntervalSince(startTime) >= configuration.sustainedActivityDuration {
                     currentState = .audioDetected
                     stateContinuation?.yield(.audioDetected)
+                    audioDebugLog("SUSTAINED AUDIO DETECTED - transitioning to audioDetected after \(now.timeIntervalSince(startTime))s")
                     logger.info("Sustained audio detected - meeting likely in progress")
                 }
             } else {
                 // Reset activity tracking
+                if audioActivityStartTime != nil {
+                    audioDebugLog("Activity tracking reset (audio dropped to dB=\(String(format: "%.1f", level.decibels)))")
+                }
                 audioActivityStartTime = nil
             }
 

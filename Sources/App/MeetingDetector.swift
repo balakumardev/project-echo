@@ -3,6 +3,24 @@ import AppKit
 import AudioEngine
 import os.log
 
+// Debug file logging
+func debugLog(_ message: String) {
+    let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_debug.log")
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let line = "[\(timestamp)] \(message)\n"
+    if let data = line.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: logFile.path) {
+            if let handle = try? FileHandle(forWritingTo: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            }
+        } else {
+            try? data.write(to: logFile)
+        }
+    }
+}
+
 /// Delegate protocol for meeting detection events
 @available(macOS 14.0, *)
 @MainActor
@@ -43,13 +61,19 @@ public actor MeetingDetector {
         public var browserApps: Set<String> = ["Google Chrome", "Safari", "Microsoft Edge", "Firefox", "Arc"]
         public var checkOnWake: Bool = true
 
+        // Window title detection settings
+        public var enableWindowTitleDetection: Bool = true
+        public var windowTitlePollingInterval: TimeInterval = 1.0
+
         public init(
             sustainedAudioDuration: TimeInterval = 2.0,
             silenceDurationToEnd: TimeInterval = 45.0,
             silenceThresholdDB: Float = -40.0,
             audioThresholdDB: Float = -35.0,
             enabledApps: Set<String> = ["zoom", "teams", "meet", "slack", "discord"],
-            checkOnWake: Bool = true
+            checkOnWake: Bool = true,
+            enableWindowTitleDetection: Bool = true,
+            windowTitlePollingInterval: TimeInterval = 1.0
         ) {
             self.sustainedAudioDuration = sustainedAudioDuration
             self.silenceDurationToEnd = silenceDurationToEnd
@@ -57,6 +81,8 @@ public actor MeetingDetector {
             self.audioThresholdDB = audioThresholdDB
             self.enabledApps = enabledApps
             self.checkOnWake = checkOnWake
+            self.enableWindowTitleDetection = enableWindowTitleDetection
+            self.windowTitlePollingInterval = windowTitlePollingInterval
         }
     }
 
@@ -101,12 +127,18 @@ public actor MeetingDetector {
 
     // Components
     private var audioLevelMonitor: AudioLevelMonitor?
+    private var windowTitleMonitor: WindowTitleMonitor?
+    private var detectionCoordinator: DetectionCoordinator?
     private var appObservers: [NSObjectProtocol] = []
 
     // State tracking
     private var currentRecordingURL: URL?
     private var audioMonitorTask: Task<Void, Never>?
+    private var windowMonitorTask: Task<Void, Never>?
     private var appCheckTask: Task<Void, Never>?
+    private var currentDetectionSource: DetectionSource?
+    private var runningMeetingApps: Set<String> = []  // Track ALL running meeting apps
+    private var currentMeetingTitle: String?  // The detected meeting title from window
 
     // Delegate (stored as weak reference via MainActor callback)
     private var delegateCallback: (@MainActor (MeetingDetector, State) -> Void)?
@@ -124,6 +156,8 @@ public actor MeetingDetector {
             sustainedActivityDuration: configuration.sustainedAudioDuration,
             sustainedSilenceDuration: configuration.silenceDurationToEnd
         ))
+        self.detectionCoordinator = DetectionCoordinator()
+        // Window title monitor will be initialized in start() after checking accessibility
     }
 
     // MARK: - Public API
@@ -144,20 +178,36 @@ public actor MeetingDetector {
     /// Start the detector
     public func start() async {
         guard !isRunning else {
-            logger.info("MeetingDetector already running")
+            debugLog("MeetingDetector already running")
             return
         }
 
-        logger.info("Starting MeetingDetector")
+        debugLog("Starting MeetingDetector with config: enabledApps=\(configuration.enabledApps), windowTitleDetection=\(configuration.enableWindowTitleDetection)")
         isRunning = true
+
+        // Setup window title monitor if enabled and accessibility is trusted
+        if configuration.enableWindowTitleDetection {
+            let isTrusted = await MainActor.run { WindowTitleMonitor.isAccessibilityTrusted(prompt: false) }
+            debugLog("Accessibility trusted: \(isTrusted)")
+            if isTrusted {
+                windowTitleMonitor = WindowTitleMonitor(configuration: WindowTitleMonitor.Configuration(
+                    pollingInterval: configuration.windowTitlePollingInterval
+                ))
+                debugLog("Window title monitor initialized")
+            } else {
+                debugLog("Window title detection disabled - accessibility not trusted")
+            }
+        }
 
         // Setup app activation observers
         await setupAppObservers()
+        debugLog("App observers set up")
 
         // Start periodic check for running meeting apps
         startAppCheckLoop()
+        debugLog("App check loop started")
 
-        logger.info("MeetingDetector started")
+        debugLog("MeetingDetector started successfully")
     }
 
     /// Stop the detector
@@ -170,11 +220,20 @@ public actor MeetingDetector {
         // Stop audio monitoring
         await stopAudioMonitoring()
 
+        // Stop window title monitoring
+        await stopWindowTitleMonitoring()
+
         // Cancel tasks
         audioMonitorTask?.cancel()
         audioMonitorTask = nil
+        windowMonitorTask?.cancel()
+        windowMonitorTask = nil
         appCheckTask?.cancel()
         appCheckTask = nil
+
+        // Reset detection coordinator
+        await detectionCoordinator?.reset()
+        currentDetectionSource = nil
 
         // Remove observers
         await removeAppObservers()
@@ -227,6 +286,26 @@ public actor MeetingDetector {
             sustainedActivityDuration: newConfig.sustainedAudioDuration,
             sustainedSilenceDuration: newConfig.silenceDurationToEnd
         ))
+
+        // Update window title monitor configuration
+        await windowTitleMonitor?.updateConfiguration(WindowTitleMonitor.Configuration(
+            pollingInterval: newConfig.windowTitlePollingInterval
+        ))
+
+        // Handle window title detection enable/disable
+        if newConfig.enableWindowTitleDetection && windowTitleMonitor == nil {
+            let isTrusted = await MainActor.run { WindowTitleMonitor.isAccessibilityTrusted(prompt: false) }
+            if isTrusted {
+                windowTitleMonitor = WindowTitleMonitor(configuration: WindowTitleMonitor.Configuration(
+                    pollingInterval: newConfig.windowTitlePollingInterval
+                ))
+                logger.info("Window title detection enabled")
+            }
+        } else if !newConfig.enableWindowTitleDetection && windowTitleMonitor != nil {
+            await stopWindowTitleMonitoring()
+            windowTitleMonitor = nil
+            logger.info("Window title detection disabled")
+        }
     }
 
     /// Get current state
@@ -285,32 +364,18 @@ public actor MeetingDetector {
     }
 
     private func handleAppActivation(appName: String, bundleId: String?) async {
-        // Check if this is a monitored app
+        // Check if this is a monitored app - trigger a full check to update running apps set
         if isMonitoredApp(appName: appName, bundleId: bundleId) {
-            logger.info("Monitored app activated: \(appName)")
-            await startMonitoringApp(appName)
+            debugLog("Monitored app activated: \(appName)")
+            await checkForActiveMeetingApps()
         }
     }
 
     private func handleAppTermination(appName: String, bundleId: String?) async {
-        // Check if this was the app we're monitoring/recording
-        switch currentState {
-        case .monitoring(let monitoredApp), .meetingDetected(let monitoredApp),
-             .recording(let monitoredApp), .endingMeeting(let monitoredApp):
-            if appName.localizedCaseInsensitiveContains(monitoredApp) ||
-               monitoredApp.localizedCaseInsensitiveContains(appName) {
-                logger.info("Monitored app terminated: \(appName)")
-
-                // If recording, stop it
-                if case .recording = currentState {
-                    try? await requestStopRecording()
-                }
-
-                await stopAudioMonitoring()
-                await updateState(.idle)
-            }
-        case .idle:
-            break
+        // Check if this was a monitored app - trigger a full check to update running apps set
+        if isMonitoredApp(appName: appName, bundleId: bundleId) {
+            debugLog("Monitored app terminated: \(appName)")
+            await checkForActiveMeetingApps()
         }
     }
 
@@ -324,19 +389,84 @@ public actor MeetingDetector {
     }
 
     private func checkForActiveMeetingApps() async {
-        guard case .idle = currentState else { return }
-
         let runningApps = NSWorkspace.shared.runningApplications
 
+        // Collect running meeting apps by their clean display name (e.g., "Zoom" not "zoom.us Web Content")
+        var foundAppIds: Set<String> = []
         for app in runningApps {
-            guard let appName = app.localizedName else { continue }
+            guard let appName = app.localizedName, let bundleId = app.bundleIdentifier else { continue }
 
-            if isMonitoredApp(appName: appName, bundleId: app.bundleIdentifier) {
-                logger.info("Found running monitored app: \(appName)")
-                await startMonitoringApp(appName)
-                break
+            // Skip browsers - we'll handle Google Meet separately
+            if configuration.browserApps.contains(where: { appName.localizedCaseInsensitiveContains($0) }) {
+                continue
+            }
+
+            // Find which meeting app this matches and use its ID
+            if let matchedApp = getMatchingMeetingApp(appName: appName, bundleId: bundleId) {
+                foundAppIds.insert(matchedApp.id)
             }
         }
+
+        // Convert IDs to display names for the running apps set
+        var foundApps: Set<String> = []
+        for appId in foundAppIds {
+            if let meetingApp = Self.supportedApps.first(where: { $0.id == appId }) {
+                foundApps.insert(meetingApp.displayName)
+            }
+        }
+
+        // Check if running apps changed
+        let previousApps = runningMeetingApps
+        runningMeetingApps = foundApps
+
+        debugLog("checkForActiveMeetingApps: found \(foundApps.count) meeting apps: \(foundApps), previous: \(previousApps)")
+
+        // If we found meeting apps and weren't monitoring before, start monitoring
+        if !foundApps.isEmpty, case .idle = currentState {
+            let appList = foundApps.sorted().joined(separator: ", ")
+            debugLog("Starting to monitor apps: \(appList)")
+            await startMonitoringSystemAudio(for: appList)
+        }
+
+        // If all meeting apps closed while we were monitoring/recording
+        if foundApps.isEmpty && !previousApps.isEmpty {
+            debugLog("All meeting apps closed")
+            if case .recording = currentState {
+                try? await requestStopRecording()
+            }
+            await stopAudioMonitoring()
+            await stopWindowTitleMonitoring()
+            await detectionCoordinator?.reset()
+            currentDetectionSource = nil
+            await updateState(.idle)
+        }
+    }
+
+    /// Find the matching MeetingApp for a given app name and bundle ID
+    private func getMatchingMeetingApp(appName: String, bundleId: String?) -> MeetingApp? {
+        for meetingApp in Self.supportedApps {
+            guard configuration.enabledApps.contains(meetingApp.id) else { continue }
+
+            // Check bundle ID match (most reliable)
+            if let bundleId = bundleId, !meetingApp.bundleId.isEmpty {
+                // For Zoom, match any bundle that starts with "us.zoom"
+                if meetingApp.id == "zoom" && bundleId.hasPrefix("us.zoom") {
+                    return meetingApp
+                }
+                if bundleId == meetingApp.bundleId {
+                    return meetingApp
+                }
+            }
+
+            // Check name match for non-Zoom apps
+            if meetingApp.id != "zoom" {
+                if appName.localizedCaseInsensitiveContains(meetingApp.processName) ||
+                   appName.localizedCaseInsensitiveContains(meetingApp.displayName) {
+                    return meetingApp
+                }
+            }
+        }
+        return nil
     }
 
     private func isMonitoredApp(appName: String, bundleId: String?) -> Bool {
@@ -370,27 +500,140 @@ public actor MeetingDetector {
         return false
     }
 
-    private func startMonitoringApp(_ appName: String) async {
-        guard case .idle = currentState else { return }
+    /// Start monitoring system audio for all meeting apps
+    private func startMonitoringSystemAudio(for appNames: String) async {
+        guard case .idle = currentState else {
+            debugLog("startMonitoringSystemAudio: not idle, skipping")
+            return
+        }
 
-        logger.info("Starting to monitor app: \(appName)")
-        await updateState(.monitoring(app: appName))
+        debugLog("Starting system audio monitoring for: \(appNames)")
+        await updateState(.monitoring(app: appNames))
 
-        // Start audio level monitoring
+        // Reset detection coordinator for new monitoring session
+        await detectionCoordinator?.reset()
+        currentDetectionSource = nil
+
+        // Start window title monitoring FIRST if Zoom is running
+        // This works independently of audio monitoring
+        if runningMeetingApps.contains(where: { isZoomApp($0) }) {
+            debugLog("Zoom is running, starting window title monitoring...")
+            await startWindowTitleMonitoring(for: "zoom.us")
+        }
+
+        // Start system-wide audio level monitoring
         do {
-            try await audioLevelMonitor?.startMonitoring(for: appName)
+            debugLog("Starting system audio monitoring...")
+            try await audioLevelMonitor?.startMonitoringSystemAudio()
+            debugLog("System audio monitoring started successfully")
             startAudioStateMonitoring()
         } catch {
-            logger.error("Failed to start audio monitoring: \(error.localizedDescription)")
+            debugLog("ERROR: Failed to start system audio monitoring: \(error)")
             await notifyError(error)
-            await updateState(.idle)
+            // Don't return - window title monitoring can still work
+            // Only reset to idle if window title monitoring also isn't running
+            if windowMonitorTask == nil {
+                await updateState(.idle)
+            }
         }
+    }
+
+    /// Legacy method for single-app monitoring (kept for compatibility)
+    private func startMonitoringApp(_ appName: String) async {
+        await startMonitoringSystemAudio(for: appName)
+    }
+
+    /// Check if the app is Zoom (supports window title detection)
+    private func isZoomApp(_ appName: String) -> Bool {
+        let zoomApp = Self.supportedApps.first { $0.id == "zoom" }
+        guard let zoom = zoomApp else { return false }
+        return appName.localizedCaseInsensitiveContains(zoom.displayName) ||
+               appName.localizedCaseInsensitiveContains(zoom.processName)
     }
 
     private func stopAudioMonitoring() async {
         audioMonitorTask?.cancel()
         audioMonitorTask = nil
         await audioLevelMonitor?.stopMonitoring()
+    }
+
+    private func stopWindowTitleMonitoring() async {
+        windowMonitorTask?.cancel()
+        windowMonitorTask = nil
+        await windowTitleMonitor?.stopMonitoring()
+    }
+
+    private func startWindowTitleMonitoring(for appName: String) async {
+        guard let monitor = windowTitleMonitor else { return }
+
+        do {
+            // Get Zoom bundle ID
+            let zoomBundleId = Self.supportedApps.first { $0.id == "zoom" }?.bundleId ?? "us.zoom.xos"
+            try await monitor.startMonitoring(for: zoomBundleId)
+            startWindowTitleStateMonitoring()
+            logger.info("Window title monitoring started for Zoom")
+        } catch {
+            logger.error("Failed to start window title monitoring: \(error.localizedDescription)")
+            // Continue without window title monitoring - audio detection will still work
+        }
+    }
+
+    private func startWindowTitleStateMonitoring() {
+        windowMonitorTask = Task {
+            guard let monitor = windowTitleMonitor else { return }
+
+            for await state in await monitor.stateStream() {
+                guard !Task.isCancelled else { break }
+                await handleWindowTitleStateChange(state)
+            }
+        }
+    }
+
+    private func handleWindowTitleStateChange(_ windowState: WindowTitleMonitor.MonitoringState) async {
+        debugLog("handleWindowTitleStateChange: \(windowState), currentState=\(currentState)")
+
+        switch windowState {
+        case .meetingDetected(let app, let title):
+            debugLog("Window title detected meeting: \(title)")
+            logger.info("Window title detected meeting: \(title)")
+
+            // Store the meeting title for use in recording name
+            currentMeetingTitle = title
+
+            // Register with coordinator
+            let event = DetectionCoordinator.DetectionEvent(
+                source: .windowTitle,
+                appName: app,
+                metadata: ["title": title]
+            )
+
+            guard let coordinator = detectionCoordinator else { return }
+            let shouldTrigger = await coordinator.registerDetection(event)
+
+            // If this is the first detection source and we're in monitoring state, start recording
+            if shouldTrigger {
+                switch currentState {
+                case .monitoring:
+                    // Use the meeting title as the recording name
+                    await triggerMeetingDetection(source: .windowTitle, app: title)
+                case .idle, .meetingDetected, .recording, .endingMeeting:
+                    break
+                }
+            }
+
+        case .meetingEnded:
+            logger.info("Window title indicates meeting ended")
+            currentMeetingTitle = nil
+            await detectionCoordinator?.removeDetection(source: .windowTitle)
+
+            // Only stop recording if no other detection sources are active
+            if await detectionCoordinator?.hasActiveDetection() == false {
+                await handleAllDetectionsEnded()
+            }
+
+        case .idle, .monitoring:
+            break
+        }
     }
 
     private func startAudioStateMonitoring() {
@@ -405,49 +648,123 @@ public actor MeetingDetector {
     }
 
     private func handleAudioStateChange(_ audioState: AudioLevelMonitor.MonitoringState) async {
+        debugLog("handleAudioStateChange: audioState=\(audioState), currentState=\(currentState)")
+
         switch (currentState, audioState) {
         case (.monitoring(let app), .audioDetected):
-            // Sustained audio detected - meeting in progress
-            logger.info("Meeting detected for: \(app)")
-            await updateState(.meetingDetected(app: app))
+            // Sustained audio detected - register with coordinator
+            debugLog("AUDIO DETECTED! Starting recording for: \(app)")
 
-            // Start recording
-            do {
-                try await requestStartRecording(for: app)
-                await updateState(.recording(app: app))
-            } catch {
-                logger.error("Failed to start recording: \(error.localizedDescription)")
-                await notifyError(error)
+            let event = DetectionCoordinator.DetectionEvent(
+                source: .audio,
+                appName: app
+            )
+
+            guard let coordinator = detectionCoordinator else {
+                // Fallback to direct trigger if no coordinator
+                let recordingName = currentMeetingTitle ?? runningMeetingApps.first ?? app
+                await triggerMeetingDetection(source: .audio, app: recordingName)
+                return
+            }
+
+            let shouldTrigger = await coordinator.registerDetection(event)
+
+            // If this is the first detection source, start recording
+            if shouldTrigger {
+                // Use meeting title if available, otherwise use first running app name
+                let recordingName = currentMeetingTitle ?? runningMeetingApps.first ?? app
+                await triggerMeetingDetection(source: .audio, app: recordingName)
             }
 
         case (.recording(let app), .silence):
-            // Sustained silence - meeting may be ending
+            // Sustained silence - remove audio detection
             logger.info("Silence detected during recording for: \(app)")
-            await updateState(.endingMeeting(app: app))
+            await detectionCoordinator?.removeDetection(source: .audio)
 
-            // Wait for confirmation (audio might resume)
-            // The audio monitor already handles the sustained silence duration
-            do {
-                try await requestStopRecording()
-                await stopAudioMonitoring()
-                await updateState(.idle)
-
-                // Check if app is still running, restart monitoring if so
-                if isAppStillRunning(app) {
-                    await startMonitoringApp(app)
-                }
-            } catch {
-                logger.error("Failed to stop recording: \(error.localizedDescription)")
-                await notifyError(error)
+            // Only end meeting if no other detection sources are active
+            if await detectionCoordinator?.hasActiveDetection() == false {
+                await updateState(.endingMeeting(app: app))
+                await handleAllDetectionsEnded()
+            } else {
+                logger.info("Audio silent but other detection source still active, continuing recording")
             }
 
         case (.endingMeeting(let app), .audioDetected):
-            // Audio resumed - continue recording
+            // Audio resumed - re-register and continue recording
             logger.info("Audio resumed for: \(app)")
+
+            let event = DetectionCoordinator.DetectionEvent(
+                source: .audio,
+                appName: app
+            )
+            _ = await detectionCoordinator?.registerDetection(event)
+
             await updateState(.recording(app: app))
 
         default:
             break
+        }
+    }
+
+    /// Unified method for triggering meeting detection from any source
+    private func triggerMeetingDetection(source: DetectionSource, app: String) async {
+        currentDetectionSource = source
+        logger.info("Meeting detection triggered via \(source.displayName) for: \(app)")
+        await updateState(.meetingDetected(app: app))
+
+        // Start recording
+        do {
+            try await requestStartRecording(for: app)
+            await updateState(.recording(app: app))
+        } catch {
+            logger.error("Failed to start recording: \(error.localizedDescription)")
+            await notifyError(error)
+        }
+    }
+
+    /// Handle when all detection sources indicate meeting has ended
+    private func handleAllDetectionsEnded() async {
+        guard case .recording(let app) = currentState else {
+            if case .endingMeeting(let app) = currentState {
+                // Already in ending state, proceed
+                do {
+                    try await requestStopRecording()
+                    await stopAudioMonitoring()
+                    await stopWindowTitleMonitoring()
+                    await detectionCoordinator?.reset()
+                    currentDetectionSource = nil
+                    await updateState(.idle)
+
+                    // Check if app is still running, restart monitoring if so
+                    if isAppStillRunning(app) {
+                        await startMonitoringApp(app)
+                    }
+                } catch {
+                    logger.error("Failed to stop recording: \(error.localizedDescription)")
+                    await notifyError(error)
+                }
+            }
+            return
+        }
+
+        // Transition to ending state
+        await updateState(.endingMeeting(app: app))
+
+        do {
+            try await requestStopRecording()
+            await stopAudioMonitoring()
+            await stopWindowTitleMonitoring()
+            await detectionCoordinator?.reset()
+            currentDetectionSource = nil
+            await updateState(.idle)
+
+            // Check if app is still running, restart monitoring if so
+            if isAppStillRunning(app) {
+                await startMonitoringApp(app)
+            }
+        } catch {
+            logger.error("Failed to stop recording: \(error.localizedDescription)")
+            await notifyError(error)
         }
     }
 
