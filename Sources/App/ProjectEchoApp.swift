@@ -543,29 +543,30 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Custom tab bar
+            // Custom tab bar - centered
             SettingsTabBar(selectedTab: $selectedTab)
 
             Divider()
-                .background(Theme.Colors.border)
+                .foregroundColor(Theme.Colors.border)
 
-            // Content
-            TabView(selection: $selectedTab) {
-                GeneralSettingsView()
-                    .tag(0)
-
-                PrivacySettingsView()
-                    .tag(1)
-
-                AdvancedSettingsView()
-                    .tag(2)
-
-                AboutSettingsView()
-                    .tag(3)
+            // Content area
+            Group {
+                switch selectedTab {
+                case 0:
+                    GeneralSettingsView()
+                case 1:
+                    PrivacySettingsView()
+                case 2:
+                    AdvancedSettingsView()
+                case 3:
+                    AboutSettingsView()
+                default:
+                    GeneralSettingsView()
+                }
             }
-            .tabViewStyle(.automatic)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 560, height: 480)
+        .frame(width: 560, height: 520)
         .background(Theme.Colors.background)
     }
 }
@@ -581,7 +582,7 @@ struct SettingsTabBar: View {
     ]
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.xs) {
+        HStack(spacing: Theme.Spacing.sm) {
             ForEach(0..<tabs.count, id: \.self) { index in
                 SettingsTabButton(
                     title: tabs[index].0,
@@ -594,7 +595,8 @@ struct SettingsTabBar: View {
                 }
             }
         }
-        .padding(Theme.Spacing.md)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Theme.Spacing.md)
         .background(Theme.Colors.surface)
     }
 }
@@ -609,16 +611,15 @@ struct SettingsTabButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Theme.Spacing.xs) {
+            HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                 Text(title)
-                    .font(Theme.Typography.callout)
-                    .fontWeight(.medium)
+                    .font(.system(size: 12, weight: .medium))
             }
-            .foregroundColor(isSelected ? Theme.Colors.textInverse : (isHovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary))
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.sm)
+            .foregroundColor(isSelected ? .white : (isHovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
             .background(
                 Capsule()
                     .fill(isSelected ? Theme.Colors.primary : (isHovered ? Theme.Colors.surfaceHover : .clear))
@@ -641,35 +642,41 @@ struct GeneralSettingsView: View {
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: Theme.Spacing.lg) {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 20) {
                 // Recording Section
                 SettingsSection(title: "Recording", icon: "waveform") {
-                    SettingsToggle(
-                        title: "Auto-record Meetings",
-                        subtitle: "Automatically start recording when audio activity is detected in meeting apps",
-                        isOn: $autoRecord
-                    )
+                    VStack(alignment: .leading, spacing: 0) {
+                        SettingsToggle(
+                            title: "Auto-record Meetings",
+                            subtitle: "Automatically start recording when audio activity is detected",
+                            isOn: $autoRecord
+                        )
 
-                    SettingsToggle(
-                        title: "Auto-transcribe recordings",
-                        subtitle: "Automatically transcribe recordings when they finish",
-                        isOn: $autoTranscribe
-                    )
+                        Divider().padding(.vertical, 8)
 
-                    SettingsToggle(
-                        title: "Resume on wake",
-                        subtitle: "Check for active meetings when your Mac wakes from sleep",
-                        isOn: $autoRecordOnWake
-                    )
+                        SettingsToggle(
+                            title: "Auto-transcribe recordings",
+                            subtitle: "Automatically transcribe recordings when they finish",
+                            isOn: $autoTranscribe
+                        )
+
+                        Divider().padding(.vertical, 8)
+
+                        SettingsToggle(
+                            title: "Resume on wake",
+                            subtitle: "Check for active meetings when your Mac wakes from sleep",
+                            isOn: $autoRecordOnWake
+                        )
+                    }
                 }
 
                 // Meeting Apps Section
                 if autoRecord {
                     SettingsSection(title: "Meeting Apps", icon: "app.badge.checkmark") {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Select which apps to monitor for meetings:")
-                                .font(Theme.Typography.caption)
+                                .font(.system(size: 11))
                                 .foregroundColor(Theme.Colors.textMuted)
 
                             MeetingAppsPickerView()
@@ -678,40 +685,40 @@ struct GeneralSettingsView: View {
 
                     // Detection Settings
                     SettingsSection(title: "Detection", icon: "waveform.badge.magnifyingglass") {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     Text("Start recording after")
-                                        .font(Theme.Typography.callout)
+                                        .font(.system(size: 13))
                                         .foregroundColor(Theme.Colors.textPrimary)
                                     Spacer()
                                     Text("\(Int(audioActivityDuration))s of audio")
-                                        .font(Theme.Typography.callout)
-                                        .foregroundColor(Theme.Colors.textSecondary)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(Theme.Colors.primary)
                                 }
                                 Slider(value: $audioActivityDuration, in: 1...10, step: 1)
                                     .tint(Theme.Colors.primary)
                                 Text("How long audio must be detected before recording starts")
-                                    .font(Theme.Typography.caption)
+                                    .font(.system(size: 11))
                                     .foregroundColor(Theme.Colors.textMuted)
                             }
 
                             Divider()
 
-                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     Text("Stop recording after")
-                                        .font(Theme.Typography.callout)
+                                        .font(.system(size: 13))
                                         .foregroundColor(Theme.Colors.textPrimary)
                                     Spacer()
                                     Text("\(Int(silenceTimeout))s of silence")
-                                        .font(Theme.Typography.callout)
-                                        .foregroundColor(Theme.Colors.textSecondary)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(Theme.Colors.primary)
                                 }
                                 Slider(value: $silenceTimeout, in: 15...120, step: 15)
                                     .tint(Theme.Colors.primary)
                                 Text("How long silence must continue before recording stops")
-                                    .font(Theme.Typography.caption)
+                                    .font(.system(size: 11))
                                     .foregroundColor(Theme.Colors.textMuted)
                             }
                         }
@@ -720,39 +727,43 @@ struct GeneralSettingsView: View {
 
                 // Transcription Section
                 SettingsSection(title: "Transcription", icon: "text.quote") {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("Whisper Model")
-                            .font(Theme.Typography.callout)
+                            .font(.system(size: 13))
                             .foregroundColor(Theme.Colors.textPrimary)
 
                         Picker("", selection: $whisperModel) {
-                            Text("Tiny (fastest)").tag("tiny.en")
-                            Text("Base (recommended)").tag("base.en")
-                            Text("Small (better quality)").tag("small.en")
-                            Text("Medium (slow)").tag("medium.en")
+                            Text("Tiny").tag("tiny.en")
+                            Text("Base").tag("base.en")
+                            Text("Small").tag("small.en")
+                            Text("Medium").tag("medium.en")
                         }
                         .pickerStyle(.segmented)
+                        .labelsHidden()
 
                         Text("Larger models are more accurate but use more resources")
-                            .font(Theme.Typography.caption)
+                            .font(.system(size: 11))
                             .foregroundColor(Theme.Colors.textMuted)
                     }
                 }
 
                 // Storage Section
                 SettingsSection(title: "Storage", icon: "folder") {
-                    HStack(spacing: Theme.Spacing.md) {
+                    HStack(spacing: 12) {
                         Image(systemName: "folder.fill")
-                            .font(.system(size: 24))
+                            .font(.system(size: 20))
                             .foregroundColor(Theme.Colors.secondary)
+                            .frame(width: 24)
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Storage Location")
-                                .font(Theme.Typography.callout)
+                                .font(.system(size: 13))
                                 .foregroundColor(Theme.Colors.textPrimary)
                             Text(storageLocation)
-                                .font(Theme.Typography.caption)
+                                .font(.system(size: 11))
                                 .foregroundColor(Theme.Colors.textMuted)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
 
                         Spacer()
@@ -761,10 +772,11 @@ struct GeneralSettingsView: View {
                             chooseStorageLocation()
                         }
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                 }
             }
-            .padding(Theme.Spacing.xl)
+            .padding(20)
         }
         .background(Theme.Colors.background)
     }
@@ -783,40 +795,44 @@ struct GeneralSettingsView: View {
 
 struct PrivacySettingsView: View {
     var body: some View {
-        ScrollView {
-            VStack(spacing: Theme.Spacing.xl) {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .center, spacing: 24) {
                 // Privacy hero
-                VStack(spacing: Theme.Spacing.lg) {
+                VStack(spacing: 16) {
                     ZStack {
                         Circle()
                             .fill(Theme.Colors.successMuted)
-                            .frame(width: 80, height: 80)
+                            .frame(width: 72, height: 72)
 
                         Image(systemName: "lock.shield.fill")
-                            .font(.system(size: 36))
+                            .font(.system(size: 32))
                             .foregroundColor(Theme.Colors.success)
                     }
 
-                    VStack(spacing: Theme.Spacing.sm) {
+                    VStack(spacing: 8) {
                         Text("Privacy First")
-                            .font(Theme.Typography.title2)
+                            .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(Theme.Colors.textPrimary)
 
                         Text("Project Echo processes all audio locally on your device.\nNo data is ever sent to external servers.")
-                            .font(Theme.Typography.body)
+                            .font(.system(size: 13))
                             .foregroundColor(Theme.Colors.textSecondary)
                             .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(.top, Theme.Spacing.xl)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 16)
 
                 // Privacy features
-                VStack(spacing: Theme.Spacing.md) {
+                VStack(alignment: .leading, spacing: 0) {
                     PrivacyFeatureRow(
                         icon: "internaldrive.fill",
                         title: "Audio stored locally",
                         description: "All recordings are saved only on your Mac"
                     )
+
+                    Divider().padding(.vertical, 10)
 
                     PrivacyFeatureRow(
                         icon: "cpu.fill",
@@ -824,11 +840,15 @@ struct PrivacySettingsView: View {
                         description: "WhisperKit runs entirely on your hardware"
                     )
 
+                    Divider().padding(.vertical, 10)
+
                     PrivacyFeatureRow(
                         icon: "icloud.slash.fill",
                         title: "No cloud uploads",
                         description: "Your audio never leaves your device"
                     )
+
+                    Divider().padding(.vertical, 10)
 
                     PrivacyFeatureRow(
                         icon: "chart.bar.xaxis",
@@ -836,10 +856,18 @@ struct PrivacySettingsView: View {
                         description: "Zero telemetry, no usage data collected"
                     )
                 }
-                .padding(Theme.Spacing.lg)
-                .surfaceBackground()
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Theme.Colors.surface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Theme.Colors.borderSubtle, lineWidth: 1)
+                )
             }
-            .padding(Theme.Spacing.xl)
+            .padding(20)
         }
         .background(Theme.Colors.background)
     }
@@ -851,30 +879,28 @@ struct PrivacyFeatureRow: View {
     let description: String
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.md) {
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 20))
+                .font(.system(size: 18))
                 .foregroundColor(Theme.Colors.success)
-                .frame(width: 32)
+                .frame(width: 28, height: 28)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(Theme.Typography.callout)
-                    .fontWeight(.medium)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(Theme.Colors.textPrimary)
 
                 Text(description)
-                    .font(Theme.Typography.caption)
+                    .font(.system(size: 11))
                     .foregroundColor(Theme.Colors.textMuted)
             }
 
             Spacer()
 
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 18))
+                .font(.system(size: 16))
                 .foregroundColor(Theme.Colors.success)
         }
-        .padding(.vertical, Theme.Spacing.sm)
     }
 }
 
@@ -883,26 +909,29 @@ struct AdvancedSettingsView: View {
     @AppStorage("audioQuality") private var audioQuality = "high"
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: Theme.Spacing.lg) {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 20) {
                 // Audio Quality Section
                 SettingsSection(title: "Audio Quality", icon: "waveform.badge.plus") {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Sample Rate")
-                                .font(Theme.Typography.callout)
+                                .font(.system(size: 13))
                                 .foregroundColor(Theme.Colors.textPrimary)
 
                             Picker("", selection: $sampleRate) {
                                 Text("44.1 kHz").tag(44100)
-                                Text("48 kHz (recommended)").tag(48000)
+                                Text("48 kHz").tag(48000)
                             }
                             .pickerStyle(.segmented)
+                            .labelsHidden()
                         }
 
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Quality Preset")
-                                .font(Theme.Typography.callout)
+                                .font(.system(size: 13))
                                 .foregroundColor(Theme.Colors.textPrimary)
 
                             Picker("", selection: $audioQuality) {
@@ -911,9 +940,10 @@ struct AdvancedSettingsView: View {
                                 Text("Maximum").tag("maximum")
                             }
                             .pickerStyle(.segmented)
+                            .labelsHidden()
 
                             Text("Higher quality uses more disk space")
-                                .font(Theme.Typography.caption)
+                                .font(.system(size: 11))
                                 .foregroundColor(Theme.Colors.textMuted)
                         }
                     }
@@ -921,34 +951,35 @@ struct AdvancedSettingsView: View {
 
                 // Performance Section
                 SettingsSection(title: "Performance", icon: "gauge.with.needle") {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                        HStack {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
                             Image(systemName: "cpu")
+                                .font(.system(size: 14))
                                 .foregroundColor(Theme.Colors.secondary)
                             Text("CPU usage optimization and buffer settings")
-                                .font(Theme.Typography.callout)
+                                .font(.system(size: 13))
                                 .foregroundColor(Theme.Colors.textSecondary)
                         }
 
                         Text("Coming in a future update")
-                            .font(Theme.Typography.caption)
-                            .foregroundColor(Theme.Colors.textMuted)
-                            .padding(.horizontal, Theme.Spacing.sm)
-                            .padding(.vertical, Theme.Spacing.xs)
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.Colors.warning)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
                             .background(Theme.Colors.warningMuted)
-                            .cornerRadius(Theme.Radius.xs)
+                            .cornerRadius(4)
                     }
                 }
 
                 // Reset Section
                 SettingsSection(title: "Reset", icon: "arrow.counterclockwise") {
-                    HStack {
+                    HStack(alignment: .center) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Reset All Settings")
-                                .font(Theme.Typography.callout)
+                                .font(.system(size: 13))
                                 .foregroundColor(Theme.Colors.textPrimary)
                             Text("Restore all settings to their defaults")
-                                .font(Theme.Typography.caption)
+                                .font(.system(size: 11))
                                 .foregroundColor(Theme.Colors.textMuted)
                         }
 
@@ -958,11 +989,12 @@ struct AdvancedSettingsView: View {
                             // Reset settings
                         }
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
                         .tint(Theme.Colors.error)
                     }
                 }
             }
-            .padding(Theme.Spacing.xl)
+            .padding(20)
         }
         .background(Theme.Colors.background)
     }
@@ -970,13 +1002,13 @@ struct AdvancedSettingsView: View {
 
 struct AboutSettingsView: View {
     var body: some View {
-        VStack(spacing: Theme.Spacing.xl) {
+        VStack(spacing: 0) {
             Spacer()
 
             // App icon and name
-            VStack(spacing: Theme.Spacing.md) {
+            VStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 20)
+                    RoundedRectangle(cornerRadius: 18)
                         .fill(
                             LinearGradient(
                                 colors: [Theme.Colors.primary, Theme.Colors.secondary],
@@ -984,31 +1016,38 @@ struct AboutSettingsView: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 80, height: 80)
+                        .frame(width: 72, height: 72)
 
                     Image(systemName: "waveform.circle.fill")
-                        .font(.system(size: 44))
+                        .font(.system(size: 40))
                         .foregroundColor(.white)
                 }
-                .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 12, y: 4)
+                .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 10, y: 3)
 
-                Text("Project Echo")
-                    .font(Theme.Typography.title1)
-                    .foregroundColor(Theme.Colors.textPrimary)
+                VStack(spacing: 4) {
+                    Text("Project Echo")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(Theme.Colors.textPrimary)
 
-                Text("Version 1.0.0")
-                    .font(Theme.Typography.callout)
-                    .foregroundColor(Theme.Colors.textMuted)
+                    Text("Version 1.0.0")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
             }
+
+            Spacer().frame(height: 20)
 
             // Description
             Text("Privacy-first meeting recorder with\nlocal AI transcription")
-                .font(Theme.Typography.body)
+                .font(.system(size: 13))
                 .foregroundColor(Theme.Colors.textSecondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer().frame(height: 24)
 
             // Links
-            HStack(spacing: Theme.Spacing.lg) {
+            HStack(spacing: 16) {
                 AboutLink(title: "Website", icon: "globe")
                 AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right")
                 AboutLink(title: "License", icon: "doc.text")
@@ -1018,10 +1057,11 @@ struct AboutSettingsView: View {
 
             // Footer
             Text("Made with privacy in mind")
-                .font(Theme.Typography.caption)
+                .font(.system(size: 11))
                 .foregroundColor(Theme.Colors.textMuted)
+                .padding(.bottom, 16)
         }
-        .padding(Theme.Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.Colors.background)
     }
 }
@@ -1036,16 +1076,16 @@ struct AboutLink: View {
         Button {
             // Open link
         } label: {
-            VStack(spacing: Theme.Spacing.xs) {
+            VStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 18))
+                    .font(.system(size: 16))
                 Text(title)
-                    .font(Theme.Typography.caption)
+                    .font(.system(size: 11))
             }
             .foregroundColor(isHovered ? Theme.Colors.primary : Theme.Colors.textSecondary)
-            .frame(width: 70, height: 50)
+            .frame(width: 64, height: 48)
             .background(
-                RoundedRectangle(cornerRadius: Theme.Radius.md)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(isHovered ? Theme.Colors.surfaceHover : .clear)
             )
         }
@@ -1070,20 +1110,30 @@ struct SettingsSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.sm) {
+        VStack(alignment: .leading, spacing: 10) {
+            // Section header
+            HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Theme.Colors.primary)
-                Text(title)
-                    .font(Theme.Typography.headline)
-                    .foregroundColor(Theme.Colors.textPrimary)
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.Colors.textMuted)
+                    .tracking(0.5)
             }
 
+            // Section content
             content
-                .padding(Theme.Spacing.lg)
+                .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .surfaceBackground()
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Theme.Colors.surface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Theme.Colors.borderSubtle, lineWidth: 1)
+                )
         }
     }
 }
@@ -1094,17 +1144,23 @@ struct SettingsToggle: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        Toggle(isOn: $isOn) {
+        HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(Theme.Typography.callout)
+                    .font(.system(size: 13))
                     .foregroundColor(Theme.Colors.textPrimary)
                 Text(subtitle)
-                    .font(Theme.Typography.caption)
+                    .font(.system(size: 11))
                     .foregroundColor(Theme.Colors.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+
+            Spacer()
+
+            Toggle("", isOn: $isOn)
+                .toggleStyle(.switch)
+                .tint(Theme.Colors.primary)
+                .labelsHidden()
         }
-        .toggleStyle(.switch)
-        .tint(Theme.Colors.primary)
     }
 }
