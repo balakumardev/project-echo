@@ -6,21 +6,24 @@ public enum DetectionSource: Sendable, Equatable, Hashable {
     case audio           // Detected via sustained audio activity
     case windowTitle     // Detected via Zoom window title change
     case manual          // User manually triggered recording
+    case microphoneActive // Detected via system mic usage (app identified)
 
     var displayName: String {
         switch self {
         case .audio: return "Audio Detection"
         case .windowTitle: return "Window Title Detection"
         case .manual: return "Manual"
+        case .microphoneActive: return "Microphone Detection"
         }
     }
 
     /// Priority for detection (lower = higher priority)
     var priority: Int {
         switch self {
-        case .manual: return 0      // Highest - user intent
-        case .windowTitle: return 1 // High - definitive signal
-        case .audio: return 2       // Lower - can have false positives
+        case .manual: return 0          // Highest - user intent
+        case .microphoneActive: return 1 // High - app is actively using mic
+        case .windowTitle: return 2      // Medium - window title match
+        case .audio: return 3            // Lower - can have false positives
         }
     }
 }

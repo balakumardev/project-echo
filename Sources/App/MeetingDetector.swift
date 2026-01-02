@@ -69,6 +69,10 @@ public actor MeetingDetector {
         public var enableWindowTitleDetection: Bool = true
         public var windowTitlePollingInterval: TimeInterval = 1.0
 
+        // Microphone detection settings
+        public var enableMicrophoneDetection: Bool = true
+        public var microphonePollingInterval: TimeInterval = 1.0
+
         public init(
             sustainedAudioDuration: TimeInterval = 2.0,
             silenceDurationToEnd: TimeInterval = 45.0,
@@ -77,7 +81,9 @@ public actor MeetingDetector {
             enabledApps: Set<String> = ["zoom", "teams", "meet", "slack", "discord"],
             checkOnWake: Bool = true,
             enableWindowTitleDetection: Bool = true,
-            windowTitlePollingInterval: TimeInterval = 1.0
+            windowTitlePollingInterval: TimeInterval = 1.0,
+            enableMicrophoneDetection: Bool = true,
+            microphonePollingInterval: TimeInterval = 1.0
         ) {
             self.sustainedAudioDuration = sustainedAudioDuration
             self.silenceDurationToEnd = silenceDurationToEnd
@@ -87,6 +93,8 @@ public actor MeetingDetector {
             self.checkOnWake = checkOnWake
             self.enableWindowTitleDetection = enableWindowTitleDetection
             self.windowTitlePollingInterval = windowTitlePollingInterval
+            self.enableMicrophoneDetection = enableMicrophoneDetection
+            self.microphonePollingInterval = microphonePollingInterval
         }
     }
 
@@ -121,6 +129,42 @@ public actor MeetingDetector {
         MeetingApp(id: "skype", displayName: "Skype", bundleId: "com.skype.skype", processName: "Skype", icon: "phone.fill", browserBased: false),
     ]
 
+    /// Browser bundle ID prefixes that might be used for web-based meetings
+    /// Note: Browsers spawn helper processes with different bundle IDs (e.g., com.google.Chrome.helper)
+    /// so we check for prefix matches, not exact matches
+    public static let browserBundleIDPrefixes: [String] = [
+        "com.google.Chrome",
+        "com.apple.Safari",
+        "com.apple.WebKit",        // Safari uses WebKit processes
+        "org.mozilla.firefox",
+        "com.microsoft.edgemac",
+        "company.thebrowser.Browser",  // Arc
+        "com.brave.Browser",
+        "com.operasoftware.Opera",
+        "com.vivaldi.Vivaldi"
+    ]
+
+    /// Check if a bundle ID belongs to a known browser (including helper processes)
+    public static func isBrowserBundleID(_ bundleID: String) -> Bool {
+        return browserBundleIDPrefixes.contains { bundleID.hasPrefix($0) }
+    }
+
+    /// Get the main browser bundle ID from a helper process bundle ID
+    /// e.g., "com.microsoft.edgemac.helper" -> "com.microsoft.edgemac"
+    public static func getMainBrowserBundleID(_ bundleID: String) -> String {
+        for prefix in browserBundleIDPrefixes {
+            if bundleID.hasPrefix(prefix) {
+                return prefix
+            }
+        }
+        return bundleID
+    }
+
+    /// All meeting app bundle IDs for quick lookup
+    public static let meetingAppBundleIDs: Set<String> = Set(
+        supportedApps.compactMap { $0.bundleId.isEmpty ? nil : $0.bundleId }
+    )
+
     // MARK: - Properties
 
     private let logger = Logger(subsystem: "com.projectecho.app", category: "MeetingDetector")
@@ -133,16 +177,19 @@ public actor MeetingDetector {
     private var audioLevelMonitor: AudioLevelMonitor?
     private var windowTitleMonitor: WindowTitleMonitor?
     private var detectionCoordinator: DetectionCoordinator?
+    private var mediaDeviceMonitor: MediaDeviceMonitor?
     private var appObservers: [NSObjectProtocol] = []
 
     // State tracking
     private var currentRecordingURL: URL?
     private var audioMonitorTask: Task<Void, Never>?
     private var windowMonitorTask: Task<Void, Never>?
+    private var mediaDeviceMonitorTask: Task<Void, Never>?
     private var appCheckTask: Task<Void, Never>?
     private var currentDetectionSource: DetectionSource?
     private var runningMeetingApps: Set<String> = []  // Track ALL running meeting apps
     private var currentMeetingTitle: String?  // The detected meeting title from window
+    private var currentRecordingBundleID: String?  // Bundle ID for screen recording
 
     // Delegate (stored as weak reference via MainActor callback)
     private var delegateCallback: (@MainActor (MeetingDetector, State) -> Void)?
@@ -203,6 +250,14 @@ public actor MeetingDetector {
             }
         }
 
+        // Setup microphone usage monitor if enabled
+        if configuration.enableMicrophoneDetection {
+            mediaDeviceMonitor = MediaDeviceMonitor(configuration: MediaDeviceMonitor.Configuration(
+                pollingInterval: configuration.microphonePollingInterval
+            ))
+            debugLog("Microphone usage monitor initialized")
+        }
+
         // Setup app activation observers
         await setupAppObservers()
         debugLog("App observers set up")
@@ -227,17 +282,23 @@ public actor MeetingDetector {
         // Stop window title monitoring
         await stopWindowTitleMonitoring()
 
+        // Stop microphone monitoring
+        await stopMicrophoneMonitoring()
+
         // Cancel tasks
         audioMonitorTask?.cancel()
         audioMonitorTask = nil
         windowMonitorTask?.cancel()
         windowMonitorTask = nil
+        mediaDeviceMonitorTask?.cancel()
+        mediaDeviceMonitorTask = nil
         appCheckTask?.cancel()
         appCheckTask = nil
 
         // Reset detection coordinator
         await detectionCoordinator?.reset()
         currentDetectionSource = nil
+        currentRecordingBundleID = nil
 
         // Remove observers
         await removeAppObservers()
@@ -320,6 +381,11 @@ public actor MeetingDetector {
     /// Get list of enabled meeting apps
     public func getEnabledApps() -> [MeetingApp] {
         return Self.supportedApps.filter { configuration.enabledApps.contains($0.id) }
+    }
+
+    /// Get the bundle ID detected for the current recording (used for screen recording)
+    public func getCurrentRecordingBundleID() -> String? {
+        return currentRecordingBundleID
     }
 
     // MARK: - Private Methods
@@ -449,8 +515,10 @@ public actor MeetingDetector {
             }
             await stopAudioMonitoring()
             await stopWindowTitleMonitoring()
+            await stopMicrophoneMonitoring()
             await detectionCoordinator?.reset()
             currentDetectionSource = nil
+            currentRecordingBundleID = nil
             await updateState(.idle)
         }
     }
@@ -534,6 +602,11 @@ public actor MeetingDetector {
             await startWindowTitleMonitoring(for: "zoom.us")
         }
 
+        // Start microphone usage monitoring (works for all apps including browsers)
+        if configuration.enableMicrophoneDetection {
+            await startMicrophoneMonitoring()
+        }
+
         // Start system-wide audio level monitoring
         do {
             debugLog("Starting system audio monitoring...")
@@ -574,6 +647,150 @@ public actor MeetingDetector {
         windowMonitorTask?.cancel()
         windowMonitorTask = nil
         await windowTitleMonitor?.stopMonitoring()
+    }
+
+    // MARK: - Microphone Monitoring
+
+    private func startMicrophoneMonitoring() async {
+        guard let monitor = mediaDeviceMonitor else { return }
+
+        debugLog("Starting microphone usage monitoring...")
+        logger.info("Starting microphone usage monitoring")
+
+        await monitor.startMonitoring()
+        startMicrophoneEventMonitoring()
+    }
+
+    private func stopMicrophoneMonitoring() async {
+        mediaDeviceMonitorTask?.cancel()
+        mediaDeviceMonitorTask = nil
+        await mediaDeviceMonitor?.stopMonitoring()
+    }
+
+    private func startMicrophoneEventMonitoring() {
+        mediaDeviceMonitorTask = Task {
+            guard let monitor = mediaDeviceMonitor else { return }
+
+            for await event in await monitor.eventStream() {
+                guard !Task.isCancelled else { break }
+                await handleMicrophoneEvent(event)
+            }
+        }
+    }
+
+    private func handleMicrophoneEvent(_ event: MediaDeviceMonitor.MicrophoneEvent) async {
+        switch event {
+        case .microphoneActivated(let usage):
+            await handleMicrophoneActivated(usage)
+
+        case .microphoneDeactivated(let usage):
+            await handleMicrophoneDeactivated(usage)
+
+        case .noChange:
+            break
+        }
+    }
+
+    private func handleMicrophoneActivated(_ usage: MediaDeviceMonitor.MicrophoneUsage) async {
+        guard let bundleID = usage.bundleID else {
+            debugLog("Mic activated but no bundle ID available")
+            return
+        }
+
+        debugLog("handleMicrophoneActivated: bundleID=\(bundleID), app=\(usage.appName ?? "unknown")")
+
+        // Check if this is a meeting app or browser (including helper processes)
+        let isMeetingApp = Self.meetingAppBundleIDs.contains(bundleID)
+        let isBrowser = Self.isBrowserBundleID(bundleID)
+
+        guard isMeetingApp || isBrowser else {
+            debugLog("Ignoring mic activation from non-meeting app: \(bundleID)")
+            return
+        }
+
+        // For browsers, get the main bundle ID (not the helper process)
+        let recordingBundleID = isBrowser ? Self.getMainBrowserBundleID(bundleID) : bundleID
+        let appDescription = isBrowser ? "browser (\(usage.appName ?? bundleID))" : (usage.appName ?? bundleID)
+        debugLog("MEETING APP/BROWSER using microphone: \(appDescription), recordingBundleID=\(recordingBundleID)")
+        logger.info("Meeting-related app using microphone: \(appDescription)")
+
+        // Register detection with coordinator
+        let event = DetectionCoordinator.DetectionEvent(
+            source: .microphoneActive,
+            appName: usage.appName ?? bundleID,
+            metadata: ["bundleID": recordingBundleID, "type": isBrowser ? "browser" : "native"]
+        )
+
+        guard let coordinator = detectionCoordinator else { return }
+        let shouldTrigger = await coordinator.registerDetection(event)
+
+        // If this should trigger recording, start it
+        if shouldTrigger {
+            switch currentState {
+            case .idle:
+                // Shouldn't happen - we should be in monitoring state
+                break
+
+            case .monitoring:
+                // Trigger recording for this specific app (use main bundle ID for browsers)
+                debugLog("Triggering recording for: \(recordingBundleID)")
+                await triggerMeetingDetection(source: .microphoneActive, app: usage.appName ?? recordingBundleID, bundleID: recordingBundleID)
+
+            case .meetingDetected, .recording, .endingMeeting:
+                // Already handling a meeting
+                break
+            }
+        }
+    }
+
+    private func handleMicrophoneDeactivated(_ usage: MediaDeviceMonitor.MicrophoneUsage) async {
+        guard let bundleID = usage.bundleID else { return }
+
+        debugLog("handleMicrophoneDeactivated: bundleID=\(bundleID)")
+
+        // Only care if it was a meeting app or browser (including helper processes)
+        let isMeetingApp = Self.meetingAppBundleIDs.contains(bundleID)
+        let isBrowser = Self.isBrowserBundleID(bundleID)
+
+        guard isMeetingApp || isBrowser else { return }
+
+        logger.info("Meeting-related app stopped using microphone: \(bundleID)")
+        await detectionCoordinator?.removeDetection(source: .microphoneActive)
+
+        // Check if we should stop recording
+        if await detectionCoordinator?.hasActiveDetection() == false {
+            switch currentState {
+            case .recording(let app):
+                debugLog("No active detection sources, ending meeting for: \(app)")
+                await updateState(.endingMeeting(app: app))
+                await handleAllDetectionsEnded()
+            default:
+                break
+            }
+        }
+    }
+
+    /// Trigger meeting detection with specific bundle ID for screen recording
+    private func triggerMeetingDetection(source: DetectionSource, app: String, bundleID: String) async {
+        debugLog("triggerMeetingDetection: source=\(source), app=\(app), bundleID=\(bundleID)")
+
+        // Store the bundle ID for screen recording
+        currentRecordingBundleID = bundleID
+        currentMeetingTitle = app  // Use app name as meeting title for filename
+
+        await updateState(.meetingDetected(app: app))
+        currentDetectionSource = source
+
+        // Request recording start with the specific bundle ID
+        do {
+            try await requestStartRecording(for: app)
+            await updateState(.recording(app: app))
+            debugLog("Recording started successfully for \(app) (\(bundleID))")
+        } catch {
+            debugLog("ERROR: Failed to start recording: \(error)")
+            await notifyError(error)
+            await updateState(.monitoring(app: app))
+        }
     }
 
     private func startWindowTitleMonitoring(for appName: String) async {
@@ -744,8 +961,10 @@ public actor MeetingDetector {
                     try await requestStopRecording()
                     await stopAudioMonitoring()
                     await stopWindowTitleMonitoring()
+                    await stopMicrophoneMonitoring()
                     await detectionCoordinator?.reset()
                     currentDetectionSource = nil
+                    currentRecordingBundleID = nil
                     await updateState(.idle)
 
                     // Check if app is still running, restart monitoring if so
@@ -767,8 +986,10 @@ public actor MeetingDetector {
             try await requestStopRecording()
             await stopAudioMonitoring()
             await stopWindowTitleMonitoring()
+            await stopMicrophoneMonitoring()
             await detectionCoordinator?.reset()
             currentDetectionSource = nil
+            currentRecordingBundleID = nil
             await updateState(.idle)
 
             // Check if app is still running, restart monitoring if so

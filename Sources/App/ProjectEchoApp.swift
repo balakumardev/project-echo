@@ -494,21 +494,96 @@ App location: \(appPath)
         currentRecordingURL = url
         currentRecordingApp = appName
 
-        // Start video recording for Zoom (non-blocking, audio continues if video fails)
-        if appName.lowercased().contains("zoom") {
+        // Get the detected bundle ID from MeetingDetector (if available)
+        let detectedBundleID = await meetingDetector.getCurrentRecordingBundleID()
+
+        // Determine which bundle ID to use for screen recording
+        let screenRecordBundleID: String?
+        if let detected = detectedBundleID, !detected.isEmpty {
+            // Use the detected bundle ID (works for browsers and all apps)
+            screenRecordBundleID = detected
+            logger.info("Using detected bundle ID for screen recording: \(detected)")
+        } else if appName.lowercased().contains("zoom") {
+            // Fallback for Zoom
+            screenRecordBundleID = "us.zoom.xos"
+        } else {
+            // Try to find bundle ID from MeetingDetector's supportedApps
+            if let app = MeetingDetector.supportedApps.first(where: {
+                appName.localizedCaseInsensitiveContains($0.displayName)
+            }), !app.bundleId.isEmpty {
+                screenRecordBundleID = app.bundleId
+            } else {
+                // No bundle ID available, skip screen recording
+                logger.warning("No bundle ID available for screen recording: \(appName)")
+                screenRecordBundleID = nil
+            }
+        }
+
+        // Start video recording (non-blocking, audio continues if video fails)
+        if let bundleID = screenRecordBundleID {
             // Extract base filename from audio URL to keep timestamps synchronized
             let baseFilename = url.deletingPathExtension().lastPathComponent
             Task {
                 do {
+                    // First, try automatic detection using heuristics
                     let videoURL = try await screenRecorder.startRecording(
-                        bundleId: "us.zoom.xos",
+                        bundleId: bundleID,
                         outputDirectory: outputDirectory,
                         baseFilename: baseFilename
                     )
                     await MainActor.run {
                         currentVideoRecordingURL = videoURL
                     }
-                    logger.info("Video recording started: \(videoURL.lastPathComponent)")
+                    logger.info("Video recording started for \(bundleID): \(videoURL.lastPathComponent)")
+                } catch ScreenRecorder.RecorderError.windowNotFound {
+                    // Heuristics failed - fall back to window selector
+                    logger.info("No clear meeting window found, checking for candidates...")
+
+                    do {
+                        let candidates = try await screenRecorder.getCandidateWindows(bundleId: bundleID)
+
+                        if candidates.isEmpty {
+                            logger.warning("No windows found for \(bundleID), skipping video recording")
+                            return
+                        }
+
+                        let videoURL: URL
+                        if candidates.count == 1 {
+                            // Single window - auto-select
+                            logger.info("Single candidate window, auto-selecting: \(candidates[0].title)")
+                            videoURL = try await screenRecorder.startRecordingWindow(
+                                windowId: candidates[0].id,
+                                bundleId: bundleID,
+                                outputDirectory: outputDirectory,
+                                baseFilename: baseFilename
+                            )
+                        } else {
+                            // Multiple windows - show selector popup
+                            logger.info("Multiple windows found (\(candidates.count)), showing selector")
+                            let controller = WindowSelectorController()
+                            let selectedWindow = await controller.showSelector(windows: candidates, appName: appName)
+
+                            guard let window = selectedWindow else {
+                                logger.info("User cancelled window selection, skipping video recording")
+                                return
+                            }
+
+                            logger.info("User selected window: \(window.title)")
+                            videoURL = try await screenRecorder.startRecordingWindow(
+                                windowId: window.id,
+                                bundleId: bundleID,
+                                outputDirectory: outputDirectory,
+                                baseFilename: baseFilename
+                            )
+                        }
+
+                        await MainActor.run {
+                            currentVideoRecordingURL = videoURL
+                        }
+                        logger.info("Video recording started for \(bundleID): \(videoURL.lastPathComponent)")
+                    } catch {
+                        logger.warning("Failed to get candidate windows: \(error.localizedDescription)")
+                    }
                 } catch {
                     logger.warning("Video recording failed to start: \(error.localizedDescription)")
                     // Continue with audio-only recording

@@ -266,6 +266,25 @@ public actor ScreenRecorder {
         }
     }
 
+    /// Represents a candidate window for recording
+    public struct CandidateWindow: Identifiable, Sendable {
+        public let id: UInt32
+        public let title: String
+        public let width: Int
+        public let height: Int
+        public let appName: String?
+        public let thumbnail: CGImage?
+
+        public init(id: UInt32, title: String, width: Int, height: Int, appName: String?, thumbnail: CGImage?) {
+            self.id = id
+            self.title = title
+            self.width = width
+            self.height = height
+            self.appName = appName
+            self.thumbnail = thumbnail
+        }
+    }
+
     // MARK: - Properties
 
     private let logger = Logger(subsystem: "com.projectecho.app", category: "ScreenRecorder")
@@ -279,16 +298,26 @@ public actor ScreenRecorder {
     private var outputURL: URL?
     private let configuration: Configuration
 
-    // Meeting window title patterns (same as WindowTitleMonitor)
-    private let meetingPatterns = [
-        "Zoom Meeting", "Meeting ID:", "Zoom Webinar", "Waiting Room"
+    // Generic meeting-related keywords (works for any app)
+    private let meetingKeywords = [
+        // Common meeting terms
+        "meeting", "call", "conference", "webinar", "huddle", "standup",
+        // Platform names
+        "zoom", "meet", "teams", "slack", "discord", "webex", "facetime", "skype",
+        // Meeting indicators
+        "participant", "recording", "screen share", "presenting",
     ]
-    private let lobbyPatterns = [
-        "Zoom Cloud Meetings", "Home - Zoom", "Zoom Workplace",
-        "Settings", "Schedule Meeting", "Join Meeting", "Host a Meeting",
-        "Sign In", "Sign Up"
+
+    // Windows to skip (definitely not meeting windows)
+    private let skipPatterns = [
+        // Browser UI
+        "new tab", "downloads", "settings", "extensions", "preferences",
+        "history", "bookmarks", "devtools", "inspector",
+        // App UI
+        "sign in", "sign up", "login", "home -", "welcome",
+        // System
+        "notification", "alert",
     ]
-    private let meetingSuffixes = [" - Zoom", " | Zoom"]
 
     // MARK: - Initialization
 
@@ -301,6 +330,99 @@ public actor ScreenRecorder {
     /// Check if currently recording
     public func isCurrentlyRecording() -> Bool {
         return isRecording
+    }
+
+    /// Get candidate windows for a bundle ID (for user selection)
+    /// Returns windows sorted by likelihood of being a meeting window
+    public func getCandidateWindows(bundleId: String) async throws -> [CandidateWindow] {
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        } catch let error as NSError {
+            if error.code == -3801 || error.domain == "com.apple.screencapturekit" {
+                throw RecorderError.permissionDenied
+            }
+            throw error
+        }
+
+        // Get all windows for this app
+        let appWindows = content.windows.filter { window in
+            guard window.owningApplication?.bundleIdentifier == bundleId else { return false }
+            guard window.frame.width > 100 && window.frame.height > 100 else { return false }
+            return true
+        }
+
+        // Filter out skip patterns
+        let candidateWindows = appWindows.filter { window in
+            guard let title = window.title?.lowercased(), !title.isEmpty else { return true }
+            return !skipPatterns.contains { title.contains($0) }
+        }
+
+        // Sort: meeting keyword matches first, then by size
+        let sorted = candidateWindows.sorted { w1, w2 in
+            let t1 = w1.title?.lowercased() ?? ""
+            let t2 = w2.title?.lowercased() ?? ""
+            let hasMeetingKeyword1 = meetingKeywords.contains { t1.contains($0) }
+            let hasMeetingKeyword2 = meetingKeywords.contains { t2.contains($0) }
+
+            if hasMeetingKeyword1 != hasMeetingKeyword2 {
+                return hasMeetingKeyword1
+            }
+            return (w1.frame.width * w1.frame.height) > (w2.frame.width * w2.frame.height)
+        }
+
+        // Generate thumbnails for each window
+        var candidates: [CandidateWindow] = []
+        for window in sorted {
+            // Capture thumbnail
+            let thumbnail = try? await captureWindowThumbnail(window: window)
+
+            candidates.append(CandidateWindow(
+                id: window.windowID,
+                title: window.title ?? "Untitled",
+                width: Int(window.frame.width),
+                height: Int(window.frame.height),
+                appName: window.owningApplication?.applicationName,
+                thumbnail: thumbnail
+            ))
+        }
+
+        return candidates
+    }
+
+    /// Capture a thumbnail of a window
+    private func captureWindowThumbnail(window: SCWindow) async throws -> CGImage? {
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let config = SCStreamConfiguration()
+        config.width = 320  // Thumbnail size
+        config.height = 180
+        config.scalesToFit = true
+        config.showsCursor = false
+
+        return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    }
+
+    /// Start recording a specific window by ID (video-only)
+    public func startRecordingWindow(
+        windowId: UInt32,
+        bundleId: String,
+        outputDirectory: URL,
+        baseFilename: String? = nil
+    ) async throws -> URL {
+        guard !isRecording else {
+            throw RecorderError.recordingAlreadyActive
+        }
+
+        // Find the specific window
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let window = content.windows.first(where: { $0.windowID == windowId }) else {
+            throw RecorderError.windowNotFound
+        }
+
+        logger.info("Starting screen recording for window: \(window.title ?? "untitled") (ID: \(windowId))")
+        screenDebugLog("Starting screen recording for window ID \(windowId): '\(window.title ?? "untitled")'")
+
+        return try await startRecordingWithWindow(window: window, outputDirectory: outputDirectory, baseFilename: baseFilename)
     }
 
     /// Start recording a specific app's window (video-only)
@@ -321,7 +443,7 @@ public actor ScreenRecorder {
         logger.info("Starting screen recording for bundle: \(bundleId) (video-only)")
         screenDebugLog("Starting screen recording for bundle: \(bundleId) (video-only)")
 
-        // Find the Zoom meeting window
+        // Find the best meeting window
         let window: SCWindow
         do {
             window = try await findMeetingWindow(bundleId: bundleId)
@@ -332,6 +454,15 @@ public actor ScreenRecorder {
             throw error
         }
 
+        return try await startRecordingWithWindow(window: window, outputDirectory: outputDirectory, baseFilename: baseFilename)
+    }
+
+    /// Internal method to start recording a specific SCWindow
+    private func startRecordingWithWindow(
+        window: SCWindow,
+        outputDirectory: URL,
+        baseFilename: String?
+    ) async throws -> URL {
         // Create window-specific filter
         let filter = SCContentFilter(desktopIndependentWindow: window)
 
@@ -455,7 +586,8 @@ public actor ScreenRecorder {
 
     // MARK: - Private Methods
 
-    /// Find Zoom meeting window using SCShareableContent
+    /// Find the best window to record for a given app bundle ID
+    /// Uses heuristics: meeting keywords in title, then falls back to largest window
     private func findMeetingWindow(bundleId: String) async throws -> SCWindow {
         let content: SCShareableContent
         do {
@@ -469,35 +601,56 @@ public actor ScreenRecorder {
             throw error
         }
 
-        logger.debug("Searching for window in \(content.windows.count) windows")
+        // Get all windows for this app
+        let appWindows = content.windows.filter { window in
+            guard window.owningApplication?.bundleIdentifier == bundleId else { return false }
+            guard window.frame.width > 100 && window.frame.height > 100 else { return false } // Skip tiny windows
+            return true
+        }
 
-        // Find meeting window
-        for window in content.windows {
-            guard window.owningApplication?.bundleIdentifier == bundleId else { continue }
-            guard let title = window.title, !title.isEmpty else { continue }
+        screenDebugLog("Found \(appWindows.count) windows for \(bundleId)")
+        for window in appWindows {
+            screenDebugLog("  - '\(window.title ?? "untitled")' (\(Int(window.frame.width))x\(Int(window.frame.height)))")
+        }
 
-            // Skip lobby/non-meeting windows
-            if lobbyPatterns.contains(where: { title.localizedCaseInsensitiveContains($0) }) {
-                logger.debug("Skipping lobby window: \(title)")
-                continue
-            }
+        guard !appWindows.isEmpty else {
+            logger.warning("No windows found for bundle: \(bundleId)")
+            throw RecorderError.windowNotFound
+        }
 
-            // Check for explicit meeting patterns
-            if meetingPatterns.contains(where: { title.localizedCaseInsensitiveContains($0) }) {
-                logger.debug("Found meeting window (pattern match): \(title)")
-                return window
-            }
+        // Filter out windows we should skip
+        let candidateWindows = appWindows.filter { window in
+            guard let title = window.title?.lowercased(), !title.isEmpty else { return true } // Keep untitled windows
+            return !skipPatterns.contains { title.contains($0) }
+        }
 
-            // Check for meeting suffix (e.g., "Weekly Standup - Zoom")
-            if meetingSuffixes.contains(where: { title.hasSuffix($0) }) {
-                logger.debug("Found meeting window (suffix match): \(title)")
+        screenDebugLog("After filtering skip patterns: \(candidateWindows.count) candidate windows")
+
+        // Priority 1: Look for windows with meeting-related keywords in title
+        for window in candidateWindows {
+            guard let title = window.title?.lowercased() else { continue }
+            if meetingKeywords.contains(where: { title.contains($0) }) {
+                logger.info("Found meeting window (keyword match): \(window.title ?? "untitled")")
+                screenDebugLog("Selected window (keyword match): '\(window.title ?? "untitled")'")
                 return window
             }
         }
 
-        // Log available Zoom windows for debugging
-        let zoomWindows = content.windows.filter { $0.owningApplication?.bundleIdentifier == bundleId }
-        logger.warning("No meeting window found. Available Zoom windows: \(zoomWindows.map { $0.title ?? "untitled" })")
+        // Priority 2: Pick the largest window (likely the main content window)
+        if let largestWindow = candidateWindows.max(by: {
+            ($0.frame.width * $0.frame.height) < ($1.frame.width * $1.frame.height)
+        }) {
+            logger.info("Using largest window: \(largestWindow.title ?? "untitled") (\(Int(largestWindow.frame.width))x\(Int(largestWindow.frame.height)))")
+            screenDebugLog("Selected window (largest): '\(largestWindow.title ?? "untitled")' (\(Int(largestWindow.frame.width))x\(Int(largestWindow.frame.height)))")
+            return largestWindow
+        }
+
+        // Fallback: use first available window
+        if let firstWindow = appWindows.first {
+            logger.info("Using first available window: \(firstWindow.title ?? "untitled")")
+            screenDebugLog("Selected window (fallback): '\(firstWindow.title ?? "untitled")'")
+            return firstWindow
+        }
 
         throw RecorderError.windowNotFound
     }
