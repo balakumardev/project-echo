@@ -253,10 +253,10 @@ public actor ScreenRecorder {
         public var bitrate: Int
 
         public init(
-            width: Int = 1920,
-            height: Int = 1080,
-            frameRate: Double = 30.0,
-            bitrate: Int = 8_000_000  // 8 Mbps for readable text
+            width: Int = 1280,
+            height: Int = 720,
+            frameRate: Double = 15.0,
+            bitrate: Int = 2_000_000  // 2 Mbps
         ) {
             self.width = width
             self.height = height
@@ -372,7 +372,7 @@ public actor ScreenRecorder {
         streamDelegate = delegate
 
         // Add output handler for video only
-        let outputQueue = DispatchQueue(label: "com.echo.screen.output", qos: .userInitiated)
+        let outputQueue = DispatchQueue(label: "com.echo.screen.output", qos: .utility)
         try stream.addStreamOutput(delegate, type: .screen, sampleHandlerQueue: outputQueue)
 
         // Start writing

@@ -293,14 +293,15 @@ public actor AudioLevelMonitor {
 
         // Create delegate for audio processing
         monitorDelegate = AudioMonitorStreamDelegate { [weak self] buffer in
-            Task { await self?.processAudioBuffer(buffer) }
+            guard let self = self else { return }
+            Task.detached(priority: .utility) { await self.processAudioBuffer(buffer) }
         }
 
         // Add stream output for audio
         try screenStream?.addStreamOutput(
             monitorDelegate!,
             type: .audio,
-            sampleHandlerQueue: DispatchQueue(label: "com.echo.monitor.audio", qos: .userInteractive)
+            sampleHandlerQueue: DispatchQueue(label: "com.echo.monitor.audio", qos: .utility)
         )
 
         logger.info("Audio monitoring stream configured")

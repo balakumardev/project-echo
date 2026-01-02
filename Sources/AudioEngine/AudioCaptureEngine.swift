@@ -436,7 +436,7 @@ public actor AudioCaptureEngine {
         
         // Create delegate with reference to audioWriter
         micDelegate = MicrophoneCaptureDelegate(audioWriter: audioWriter)
-        output.setSampleBufferDelegate(micDelegate, queue: DispatchQueue(label: "com.echo.mic.audio", qos: .userInteractive))
+        output.setSampleBufferDelegate(micDelegate, queue: DispatchQueue(label: "com.echo.mic.audio", qos: .utility))
         
         if session.canAddOutput(output) {
             session.addOutput(output)
@@ -495,7 +495,7 @@ public actor AudioCaptureEngine {
         screenDelegate = ScreenCaptureDelegate(audioWriter: audioWriter)
 
         // Add stream output for audio
-        try stream.addStreamOutput(screenDelegate!, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.echo.screen.audio", qos: .userInteractive))
+        try stream.addStreamOutput(screenDelegate!, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.echo.screen.audio", qos: .utility))
 
         logger.info("ScreenCaptureKit stream configured successfully")
 
