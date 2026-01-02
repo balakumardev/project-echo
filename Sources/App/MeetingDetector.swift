@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import AudioEngine
 import os.log
+import UI
 
 // Debug file logging (disabled in release builds)
 #if DEBUG
@@ -357,6 +358,8 @@ public actor MeetingDetector {
         let runningApps = NSWorkspace.shared.runningApplications
 
         var foundAppIds: Set<String> = []
+        var customAppDisplayNames: [String: String] = [:]  // bundleId -> displayName mapping
+
         for app in runningApps {
             guard let appName = app.localizedName, let bundleId = app.bundleIdentifier else { continue }
 
@@ -367,13 +370,21 @@ public actor MeetingDetector {
 
             if let matchedApp = getMatchingMeetingApp(appName: appName, bundleId: bundleId) {
                 foundAppIds.insert(matchedApp.id)
+                // Track display name for custom apps (where id == bundleId)
+                if matchedApp.id == bundleId {
+                    customAppDisplayNames[bundleId] = matchedApp.displayName
+                }
             }
         }
 
         var foundApps: Set<String> = []
         for appId in foundAppIds {
             if let meetingApp = Self.supportedApps.first(where: { $0.id == appId }) {
+                // Default app
                 foundApps.insert(meetingApp.displayName)
+            } else if let displayName = customAppDisplayNames[appId] {
+                // Custom app
+                foundApps.insert(displayName)
             }
         }
 
@@ -402,6 +413,7 @@ public actor MeetingDetector {
     }
 
     private func getMatchingMeetingApp(appName: String, bundleId: String?) -> MeetingApp? {
+        // Check default apps first
         for meetingApp in Self.supportedApps {
             guard configuration.enabledApps.contains(meetingApp.id) else { continue }
 
@@ -421,10 +433,25 @@ public actor MeetingDetector {
                 }
             }
         }
+
+        // Check custom apps (synchronous access for display name lookup)
+        if let bundleId = bundleId, configuration.enabledApps.contains(bundleId) {
+            // Create a MeetingApp struct for the custom app
+            return MeetingApp(
+                id: bundleId,
+                displayName: appName,
+                bundleId: bundleId,
+                processName: appName,
+                icon: "app.fill",
+                browserBased: false
+            )
+        }
+
         return nil
     }
 
     private func isMonitoredApp(appName: String, bundleId: String?) -> Bool {
+        // Check default apps
         for meetingApp in Self.supportedApps {
             guard configuration.enabledApps.contains(meetingApp.id) else { continue }
 
@@ -438,6 +465,11 @@ public actor MeetingDetector {
                appName.localizedCaseInsensitiveContains(meetingApp.displayName) {
                 return true
             }
+        }
+
+        // Check custom apps
+        if let bundleId = bundleId, configuration.enabledApps.contains(bundleId) {
+            return true
         }
 
         // Check if it's a browser (for Google Meet detection)
@@ -516,7 +548,13 @@ public actor MeetingDetector {
         let isMeetingApp = Self.meetingAppBundleIDs.contains(bundleID)
         let isBrowser = Self.isBrowserBundleID(bundleID)
 
-        guard isMeetingApp || isBrowser else {
+        // Check if it's a custom app (requires MainActor access)
+        let isCustomApp = await MainActor.run {
+            CustomMeetingAppsManager.shared.isCustomApp(bundleId: bundleID) &&
+            CustomMeetingAppsManager.shared.isEnabled(bundleId: bundleID)
+        }
+
+        guard isMeetingApp || isBrowser || isCustomApp else {
             debugLog("Ignoring mic activation from non-meeting app: \(bundleID)")
             return
         }
@@ -547,7 +585,12 @@ public actor MeetingDetector {
         let isMeetingApp = Self.meetingAppBundleIDs.contains(bundleID)
         let isBrowser = Self.isBrowserBundleID(bundleID)
 
-        guard isMeetingApp || isBrowser else { return }
+        // Check if it's a custom app
+        let isCustomApp = await MainActor.run {
+            CustomMeetingAppsManager.shared.isCustomApp(bundleId: bundleID)
+        }
+
+        guard isMeetingApp || isBrowser || isCustomApp else { return }
 
         logger.info("Meeting-related app stopped using microphone: \(bundleID)")
 

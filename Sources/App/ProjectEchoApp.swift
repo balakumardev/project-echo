@@ -39,8 +39,8 @@ struct ProjectEchoApp: App {
     }
 
     var body: some Scene {
-        // Library window
-        WindowGroup("Project Echo Library", id: "library") {
+        // Library window - single instance only
+        Window("Project Echo Library", id: "library") {
             LibraryView()
                 .frame(minWidth: 900, minHeight: 600)
                 .onOpenURL { url in
@@ -1086,6 +1086,10 @@ struct AdvancedSettingsView: View {
         UserDefaults.standard.removeObject(forKey: "sampleRate")
         UserDefaults.standard.removeObject(forKey: "audioQuality")
         UserDefaults.standard.removeObject(forKey: "enabledMeetingApps")
+        UserDefaults.standard.removeObject(forKey: "customMeetingApps")
+
+        // Reload custom apps manager to reflect cleared state
+        CustomMeetingAppsManager.shared.loadCustomApps()
     }
 }
 
