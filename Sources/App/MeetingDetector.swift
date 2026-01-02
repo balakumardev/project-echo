@@ -3,7 +3,8 @@ import AppKit
 import AudioEngine
 import os.log
 
-// Debug file logging
+// Debug file logging (disabled in release builds)
+#if DEBUG
 func debugLog(_ message: String) {
     let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_debug.log")
     let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -20,6 +21,9 @@ func debugLog(_ message: String) {
         }
     }
 }
+#else
+@inline(__always) func debugLog(_ message: String) {}
+#endif
 
 /// Delegate protocol for meeting detection events
 @available(macOS 14.0, *)

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Project Echo - Release Build Script
-# Optimized build without debug overhead for production use
+# Builds optimized release version with debug logging disabled
 
 set -e
 
@@ -11,14 +11,14 @@ killall ProjectEcho 2>/dev/null || true
 # Remove old app bundle for clean build
 rm -rf ProjectEcho.app
 
-echo "Building Project Echo (release - optimized)..."
+echo "Building Project Echo (release)..."
 swift build -c release
 
 echo "Creating app bundle..."
 mkdir -p ProjectEcho.app/Contents/MacOS
 mkdir -p ProjectEcho.app/Contents/Resources
 
-# Copy executable from RELEASE build folder
+# Copy executable from release build
 cp .build/arm64-apple-macosx/release/ProjectEcho ProjectEcho.app/Contents/MacOS/ProjectEcho
 
 # Create Info.plist
@@ -68,4 +68,5 @@ else
 fi
 
 echo "Release build complete: ProjectEcho.app"
-echo "Note: This build has compiler optimizations enabled for better performance"
+echo "  - Optimizations enabled"
+echo "  - Debug logging disabled"
