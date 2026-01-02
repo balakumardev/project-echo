@@ -97,6 +97,10 @@ public enum Theme {
         ]
 
         public static func speakerColor(for name: String) -> Color {
+            // Give "You" a distinct, consistent color
+            if name == "You" {
+                return Color(hex: "3B82F6")  // Blue - stands out as the user
+            }
             let hash = abs(name.hashValue)
             return speakerColors[hash % speakerColors.count]
         }
