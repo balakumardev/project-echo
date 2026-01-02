@@ -480,11 +480,6 @@ App location: \(appPath)
         // Request permissions if needed
         try await audioEngine.requestPermissions()
 
-        // Start audio recording with meeting title as the recording name
-        let url = try await audioEngine.startRecording(targetApp: appName, recordingName: appName, outputDirectory: outputDirectory)
-        currentRecordingURL = url
-        currentRecordingApp = appName
-
         // Get the detected bundle ID from MeetingDetector (if available)
         let detectedBundleID = await meetingDetector.getCurrentRecordingBundleID()
 
@@ -509,6 +504,22 @@ App location: \(appPath)
                 screenRecordBundleID = nil
             }
         }
+
+        // Get the meeting window title for file naming (use window title instead of app/bundle name)
+        var recordingName = appName
+        if let bundleID = screenRecordBundleID {
+            if let windowTitle = await screenRecorder.getMeetingWindowTitle(bundleId: bundleID) {
+                recordingName = windowTitle
+                logger.info("Using window title for recording name: \(windowTitle)")
+            } else {
+                logger.info("No window title found, using app name: \(appName)")
+            }
+        }
+
+        // Start audio recording with meeting title as the recording name
+        let url = try await audioEngine.startRecording(targetApp: appName, recordingName: recordingName, outputDirectory: outputDirectory)
+        currentRecordingURL = url
+        currentRecordingApp = appName
 
         // Start video recording (non-blocking, audio continues if video fails)
         if let bundleID = screenRecordBundleID {

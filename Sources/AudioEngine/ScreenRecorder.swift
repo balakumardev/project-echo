@@ -394,6 +394,50 @@ public actor ScreenRecorder {
         return candidates
     }
 
+    /// Get the best meeting window title for a bundle ID (for naming recordings)
+    /// Returns nil if no suitable window is found
+    public func getMeetingWindowTitle(bundleId: String) async -> String? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+
+            // Get all windows for this app
+            let appWindows = content.windows.filter { window in
+                guard window.owningApplication?.bundleIdentifier == bundleId else { return false }
+                guard window.frame.width > 100 && window.frame.height > 100 else { return false }
+                return true
+            }
+
+            guard !appWindows.isEmpty else { return nil }
+
+            // Filter out windows we should skip
+            let candidateWindows = appWindows.filter { window in
+                guard let title = window.title?.lowercased(), !title.isEmpty else { return true }
+                return !skipPatterns.contains { title.contains($0) }
+            }
+
+            // Priority 1: Look for windows with meeting-related keywords in title
+            for window in candidateWindows {
+                guard let title = window.title?.lowercased() else { continue }
+                if meetingKeywords.contains(where: { title.contains($0) }) {
+                    return window.title
+                }
+            }
+
+            // Priority 2: Pick the largest window
+            if let largestWindow = candidateWindows.max(by: {
+                ($0.frame.width * $0.frame.height) < ($1.frame.width * $1.frame.height)
+            }), let title = largestWindow.title, !title.isEmpty {
+                return title
+            }
+
+            // Fallback: first window with a title
+            return appWindows.first(where: { $0.title != nil && !$0.title!.isEmpty })?.title
+        } catch {
+            logger.warning("Failed to get meeting window title: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     /// Capture a thumbnail of a window
     private func captureWindowThumbnail(window: SCWindow) async throws -> CGImage? {
         let filter = SCContentFilter(desktopIndependentWindow: window)
