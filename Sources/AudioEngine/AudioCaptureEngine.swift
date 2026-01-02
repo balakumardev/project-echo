@@ -295,10 +295,55 @@ public actor AudioCaptureEngine {
         logger.info("All permissions granted")
     }
     
+    // MARK: - Filename Helpers
+
+    /// Sanitize a string for use as a filename
+    private func sanitizeFilename(_ name: String?) -> String? {
+        guard let name = name, !name.isEmpty else { return nil }
+
+        var sanitized = name
+
+        // Strip common meeting app suffixes
+        let suffixesToRemove = [" - Zoom", " - Google Meet", " - Microsoft Teams", " | Microsoft Teams"]
+        for suffix in suffixesToRemove {
+            if sanitized.hasSuffix(suffix) {
+                sanitized = String(sanitized.dropLast(suffix.count))
+            }
+        }
+
+        // Replace invalid filesystem characters with underscores
+        let invalidChars = CharacterSet(charactersIn: ":/\\?*<>|\"")
+        sanitized = sanitized.unicodeScalars
+            .map { invalidChars.contains($0) ? "_" : String($0) }
+            .joined()
+
+        // Replace spaces with underscores
+        sanitized = sanitized.replacingOccurrences(of: " ", with: "_")
+
+        // Collapse multiple underscores
+        while sanitized.contains("__") {
+            sanitized = sanitized.replacingOccurrences(of: "__", with: "_")
+        }
+
+        // Trim underscores from start/end
+        sanitized = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+
+        // Truncate to reasonable length
+        if sanitized.count > 50 {
+            sanitized = String(sanitized.prefix(50))
+        }
+
+        return sanitized.isEmpty ? nil : sanitized
+    }
+
     // MARK: - Recording Control
-    
+
     /// Start recording with optional app filtering
-    public func startRecording(targetApp: String? = nil, outputDirectory: URL) async throws -> URL {
+    /// - Parameters:
+    ///   - targetApp: App name for audio filtering (used to identify which app's audio to capture)
+    ///   - recordingName: Name to use for the recording file (typically the meeting title)
+    ///   - outputDirectory: Directory to save the recording
+    public func startRecording(targetApp: String? = nil, recordingName: String? = nil, outputDirectory: URL) async throws -> URL {
         debugLog("[AudioEngine] startRecording called")
         guard !isRecording else {
             debugLog("[AudioEngine] Already recording!")
@@ -307,10 +352,12 @@ public actor AudioCaptureEngine {
         
         debugLog("[AudioEngine] Starting recording session...")
         logger.info("Starting recording session...")
-        
+
         // Create output file with .mov extension (supports multiple audio tracks)
+        // Use sanitized recording name if provided, otherwise fall back to "Echo"
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let filename = "Echo_\(timestamp).mov"
+        let baseName = sanitizeFilename(recordingName) ?? "Echo"
+        let filename = "\(baseName)_\(timestamp).mov"
         let fileURL = outputDirectory.appendingPathComponent(filename)
         outputURL = fileURL
         

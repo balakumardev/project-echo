@@ -40,7 +40,7 @@ final class VideoWriter: @unchecked Sendable {
 
         assetWriter = try AVAssetWriter(url: outputURL, fileType: .mov)
 
-        // Video track settings
+        // Video track settings - using H.264 High Profile for better quality
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: width,
@@ -48,7 +48,8 @@ final class VideoWriter: @unchecked Sendable {
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
                 AVVideoExpectedSourceFrameRateKey: frameRate,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264MainAutoLevel
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoMaxKeyFrameIntervalKey: frameRate * 2  // Keyframe every 2 seconds for better seeking
             ]
         ]
 
@@ -253,10 +254,10 @@ public actor ScreenRecorder {
         public var bitrate: Int
 
         public init(
-            width: Int = 1280,
-            height: Int = 720,
-            frameRate: Double = 15.0,
-            bitrate: Int = 2_000_000  // 2 Mbps
+            width: Int = 1920,
+            height: Int = 1080,
+            frameRate: Double = 30.0,
+            bitrate: Int = 8_000_000  // 8 Mbps for high quality 1080p
         ) {
             self.width = width
             self.height = height

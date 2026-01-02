@@ -432,6 +432,15 @@ public actor MeetingDetector {
             await startMonitoringSystemAudio(for: appList)
         }
 
+        // If Zoom was newly detected while already monitoring, start window title monitoring
+        // This handles the case where Slack starts first, then Zoom opens later
+        let zoomWasAdded = foundApps.contains(where: { isZoomApp($0) }) &&
+                          !previousApps.contains(where: { isZoomApp($0) })
+        if zoomWasAdded && windowMonitorTask == nil {
+            debugLog("Zoom newly detected while monitoring, starting window title monitoring...")
+            await startWindowTitleMonitoring(for: "zoom.us")
+        }
+
         // If all meeting apps closed while we were monitoring/recording
         if foundApps.isEmpty && !previousApps.isEmpty {
             debugLog("All meeting apps closed")

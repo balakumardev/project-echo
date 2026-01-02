@@ -489,8 +489,8 @@ App location: \(appPath)
         // Request permissions if needed
         try await audioEngine.requestPermissions()
 
-        // Start audio recording
-        let url = try await audioEngine.startRecording(targetApp: appName, outputDirectory: outputDirectory)
+        // Start audio recording with meeting title as the recording name
+        let url = try await audioEngine.startRecording(targetApp: appName, recordingName: appName, outputDirectory: outputDirectory)
         currentRecordingURL = url
         currentRecordingApp = appName
 
