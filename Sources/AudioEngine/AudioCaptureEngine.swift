@@ -4,13 +4,14 @@ import Foundation
 import CoreAudio
 import os.log
 
-// Debug logging to file (since print doesn't work in app bundles)
+// Debug logging to file (disabled in release builds)
+#if DEBUG
 func debugLog(_ message: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] \(message)\n"
     let logFile = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("ProjectEcho/debug.log")
-    
+
     if let handle = try? FileHandle(forWritingTo: logFile) {
         handle.seekToEndOfFile()
         handle.write(line.data(using: .utf8)!)
@@ -19,6 +20,9 @@ func debugLog(_ message: String) {
         try? line.data(using: .utf8)?.write(to: logFile)
     }
 }
+#else
+@inline(__always) func debugLog(_ message: String) {}
+#endif
 
 /// Thread-safe audio writer that can be accessed from any thread
 /// This is separate from the actor to allow synchronous buffer writes

@@ -3,7 +3,8 @@ import Foundation
 import Accelerate
 import os.log
 
-// Debug file logging for AudioLevelMonitor
+// Debug file logging for AudioLevelMonitor (disabled in release builds)
+#if DEBUG
 private func audioDebugLog(_ message: String) {
     let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_debug.log")
     let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -20,6 +21,9 @@ private func audioDebugLog(_ message: String) {
         }
     }
 }
+#else
+@inline(__always) private func audioDebugLog(_ message: String) {}
+#endif
 
 /// Lightweight audio monitoring for detecting meeting activity without recording to disk
 @available(macOS 14.0, *)
@@ -177,6 +181,12 @@ public actor AudioLevelMonitor {
 
         stateContinuation?.yield(.idle)
 
+        // Finish continuations to release consumers
+        levelContinuation?.finish()
+        levelContinuation = nil
+        stateContinuation?.finish()
+        stateContinuation = nil
+
         logger.info("Audio monitoring stopped")
     }
 
@@ -293,14 +303,15 @@ public actor AudioLevelMonitor {
 
         // Create delegate for audio processing
         monitorDelegate = AudioMonitorStreamDelegate { [weak self] buffer in
-            Task { await self?.processAudioBuffer(buffer) }
+            guard let self = self else { return }
+            Task.detached(priority: .utility) { await self.processAudioBuffer(buffer) }
         }
 
         // Add stream output for audio
         try screenStream?.addStreamOutput(
             monitorDelegate!,
             type: .audio,
-            sampleHandlerQueue: DispatchQueue(label: "com.echo.monitor.audio", qos: .userInteractive)
+            sampleHandlerQueue: DispatchQueue(label: "com.echo.monitor.audio", qos: .utility)
         )
 
         logger.info("Audio monitoring stream configured")

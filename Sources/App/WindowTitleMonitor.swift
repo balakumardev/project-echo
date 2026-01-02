@@ -3,7 +3,8 @@ import AppKit
 import ApplicationServices
 import os.log
 
-// Debug logging for window title monitor
+// Debug logging for window title monitor (disabled in release builds)
+#if DEBUG
 private func windowTitleLog(_ message: String) {
     let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_debug.log")
     let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -20,6 +21,9 @@ private func windowTitleLog(_ message: String) {
         }
     }
 }
+#else
+@inline(__always) private func windowTitleLog(_ message: String) {}
+#endif
 
 /// Monitors Zoom window titles using Accessibility APIs to detect active meetings
 @available(macOS 14.0, *)
@@ -180,6 +184,10 @@ public actor WindowTitleMonitor {
         monitoredBundleId = nil
 
         stateContinuation?.yield(.idle)
+
+        // Finish continuation to release consumers
+        stateContinuation?.finish()
+        stateContinuation = nil
     }
 
     /// Get current monitoring state
