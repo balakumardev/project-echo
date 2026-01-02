@@ -119,10 +119,9 @@ class RecordingDetailViewModel: ObservableObject {
             print("Failed to setup audio player: \(error)")
         }
 
-        // Load transcript if available
-        if recording.hasTranscript {
-            await loadTranscript(for: recording)
-        }
+        // Always try to load transcript from database (the source of truth)
+        // This handles cases where hasTranscript flag is stale (e.g., after background transcription)
+        await loadTranscript(for: recording)
     }
 
     func setupAudioPlayer(for recording: Recording) async {

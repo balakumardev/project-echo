@@ -66,6 +66,14 @@ public struct LibraryView: View {
         .task {
             await viewModel.loadRecordings()
         }
+        .onChange(of: viewModel.recordings) { _, newRecordings in
+            // Sync selectedRecording when recordings list updates (e.g., after refresh)
+            // This ensures the selected recording has the latest hasTranscript flag
+            if let selected = selectedRecording,
+               let updated = newRecordings.first(where: { $0.id == selected.id }) {
+                selectedRecording = updated
+            }
+        }
         .frame(minWidth: 900, minHeight: 600)
     }
 }
@@ -1340,13 +1348,9 @@ struct TranscriptSection: View {
                         viewModel.audioPlayer?.play()
                     }
                 )
-            } else if recording.hasTranscript {
-                PillButton("Load Transcript", icon: "arrow.down.doc", style: .secondary) {
-                    Task {
-                        await viewModel.loadTranscript(for: recording)
-                    }
-                }
             } else {
+                // No transcript loaded - show generate button
+                // (loadRecording already attempted to load from DB, so this means none exists)
                 NoTranscriptView {
                     Task {
                         await viewModel.generateTranscript(for: recording)
