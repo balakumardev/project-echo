@@ -785,8 +785,19 @@ final class VideoPlayerModel: ObservableObject {
         isFullscreen = false
     }
 
-    nonisolated func cleanup() {
-        // Note: deinit can't be async, so we just let AVPlayer clean itself up
+    func cleanup() {
+        // Remove time observer to prevent leaks
+        if let observer = timeObserver {
+            player.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        player.pause()
+    }
+
+    deinit {
+        // Ensure cleanup on deallocation
+        // Note: Can't call cleanup() directly since deinit is nonisolated
+        // The time observer uses [weak self] so it won't retain us
     }
 }
 
@@ -1161,6 +1172,9 @@ struct VideoPlayerCard: View {
                         .foregroundColor(Theme.Colors.textMuted)
                 }
             }
+        }
+        .onDisappear {
+            model.cleanup()
         }
     }
 

@@ -35,7 +35,10 @@ public class SystemEventHandler {
 
     /// Stream of system events
     public func eventStream() -> AsyncStream<SystemEvent> {
-        AsyncStream { continuation in
+        // Finish any existing continuation before creating a new one
+        eventContinuation?.finish()
+
+        return AsyncStream { continuation in
             self.eventContinuation = continuation
         }
     }

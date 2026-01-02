@@ -177,6 +177,12 @@ public actor AudioLevelMonitor {
 
         stateContinuation?.yield(.idle)
 
+        // Finish continuations to release consumers
+        levelContinuation?.finish()
+        levelContinuation = nil
+        stateContinuation?.finish()
+        stateContinuation = nil
+
         logger.info("Audio monitoring stopped")
     }
 

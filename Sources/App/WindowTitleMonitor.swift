@@ -180,6 +180,10 @@ public actor WindowTitleMonitor {
         monitoredBundleId = nil
 
         stateContinuation?.yield(.idle)
+
+        // Finish continuation to release consumers
+        stateContinuation?.finish()
+        stateContinuation = nil
     }
 
     /// Get current monitoring state
