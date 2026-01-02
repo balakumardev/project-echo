@@ -186,34 +186,28 @@ public class MenuBarController: NSObject {
     // MARK: - Actions
     
     @objc func startRecording() {
-        print("DEBUG: startRecording called")
         delegate?.menuBarDidRequestStartRecording()
         setRecording(true)
     }
 
     @objc func stopRecording() {
-        print("DEBUG: stopRecording called")
         delegate?.menuBarDidRequestStopRecording()
         setRecording(false)
     }
 
     @objc func insertMarker() {
-        print("DEBUG: insertMarker called")
         delegate?.menuBarDidRequestInsertMarker()
     }
 
     @objc func openLibrary() {
-        print("DEBUG: openLibrary called")
         delegate?.menuBarDidRequestOpenLibrary()
     }
 
     @objc func openSettings() {
-        print("DEBUG: openSettings called")
         delegate?.menuBarDidRequestOpenSettings()
     }
 
     @objc func quit() {
-        print("DEBUG: quit called")
         NSApplication.shared.terminate(nil)
     }
     
@@ -298,14 +292,11 @@ public class MenuBarController: NSObject {
 
 extension MenuBarController: NSMenuDelegate {
     public func menuNeedsUpdate(_ menu: NSMenu) {
-        print("DEBUG: menuNeedsUpdate called with \(menu.items.count) items")
         // Menu is about to be displayed, ensure items are enabled
-        for (index, item) in menu.items.enumerated() {
-            print("DEBUG: Item \(index): '\(item.title)' - enabled before: \(item.isEnabled), target: \(String(describing: item.target))")
+        for item in menu.items {
             if item.action != nil && item.target != nil {
                 item.isEnabled = true
             }
-            print("DEBUG: Item \(index): '\(item.title)' - enabled after: \(item.isEnabled)")
         }
     }
 }

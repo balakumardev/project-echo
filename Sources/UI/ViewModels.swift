@@ -76,6 +76,16 @@ class LibraryViewModel: ObservableObject {
         guard let db = try? await getDatabase() else { return nil }
         return try? await db.getTranscript(forRecording: recording.id)
     }
+
+    func toggleFavorite(for recording: Recording) async {
+        do {
+            let db = try await getDatabase()
+            _ = try await db.toggleFavorite(id: recording.id)
+            await loadRecordings()
+        } catch {
+            print("Failed to toggle favorite: \(error)")
+        }
+    }
 }
 
 // MARK: - Recording Detail View Model
@@ -199,14 +209,14 @@ class RecordingDetailViewModel: ObservableObject {
     func generateTranscript(for recording: Recording) async {
         isLoadingTranscript = true
         defer { isLoadingTranscript = false }
-        
+
         do {
             // Load model if needed
             try await transcriptionEngine.loadModel()
-            
+
             // Transcribe
             let result = try await transcriptionEngine.transcribe(audioURL: recording.fileURL)
-            
+
             // Save to database
             let dbSegments = result.segments.map { segment in
                 TranscriptSegment(
@@ -219,7 +229,7 @@ class RecordingDetailViewModel: ObservableObject {
                     confidence: segment.confidence
                 )
             }
-            
+
             let db = try await getDatabase()
             _ = try await db.saveTranscript(
                 recordingId: recording.id,
@@ -228,11 +238,35 @@ class RecordingDetailViewModel: ObservableObject {
                 processingTime: result.processingTime,
                 segments: dbSegments
             )
-            
+
             // Reload
             await loadTranscript(for: recording)
         } catch {
             print("Failed to generate transcript: \(error)")
+        }
+    }
+
+    func deleteRecording(_ recording: Recording) async {
+        do {
+            let db = try await getDatabase()
+
+            // Delete from database
+            try await db.deleteRecording(id: recording.id)
+
+            // Delete the audio file from disk
+            try? FileManager.default.removeItem(at: recording.fileURL)
+
+            // Delete video file if exists
+            // Video file pattern: audio filename + "_video.mov"
+            let audioFileName = recording.fileURL.deletingPathExtension().lastPathComponent
+            let videoFileName = audioFileName + "_video.mov"
+            let videoURL = recording.fileURL.deletingLastPathComponent().appendingPathComponent(videoFileName)
+
+            if FileManager.default.fileExists(atPath: videoURL.path) {
+                try? FileManager.default.removeItem(at: videoURL)
+            }
+        } catch {
+            print("Failed to delete recording: \(error)")
         }
     }
 }

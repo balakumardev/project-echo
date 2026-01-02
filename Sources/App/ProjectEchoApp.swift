@@ -108,11 +108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     // Auto Recording Settings
     @AppStorage("autoRecord") private var autoRecordEnabled = true
     @AppStorage("enabledMeetingApps") private var enabledMeetingAppsRaw = "zoom,teams,meet,slack,discord"
-    @AppStorage("silenceTimeoutSeconds") private var silenceTimeout: Double = 45.0
-    @AppStorage("audioActivitySeconds") private var audioActivityDuration: Double = 2.0
-    @AppStorage("silenceThresholdDB") private var silenceThreshold: Double = -40.0
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
-    @AppStorage("enableWindowTitleDetection") private var enableWindowTitleDetection: Bool = true
 
     // Legacy (kept for migration)
     @AppStorage("monitoredApps") private var monitoredAppsRaw = "Zoom,Microsoft Teams,Google Chrome,FaceTime"
@@ -413,13 +409,8 @@ App location: \(appPath)
 
         // Create meeting detector with configuration
         let config = MeetingDetector.Configuration(
-            sustainedAudioDuration: audioActivityDuration,
-            silenceDurationToEnd: silenceTimeout,
-            silenceThresholdDB: Float(silenceThreshold),
-            audioThresholdDB: Float(silenceThreshold + 5), // Activity threshold slightly above silence
             enabledApps: enabledApps,
-            checkOnWake: autoRecordOnWake,
-            enableWindowTitleDetection: enableWindowTitleDetection
+            checkOnWake: autoRecordOnWake
         )
 
         meetingDetector = MeetingDetector(configuration: config)
@@ -768,12 +759,7 @@ struct GeneralSettingsView: View {
     @AppStorage("autoTranscribe") private var autoTranscribe = true
     @AppStorage("whisperModel") private var whisperModel = "base.en"
     @AppStorage("storageLocation") private var storageLocation = "~/Documents/ProjectEcho"
-    @AppStorage("silenceTimeoutSeconds") private var silenceTimeout: Double = 45.0
-    @AppStorage("audioActivitySeconds") private var audioActivityDuration: Double = 2.0
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
-    @AppStorage("enableWindowTitleDetection") private var enableWindowTitleDetection: Bool = true
-
-    @State private var isAccessibilityTrusted = WindowTitleMonitor.isAccessibilityTrusted(prompt: false)
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -783,7 +769,7 @@ struct GeneralSettingsView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         SettingsToggle(
                             title: "Auto-record Meetings",
-                            subtitle: "Automatically start recording when audio activity is detected",
+                            subtitle: "Automatically start recording when a meeting app uses your microphone",
                             isOn: $autoRecord
                         )
 
@@ -814,87 +800,6 @@ struct GeneralSettingsView: View {
                                 .foregroundColor(Theme.Colors.textMuted)
 
                             MeetingAppsPickerView()
-                        }
-                    }
-
-                    // Detection Settings
-                    SettingsSection(title: "Detection", icon: "waveform.badge.magnifyingglass") {
-                        VStack(alignment: .leading, spacing: 16) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text("Start recording after")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(Theme.Colors.textPrimary)
-                                    Spacer()
-                                    Text("\(Int(audioActivityDuration))s of audio")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundColor(Theme.Colors.primary)
-                                }
-                                Slider(value: $audioActivityDuration, in: 1...10, step: 1)
-                                    .tint(Theme.Colors.primary)
-                                Text("How long audio must be detected before recording starts")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(Theme.Colors.textMuted)
-                            }
-
-                            Divider()
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text("Stop recording after")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(Theme.Colors.textPrimary)
-                                    Spacer()
-                                    Text("\(Int(silenceTimeout))s of silence")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundColor(Theme.Colors.primary)
-                                }
-                                Slider(value: $silenceTimeout, in: 15...120, step: 15)
-                                    .tint(Theme.Colors.primary)
-                                Text("How long silence must continue before recording stops")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(Theme.Colors.textMuted)
-                            }
-
-                            Divider()
-
-                            // Window Title Detection
-                            VStack(alignment: .leading, spacing: 8) {
-                                SettingsToggle(
-                                    title: "Window Title Detection",
-                                    subtitle: "Detect Zoom meetings by window title (more reliable)",
-                                    isOn: $enableWindowTitleDetection
-                                )
-
-                                if enableWindowTitleDetection {
-                                    HStack(spacing: 8) {
-                                        if isAccessibilityTrusted {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundColor(.green)
-                                            Text("Accessibility permission granted")
-                                                .font(.system(size: 11))
-                                                .foregroundColor(Theme.Colors.textMuted)
-                                        } else {
-                                            Image(systemName: "exclamationmark.triangle.fill")
-                                                .foregroundColor(.orange)
-                                            Text("Accessibility permission required")
-                                                .font(.system(size: 11))
-                                                .foregroundColor(.orange)
-                                            Spacer()
-                                            Button("Grant Access") {
-                                                _ = WindowTitleMonitor.isAccessibilityTrusted(prompt: true)
-                                                // Refresh state after a delay
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                                                    isAccessibilityTrusted = WindowTitleMonitor.isAccessibilityTrusted(prompt: false)
-                                                }
-                                            }
-                                            .buttonStyle(.bordered)
-                                            .controlSize(.small)
-                                        }
-                                    }
-                                    .padding(.leading, 4)
-                                }
-                            }
                         }
                     }
                 }
@@ -1081,6 +986,7 @@ struct PrivacyFeatureRow: View {
 struct AdvancedSettingsView: View {
     @AppStorage("sampleRate") private var sampleRate = 48000
     @AppStorage("audioQuality") private var audioQuality = "high"
+    @State private var showResetConfirmation = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -1123,28 +1029,6 @@ struct AdvancedSettingsView: View {
                     }
                 }
 
-                // Performance Section
-                SettingsSection(title: "Performance", icon: "gauge.with.needle") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "cpu")
-                                .font(.system(size: 14))
-                                .foregroundColor(Theme.Colors.secondary)
-                            Text("CPU usage optimization and buffer settings")
-                                .font(.system(size: 13))
-                                .foregroundColor(Theme.Colors.textSecondary)
-                        }
-
-                        Text("Coming in a future update")
-                            .font(.system(size: 11))
-                            .foregroundColor(Theme.Colors.warning)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Theme.Colors.warningMuted)
-                            .cornerRadius(4)
-                    }
-                }
-
                 // Reset Section
                 SettingsSection(title: "Reset", icon: "arrow.counterclockwise") {
                     HStack(alignment: .center) {
@@ -1160,7 +1044,7 @@ struct AdvancedSettingsView: View {
                         Spacer()
 
                         Button("Reset") {
-                            // Reset settings
+                            showResetConfirmation = true
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -1171,10 +1055,34 @@ struct AdvancedSettingsView: View {
             .padding(20)
         }
         .background(Theme.Colors.background)
+        .alert("Reset All Settings?", isPresented: $showResetConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset", role: .destructive) {
+                resetAllSettings()
+            }
+        } message: {
+            Text("This will restore all settings to their defaults. This cannot be undone.")
+        }
+    }
+
+    private func resetAllSettings() {
+        // Reset all AppStorage values to defaults
+        UserDefaults.standard.removeObject(forKey: "autoRecord")
+        UserDefaults.standard.removeObject(forKey: "autoTranscribe")
+        UserDefaults.standard.removeObject(forKey: "whisperModel")
+        UserDefaults.standard.removeObject(forKey: "storageLocation")
+        UserDefaults.standard.removeObject(forKey: "autoRecordOnWake")
+        UserDefaults.standard.removeObject(forKey: "sampleRate")
+        UserDefaults.standard.removeObject(forKey: "audioQuality")
+        UserDefaults.standard.removeObject(forKey: "enabledMeetingApps")
     }
 }
 
 struct AboutSettingsView: View {
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -1203,7 +1111,7 @@ struct AboutSettingsView: View {
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundColor(Theme.Colors.textPrimary)
 
-                    Text("Version 1.0.0")
+                    Text("Version \(appVersion)")
                         .font(.system(size: 12))
                         .foregroundColor(Theme.Colors.textMuted)
                 }
@@ -1222,9 +1130,9 @@ struct AboutSettingsView: View {
 
             // Links
             HStack(spacing: 16) {
-                AboutLink(title: "Website", icon: "globe")
-                AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right")
-                AboutLink(title: "License", icon: "doc.text")
+                AboutLink(title: "Website", icon: "globe", urlString: "https://github.com/anthropics/project-echo")
+                AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right", urlString: "https://github.com/anthropics/project-echo")
+                AboutLink(title: "License", icon: "doc.text", urlString: "https://github.com/anthropics/project-echo/blob/main/LICENSE")
             }
 
             Spacer()
@@ -1243,12 +1151,21 @@ struct AboutSettingsView: View {
 struct AboutLink: View {
     let title: String
     let icon: String
+    let urlString: String?
 
     @State private var isHovered = false
 
+    init(title: String, icon: String, urlString: String? = nil) {
+        self.title = title
+        self.icon = icon
+        self.urlString = urlString
+    }
+
     var body: some View {
         Button {
-            // Open link
+            if let urlString = urlString, let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
         } label: {
             VStack(spacing: 6) {
                 Image(systemName: icon)

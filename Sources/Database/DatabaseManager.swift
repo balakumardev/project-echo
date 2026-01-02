@@ -16,8 +16,9 @@ public actor DatabaseManager {
         public let fileSize: Int64
         public let appName: String?
         public let hasTranscript: Bool
-        
-        public init(id: Int64, title: String, date: Date, duration: TimeInterval, fileURL: URL, fileSize: Int64, appName: String?, hasTranscript: Bool) {
+        public let isFavorite: Bool
+
+        public init(id: Int64, title: String, date: Date, duration: TimeInterval, fileURL: URL, fileSize: Int64, appName: String?, hasTranscript: Bool, isFavorite: Bool = false) {
             self.id = id
             self.title = title
             self.date = date
@@ -26,6 +27,7 @@ public actor DatabaseManager {
             self.fileSize = fileSize
             self.appName = appName
             self.hasTranscript = hasTranscript
+            self.isFavorite = isFavorite
         }
     }
     
@@ -94,6 +96,7 @@ public actor DatabaseManager {
     private let fileSize = Expression<Int64>("file_size")
     private let appName = Expression<String?>("app_name")
     private let hasTranscript = Expression<Bool>("has_transcript")
+    private let isFavorite = Expression<Bool>("is_favorite")
     
     // Column definitions - Transcripts
     private let recordingId = Expression<Int64>("recording_id")
@@ -128,6 +131,7 @@ public actor DatabaseManager {
         do {
             db = try Connection(dbPath)
             try createTables()
+            try migrateSchema()
         } catch {
             logger.error("Database initialization failed: \(error.localizedDescription)")
             throw DatabaseError.initializationFailed
@@ -149,6 +153,7 @@ public actor DatabaseManager {
             t.column(fileSize)
             t.column(appName)
             t.column(hasTranscript, defaultValue: false)
+            t.column(isFavorite, defaultValue: false)
         })
         
         // Transcripts table
@@ -182,7 +187,28 @@ public actor DatabaseManager {
         
         logger.info("Database schema created successfully")
     }
-    
+
+    private func migrateSchema() throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        // Check if is_favorite column exists in recordings table
+        let tableInfo = try db.prepare("PRAGMA table_info(recordings)")
+        var hasFavoriteColumn = false
+
+        for row in tableInfo {
+            if let columnName = row[1] as? String, columnName == "is_favorite" {
+                hasFavoriteColumn = true
+                break
+            }
+        }
+
+        // Add is_favorite column if missing
+        if !hasFavoriteColumn {
+            try db.execute("ALTER TABLE recordings ADD COLUMN is_favorite INTEGER DEFAULT 0")
+            logger.info("Migration: Added is_favorite column to recordings table")
+        }
+    }
+
     // MARK: - Recording Operations
     
     public func saveRecording(title: String, date: Date, duration: TimeInterval, fileURL: URL, fileSize: Int64, appName: String?) async throws -> Int64 {
@@ -210,9 +236,9 @@ public actor DatabaseManager {
     
     public func getAllRecordings() async throws -> [Recording] {
         guard let db = db else { throw DatabaseError.initializationFailed }
-        
+
         var results: [Recording] = []
-        
+
         for row in try db.prepare(recordings.order(date.desc)) {
             let recording = Recording(
                 id: row[id],
@@ -222,23 +248,24 @@ public actor DatabaseManager {
                 fileURL: URL(fileURLWithPath: row[fileURL]),
                 fileSize: row[fileSize],
                 appName: row[appName],
-                hasTranscript: row[hasTranscript]
+                hasTranscript: row[hasTranscript],
+                isFavorite: row[isFavorite]
             )
             results.append(recording)
         }
-        
+
         return results
     }
     
     public func getRecording(id recordingId: Int64) async throws -> Recording {
         guard let db = db else { throw DatabaseError.initializationFailed }
-        
+
         let query = recordings.filter(id == recordingId)
-        
+
         guard let row = try db.pluck(query) else {
             throw DatabaseError.notFound
         }
-        
+
         return Recording(
             id: row[id],
             title: row[title],
@@ -247,19 +274,38 @@ public actor DatabaseManager {
             fileURL: URL(fileURLWithPath: row[fileURL]),
             fileSize: row[fileSize],
             appName: row[appName],
-            hasTranscript: row[hasTranscript]
+            hasTranscript: row[hasTranscript],
+            isFavorite: row[isFavorite]
         )
     }
     
     public func deleteRecording(id recordingId: Int64) async throws {
         guard let db = db else { throw DatabaseError.initializationFailed }
-        
+
         let recording = recordings.filter(id == recordingId)
         try db.run(recording.delete())
-        
+
         logger.info("Recording deleted: ID \(recordingId)")
     }
-    
+
+    public func toggleFavorite(id recordingId: Int64) async throws -> Bool {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = recordings.filter(id == recordingId)
+
+        guard let row = try db.pluck(query) else {
+            throw DatabaseError.notFound
+        }
+
+        let currentValue = row[isFavorite]
+        let newValue = !currentValue
+
+        try db.run(query.update(isFavorite <- newValue))
+
+        logger.info("Recording \(recordingId) favorite toggled to: \(newValue)")
+        return newValue
+    }
+
     // MARK: - Transcript Operations
     
     public func saveTranscript(recordingId: Int64, fullText: String, language: String?, processingTime: TimeInterval, segments: [TranscriptSegment]) async throws -> Int64 {
