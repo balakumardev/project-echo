@@ -39,16 +39,19 @@ public actor TranscriptionEngine {
         }
     }
     
-    public enum Speaker: Sendable {
-        case user
-        case system
-        case unknown(Int) // For multi-speaker scenarios
-        
+    public enum Speaker: Sendable, Equatable, Hashable {
+        case user                    // Microphone track (always "You")
+        case remote(Int)             // Remote participant from system audio (Speaker 1, 2, etc.)
+        case unknown                 // Fallback when diarization unavailable
+
         public var displayName: String {
             switch self {
-            case .user: return "You"
-            case .system: return "Guest"
-            case .unknown(let id): return "Speaker \(id)"
+            case .user:
+                return "You"
+            case .remote(let id):
+                return "Speaker \(id + 1)"  // 1-indexed for display
+            case .unknown:
+                return "Unknown"
             }
         }
     }
@@ -60,11 +63,15 @@ public actor TranscriptionEngine {
     }
     
     // MARK: - Properties
-    
+
     private let logger = Logger(subsystem: "com.projectecho.app", category: "Transcription")
     nonisolated(unsafe) private var whisperKit: WhisperKit?
     private var isModelLoaded = false
-    
+
+    // Diarization components (lazy-initialized)
+    private var diarizationEngine: SpeakerDiarizationEngine?
+    private var trackExtractor: AudioTrackExtractor?
+
     // Configuration
     private let modelVariant: String = "base.en" // Can be: tiny, base, small, medium, large
     
@@ -102,33 +109,50 @@ public actor TranscriptionEngine {
         guard isModelLoaded, let kit = whisperKit else {
             throw TranscriptionError.modelNotLoaded
         }
-        
+
         logger.info("Starting transcription: \(audioURL.lastPathComponent)")
         let startTime = Date()
-        
-        // Transcribe - returns array of results
+
+        // Step 1: Run diarization if enabled (extract tracks, identify speakers)
+        var diarizationResult: SpeakerDiarizationEngine.DiarizationResult?
+        if enableDiarization {
+            diarizationResult = await runDiarization(for: audioURL)
+        }
+
+        // Step 2: Transcribe with WhisperKit
         let results = try await kit.transcribe(audioPath: audioURL.path)
-        
+
         guard let firstResult = results.first else {
             throw TranscriptionError.transcriptionFailed
         }
-        
-        // Build segments with speaker identification
+
+        // Step 3: Build segments with speaker identification
         var segments: [Segment] = []
-        
-        for (index, segment) in firstResult.segments.enumerated() {
-            let speaker: Speaker = enableDiarization 
-                ? identifySpeaker(segmentIndex: index, totalSegments: firstResult.segments.count)
-                : .unknown(0)
-            
+
+        for segment in firstResult.segments {
             let cleanedText = cleanWhisperTokens(segment.text)
 
             // Skip empty segments after cleaning
             guard !cleanedText.isEmpty else { continue }
 
+            let segmentStart = TimeInterval(segment.start)
+            let segmentEnd = TimeInterval(segment.end)
+
+            // Identify speaker from diarization result
+            let speaker: Speaker
+            if let diarization = diarizationResult {
+                speaker = identifySpeakerFromDiarization(
+                    start: segmentStart,
+                    end: segmentEnd,
+                    diarization: diarization
+                )
+            } else {
+                speaker = .unknown
+            }
+
             let echoSegment = Segment(
-                start: TimeInterval(segment.start),
-                end: TimeInterval(segment.end),
+                start: segmentStart,
+                end: segmentEnd,
                 text: cleanedText,
                 speaker: speaker,
                 confidence: Float(segment.avgLogprob)
@@ -138,9 +162,9 @@ public actor TranscriptionEngine {
 
         let fullText = segments.map { $0.text }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         let processingTime = Date().timeIntervalSince(startTime)
-        
+
         logger.info("Transcription complete: \(segments.count) segments in \(processingTime)s")
-        
+
         return TranscriptionResult(
             text: fullText,
             segments: segments,
@@ -182,12 +206,79 @@ public actor TranscriptionEngine {
         return Data()
     }
     
-    /// Simple speaker identification based on track separation
-    /// Assumes Track 1 = System (other party), Track 2 = User (microphone)
-    private func identifySpeaker(segmentIndex: Int, totalSegments: Int) -> Speaker {
-        // Simplified logic: alternate between speakers
-        // In production, use audio embeddings and clustering
-        return segmentIndex % 2 == 0 ? .system : .user
+    /// Run speaker diarization on the audio file
+    /// Extracts dual tracks (mic + system audio) and identifies speakers
+    private func runDiarization(for audioURL: URL) async -> SpeakerDiarizationEngine.DiarizationResult? {
+        // Initialize components lazily
+        if trackExtractor == nil {
+            trackExtractor = AudioTrackExtractor()
+        }
+        if diarizationEngine == nil {
+            diarizationEngine = SpeakerDiarizationEngine()
+        }
+
+        guard let extractor = trackExtractor, let diarizer = diarizationEngine else {
+            return nil
+        }
+
+        do {
+            // Extract separate audio tracks from the recording
+            logger.info("Extracting audio tracks for diarization...")
+            let tracks = try await extractor.extractTracks(from: audioURL)
+
+            defer {
+                // Cleanup temp files after diarization
+                Task {
+                    await extractor.cleanup(tracks: tracks)
+                }
+            }
+
+            // Run diarization on both tracks
+            logger.info("Running speaker diarization...")
+            let result = try await diarizer.processDualTrack(
+                microphoneURL: tracks.microphoneURL,
+                systemAudioURL: tracks.systemAudioURL
+            )
+
+            logger.info("Diarization complete: \(result.segments.count) segments, \(result.remoteSpeakerCount) remote speakers")
+            return result
+
+        } catch {
+            logger.warning("Diarization failed, falling back to unknown speakers: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Match a transcription segment to the best diarization segment by time overlap
+    private func identifySpeakerFromDiarization(
+        start: TimeInterval,
+        end: TimeInterval,
+        diarization: SpeakerDiarizationEngine.DiarizationResult
+    ) -> Speaker {
+        // Find the diarization segment with the most overlap
+        var bestMatch: (overlap: TimeInterval, segment: SpeakerDiarizationEngine.DiarizationSegment)?
+
+        for diarizationSegment in diarization.segments {
+            let overlapStart = max(start, diarizationSegment.start)
+            let overlapEnd = min(end, diarizationSegment.end)
+            let overlap = max(0, overlapEnd - overlapStart)
+
+            if overlap > 0 {
+                if bestMatch == nil || overlap > bestMatch!.overlap {
+                    bestMatch = (overlap, diarizationSegment)
+                }
+            }
+        }
+
+        if let match = bestMatch {
+            if match.segment.isUser {
+                return .user
+            } else {
+                return .remote(match.segment.speakerIndex)
+            }
+        }
+
+        return .unknown
     }
     
     /// Extract action items using keyword matching
