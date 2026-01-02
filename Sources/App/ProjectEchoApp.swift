@@ -92,6 +92,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
 
     // Core engines
     private var audioEngine: AudioCaptureEngine!
+    private var screenRecorder: ScreenRecorder!
+    private var mediaMuxer: MediaMuxer!
     private var transcriptionEngine: TranscriptionEngine!
     private var database: DatabaseManager!
 
@@ -117,6 +119,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
 
     // State
     private var currentRecordingURL: URL?
+    private var currentVideoRecordingURL: URL?
     private var outputDirectory: URL!
     private var currentRecordingApp: String?
     
@@ -168,6 +171,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     private func initializeComponents() async {
         // Audio Engine
         audioEngine = AudioCaptureEngine()
+
+        // Screen Recorder for Zoom window capture
+        screenRecorder = ScreenRecorder()
+
+        // Media Muxer for combining video + audio post-recording
+        mediaMuxer = MediaMuxer()
 
         // Try to request permissions, but don't show alert on startup
         // The permission prompts will appear when user actually tries to record
@@ -480,10 +489,32 @@ App location: \(appPath)
         // Request permissions if needed
         try await audioEngine.requestPermissions()
 
-        // Start recording
+        // Start audio recording
         let url = try await audioEngine.startRecording(targetApp: appName, outputDirectory: outputDirectory)
         currentRecordingURL = url
         currentRecordingApp = appName
+
+        // Start video recording for Zoom (non-blocking, audio continues if video fails)
+        if appName.lowercased().contains("zoom") {
+            // Extract base filename from audio URL to keep timestamps synchronized
+            let baseFilename = url.deletingPathExtension().lastPathComponent
+            Task {
+                do {
+                    let videoURL = try await screenRecorder.startRecording(
+                        bundleId: "us.zoom.xos",
+                        outputDirectory: outputDirectory,
+                        baseFilename: baseFilename
+                    )
+                    await MainActor.run {
+                        currentVideoRecordingURL = videoURL
+                    }
+                    logger.info("Video recording started: \(videoURL.lastPathComponent)")
+                } catch {
+                    logger.warning("Video recording failed to start: \(error.localizedDescription)")
+                    // Continue with audio-only recording
+                }
+            }
+        }
 
         return url
     }
@@ -492,6 +523,22 @@ App location: \(appPath)
         logger.info("Stopping meeting recording")
 
         let metadata = try await audioEngine.stopRecording()
+
+        // Stop video recording if active and mux with audio
+        if let videoURL = currentVideoRecordingURL, let audioURL = currentRecordingURL {
+            do {
+                let videoMetadata = try await screenRecorder.stopRecording()
+                logger.info("Video recording stopped: \(videoMetadata.duration)s, \(videoMetadata.frameCount) frames")
+
+                // Mux video + audio into the video file (replaces video-only with video+audio)
+                logger.info("Muxing video + audio...")
+                let muxResult = try await mediaMuxer.muxInPlace(videoURL: videoURL, audioURL: audioURL)
+                logger.info("Mux completed: \(muxResult.outputURL.lastPathComponent), \(muxResult.duration)s, \(muxResult.fileSize) bytes")
+            } catch {
+                logger.warning("Failed to stop/mux video recording: \(error.localizedDescription)")
+            }
+            currentVideoRecordingURL = nil
+        }
 
         // Save to database
         if let url = currentRecordingURL {

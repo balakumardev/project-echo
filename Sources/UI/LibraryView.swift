@@ -1,7 +1,31 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import AVKit
 import Database
+
+// MARK: - Recording Video URL Helper
+
+extension Recording {
+    /// Derive the video file URL from the audio recording URL
+    /// Audio: Echo_2026-01-02T10-30-00-0800.mov
+    /// Video: Echo_2026-01-02T10-30-00-0800_video.mov
+    var videoURL: URL? {
+        let audioFileName = fileURL.deletingPathExtension().lastPathComponent
+        let videoFileName = audioFileName + "_video.mov"
+        let videoURL = fileURL.deletingLastPathComponent().appendingPathComponent(videoFileName)
+
+        // Check if video file exists
+        if FileManager.default.fileExists(atPath: videoURL.path) {
+            return videoURL
+        }
+        return nil
+    }
+
+    var hasVideo: Bool {
+        videoURL != nil
+    }
+}
 
 // MARK: - Main Library View
 
@@ -312,10 +336,13 @@ struct RecordingRow: View {
                 .foregroundColor(Theme.Colors.textMuted)
 
                 // Tags
-                if recording.appName != nil || recording.hasTranscript {
+                if recording.appName != nil || recording.hasTranscript || recording.hasVideo {
                     HStack(spacing: Theme.Spacing.xs) {
                         if let app = recording.appName {
                             SmallBadge(text: app, color: Theme.Colors.secondary)
+                        }
+                        if recording.hasVideo {
+                            SmallBadge(text: "Video", color: Theme.Colors.primary)
                         }
                         if recording.hasTranscript {
                             SmallBadge(text: "Transcribed", color: Theme.Colors.success)
@@ -404,6 +431,11 @@ struct RecordingDetailView: View {
             VStack(spacing: Theme.Spacing.xl) {
                 // Header card
                 DetailHeader(recording: recording)
+
+                // Video player (if video exists)
+                if let videoURL = recording.videoURL {
+                    VideoPlayerCard(videoURL: videoURL)
+                }
 
                 // Audio player
                 if let player = viewModel.audioPlayer {
@@ -623,6 +655,237 @@ struct AudioPlayerCard: View {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+// MARK: - Video Player Card
+
+/// A wrapper class to hold AVPlayer and manage its lifecycle
+@available(macOS 14.0, *)
+@MainActor
+final class VideoPlayerModel: ObservableObject {
+    @Published var player: AVPlayer
+    @Published var isPlaying = false
+    @Published var currentTime: TimeInterval = 0
+    @Published var duration: TimeInterval = 0
+
+    private var timeObserver: Any?
+
+    init(url: URL) {
+        self.player = AVPlayer(url: url)
+        setupObservers()
+    }
+
+    private func setupObservers() {
+        // Get duration when ready
+        let playerRef = player
+        Task {
+            if let item = playerRef.currentItem,
+               let durationValue = try? await item.asset.load(.duration) {
+                self.duration = durationValue.seconds.isNaN ? 0 : durationValue.seconds
+            }
+        }
+
+        // Add time observer
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.currentTime = time.seconds.isNaN ? 0 : time.seconds
+
+                // Check if playback ended
+                if let duration = self.player.currentItem?.duration.seconds,
+                   !duration.isNaN && self.currentTime >= duration - 0.1 {
+                    self.isPlaying = false
+                }
+            }
+        }
+    }
+
+    func togglePlayback() {
+        if isPlaying {
+            player.pause()
+        } else {
+            // If at end, restart from beginning
+            if currentTime >= duration - 0.5 {
+                player.seek(to: .zero)
+            }
+            player.play()
+        }
+        isPlaying.toggle()
+    }
+
+    func seek(by seconds: Double) {
+        let newTime = max(0, min(duration, currentTime + seconds))
+        let cmTime = CMTime(seconds: newTime, preferredTimescale: 600)
+        player.seek(to: cmTime)
+    }
+
+    func seek(to percentage: Double) {
+        let newTime = percentage * duration
+        let cmTime = CMTime(seconds: newTime, preferredTimescale: 600)
+        player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    nonisolated func cleanup() {
+        // Note: deinit can't be async, so we just let AVPlayer clean itself up
+    }
+}
+
+/// Native AVPlayerView wrapper to avoid SwiftUI VideoPlayer crashes
+@available(macOS 14.0, *)
+struct NativeVideoPlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let playerView = AVPlayerView()
+        playerView.player = player
+        playerView.controlsStyle = .none  // We provide our own controls
+        playerView.showsFullScreenToggleButton = false
+        playerView.videoGravity = .resizeAspect
+        return playerView
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+    }
+}
+
+@available(macOS 14.0, *)
+struct VideoPlayerCard: View {
+    let videoURL: URL
+
+    @StateObject private var model: VideoPlayerModel
+
+    init(videoURL: URL) {
+        self.videoURL = videoURL
+        self._model = StateObject(wrappedValue: VideoPlayerModel(url: videoURL))
+    }
+
+    var body: some View {
+        GlassCard(padding: Theme.Spacing.lg) {
+            VStack(spacing: Theme.Spacing.md) {
+                // Section header
+                HStack {
+                    Label("Meeting Video", systemImage: "video.fill")
+                        .font(Theme.Typography.headline)
+                        .foregroundColor(Theme.Colors.textPrimary)
+                    Spacer()
+                    // Export video button
+                    Button {
+                        exportVideo()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(Theme.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Video player using native AVPlayerView
+                NativeVideoPlayerView(player: model.player)
+                    .aspectRatio(16/9, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.md)
+                            .stroke(Theme.Colors.borderSubtle, lineWidth: 1)
+                    )
+
+                // Time display
+                HStack {
+                    Text(formatTime(model.currentTime))
+                        .font(Theme.Typography.monoBody)
+                        .foregroundColor(Theme.Colors.textSecondary)
+
+                    // Progress bar
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            // Track
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Theme.Colors.surfaceHover)
+                                .frame(height: 4)
+
+                            // Progress
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Theme.Colors.primary)
+                                .frame(width: model.duration > 0 ? geometry.size.width * CGFloat(model.currentTime / model.duration) : 0, height: 4)
+                        }
+                        .frame(height: 4)
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    let percentage = min(max(0, value.location.x / geometry.size.width), 1)
+                                    model.seek(to: Double(percentage))
+                                }
+                        )
+                    }
+                    .frame(height: 20)
+
+                    Text("-" + formatTime(model.duration - model.currentTime))
+                        .font(Theme.Typography.monoBody)
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+
+                // Play controls
+                HStack(spacing: Theme.Spacing.lg) {
+                    Spacer()
+
+                    IconButton(icon: "gobackward.10", size: 36, style: .ghost) {
+                        model.seek(by: -10)
+                    }
+
+                    // Play/Pause button
+                    Button {
+                        model.togglePlayback()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Theme.Colors.primary)
+                                .frame(width: 48, height: 48)
+
+                            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .offset(x: model.isPlaying ? 0 : 2)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 8, y: 3)
+
+                    IconButton(icon: "goforward.10", size: 36, style: .ghost) {
+                        model.seek(by: 10)
+                    }
+
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private func formatTime(_ time: TimeInterval) -> String {
+        guard !time.isNaN && !time.isInfinite else { return "0:00" }
+        let hours = Int(time) / 3600
+        let minutes = Int(time) / 60 % 60
+        let seconds = Int(time) % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private func exportVideo() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.movie]
+        panel.nameFieldStringValue = videoURL.deletingPathExtension().lastPathComponent + ".mov"
+
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                try? FileManager.default.copyItem(at: videoURL, to: url)
+            }
+        }
     }
 }
 
