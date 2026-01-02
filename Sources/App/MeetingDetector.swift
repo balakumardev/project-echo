@@ -786,6 +786,15 @@ public actor MeetingDetector {
             try await requestStartRecording(for: app)
             await updateState(.recording(app: app))
             debugLog("Recording started successfully for \(app) (\(bundleID))")
+
+            // Stop resource-intensive monitors during recording
+            // Keep MediaDeviceMonitor running - it's lightweight and needed to detect meeting end (mic deactivation)
+            await stopAudioMonitoring()      // Has its own SCStream - most resource-intensive
+            await stopWindowTitleMonitoring() // Accessibility API polling
+            // Remove their detections from coordinator so mic deactivation can trigger end
+            await detectionCoordinator?.removeDetection(source: .audio)
+            await detectionCoordinator?.removeDetection(source: .windowTitle)
+            debugLog("Stopped audio and window monitors during recording (keeping mic monitor for end detection)")
         } catch {
             debugLog("ERROR: Failed to start recording: \(error)")
             await notifyError(error)
@@ -946,6 +955,15 @@ public actor MeetingDetector {
         do {
             try await requestStartRecording(for: app)
             await updateState(.recording(app: app))
+
+            // Stop resource-intensive monitors during recording
+            // Keep MediaDeviceMonitor running - it's lightweight and needed to detect meeting end (mic deactivation)
+            await stopAudioMonitoring()       // Has its own SCStream - most resource-intensive
+            await stopWindowTitleMonitoring() // Accessibility API polling
+            // Remove their detections from coordinator so mic deactivation can trigger end
+            await detectionCoordinator?.removeDetection(source: .audio)
+            await detectionCoordinator?.removeDetection(source: .windowTitle)
+            logger.info("Stopped audio and window monitors during recording (keeping mic monitor for end detection)")
         } catch {
             logger.error("Failed to start recording: \(error.localizedDescription)")
             await notifyError(error)

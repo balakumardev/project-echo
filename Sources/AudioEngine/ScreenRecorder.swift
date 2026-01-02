@@ -4,7 +4,8 @@ import Foundation
 import CoreMedia
 import os.log
 
-// Debug logging to file for ScreenRecorder
+// Debug logging to file for ScreenRecorder (disabled in release builds)
+#if DEBUG
 private func screenDebugLog(_ message: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] [ScreenRecorder] \(message)\n"
@@ -19,6 +20,9 @@ private func screenDebugLog(_ message: String) {
         try? line.data(using: .utf8)?.write(to: logFile)
     }
 }
+#else
+@inline(__always) private func screenDebugLog(_ message: String) {}
+#endif
 
 /// Thread-safe video-only writer using AVAssetWriter
 @available(macOS 14.0, *)
@@ -57,7 +61,7 @@ final class VideoWriter: @unchecked Sendable {
         videoInput?.expectsMediaDataInRealTime = true
 
         let sourcePixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height
         ]
@@ -471,11 +475,16 @@ public actor ScreenRecorder {
         streamConfig.width = configuration.width
         streamConfig.height = configuration.height
         streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: Int32(configuration.frameRate))
-        streamConfig.showsCursor = true
-        streamConfig.scalesToFit = true
+        streamConfig.showsCursor = false
 
         // Disable audio capture - audio will be muxed from AudioCaptureEngine's output
         streamConfig.capturesAudio = false
+
+        // Optimize for WindowServer performance
+        streamConfig.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange  // Efficient for H.264
+        streamConfig.queueDepth = 5  // More buffer room to avoid stalls
+        streamConfig.colorSpaceName = CGColorSpace.sRGB  // Explicit color space avoids conversions
+        streamConfig.scalesToFit = false  // Avoid scaling overhead
 
         // Setup video writer - use provided filename or generate new one
         let filename: String

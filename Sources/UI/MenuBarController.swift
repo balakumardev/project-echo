@@ -280,7 +280,8 @@ public class MenuBarController: NSObject {
     }
 
     private func startRecordingTimer() {
-        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // Update less frequently (every 5 seconds) to reduce main thread work
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.constructMenu()
             }
