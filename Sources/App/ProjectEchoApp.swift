@@ -7,6 +7,11 @@ import Database
 import UI
 import os.log
 
+// Re-export types needed for AI Chat
+public typealias RAGPipelineProtocol = UI.RAGPipelineProtocol
+public typealias RAGResponse = UI.RAGResponse
+public typealias Citation = UI.Citation
+
 // Import Theme from UI module
 @_exported import enum UI.Theme
 
@@ -18,6 +23,7 @@ import os.log
 enum WindowActions {
     static var openLibrary: (() -> Void)?
     static var openSettings: (() -> Void)?
+    static var openAIChat: (() -> Void)?
 }
 
 @main
@@ -56,7 +62,26 @@ struct ProjectEchoApp: App {
         .defaultPosition(.center)
         .commands {
             CommandGroup(replacing: .newItem) {}
+
+            // AI Chat menu item
+            CommandGroup(after: .windowList) {
+                Button("AI Chat") {
+                    openWindow(id: "ai-chat")
+                }
+                .keyboardShortcut("j", modifiers: [.command, .shift])
+            }
         }
+
+        // AI Chat window
+        WindowGroup("AI Chat", id: "ai-chat") {
+            AIChatWindowView()
+                .onAppear {
+                    registerWindowActions()
+                }
+        }
+        .defaultSize(width: 500, height: 600)
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
 
         // Settings window
         Settings {
@@ -78,6 +103,11 @@ struct ProjectEchoApp: App {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             openSettings()
+        }
+        WindowActions.openAIChat = { [openWindow] in
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "ai-chat")
         }
     }
 }
@@ -205,6 +235,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
             logger.info("Database initialized")
         } catch {
             logger.error("Database initialization failed: \(error.localizedDescription)")
+        }
+
+        // Initialize AI Service in background
+        let aiLog = logger
+        Task.detached(priority: .background) {
+            do {
+                try await AIService.shared.initialize()
+                aiLog.info("AI Service initialized")
+            } catch {
+                aiLog.warning("AI Service initialization failed: \(error.localizedDescription)")
+            }
         }
     }
     
@@ -362,10 +403,10 @@ App location: \(appPath)
     
     private func transcribeRecording(id: Int64, url: URL) async {
         logger.info("Starting auto-transcription for recording \(id)")
-        
+
         do {
             let result = try await transcriptionEngine.transcribe(audioURL: url)
-            
+
             let segments = result.segments.map { segment in
                 DatabaseManager.TranscriptSegment(
                     id: 0,
@@ -377,18 +418,43 @@ App location: \(appPath)
                     confidence: segment.confidence
                 )
             }
-            
-            _ = try await database.saveTranscript(
+
+            let transcriptId = try await database.saveTranscript(
                 recordingId: id,
                 fullText: result.text,
                 language: result.language,
                 processingTime: result.processingTime,
                 segments: segments
             )
-            
+
             logger.info("Transcription completed for recording \(id)")
+
+            // Auto-index if enabled (defaults to true if not set)
+            let autoIndex = UserDefaults.standard.object(forKey: "autoIndexTranscripts") as? Bool ?? true
+            if autoIndex {
+                await autoIndexTranscript(recordingId: id, transcriptId: transcriptId)
+            }
         } catch {
             logger.error("Auto-transcription failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Automatically index a transcript for RAG search
+    private func autoIndexTranscript(recordingId: Int64, transcriptId: Int64) async {
+        do {
+            // Fetch the recording, transcript, and segments
+            let recording = try await database.getRecording(id: recordingId)
+            guard let transcript = try await database.getTranscript(forRecording: recordingId) else {
+                logger.warning("No transcript found for recording \(recordingId), skipping indexing")
+                return
+            }
+            let segments = try await database.getSegments(forTranscriptId: transcriptId)
+
+            // Index using AIService
+            try await AIService.shared.indexRecording(recording, transcript: transcript, segments: segments)
+            logger.info("Auto-indexed transcript for recording \(recordingId)")
+        } catch {
+            logger.warning("Auto-indexing failed for recording \(recordingId): \(error.localizedDescription)")
         }
     }
     
@@ -688,10 +754,12 @@ struct SettingsView: View {
                 case 0:
                     GeneralSettingsView()
                 case 1:
-                    PrivacySettingsView()
+                    AISettingsView()
                 case 2:
-                    AdvancedSettingsView()
+                    PrivacySettingsView()
                 case 3:
+                    AdvancedSettingsView()
+                case 4:
                     AboutSettingsView()
                 default:
                     GeneralSettingsView()
@@ -709,6 +777,7 @@ struct SettingsTabBar: View {
 
     private let tabs = [
         ("General", "gear"),
+        ("AI", "sparkles"),
         ("Privacy", "hand.raised.fill"),
         ("Advanced", "slider.horizontal.3"),
         ("About", "info.circle")
@@ -1090,6 +1159,438 @@ struct AdvancedSettingsView: View {
 
         // Reload custom apps manager to reflect cleared state
         CustomMeetingAppsManager.shared.loadCustomApps()
+    }
+}
+
+// MARK: - AI Settings View
+
+@available(macOS 14.0, *)
+struct AISettingsView: View {
+    @StateObject private var aiService = AIServiceObservable()
+    @AppStorage("autoIndexTranscripts") private var autoIndexTranscripts = true
+    @State private var isRebuildingIndex = false
+
+    private var availableModels: [ModelRegistry.ModelInfo] {
+        ModelRegistry.availableModels
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 20) {
+                // Status Section - Shows current AI state
+                statusSection
+
+                // AI Provider Section
+                SettingsSection(title: "AI Provider", icon: "cpu") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("Provider", selection: Binding(
+                            get: { aiService.provider == .localMLX ? "local-mlx" : "openai" },
+                            set: { newValue in
+                                aiService.setProvider(newValue == "local-mlx" ? .localMLX : .openAICompatible)
+                            }
+                        )) {
+                            Text("Local (MLX)").tag("local-mlx")
+                            Text("OpenAI API").tag("openai")
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text(providerDescription)
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.Colors.textMuted)
+                    }
+                }
+
+                // Model Selection Section (for local provider)
+                if aiService.provider == .localMLX {
+                    // Embedding info section
+                    SettingsSection(title: "Embeddings", icon: "text.magnifyingglass") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(Theme.Colors.success)
+                                    .font(.system(size: 14))
+                                Text("Built-in macOS Embeddings")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+                            }
+                            Text("Uses Apple's NaturalLanguage framework for text embeddings. No download required.")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.Colors.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    // Chat Model Section
+                    SettingsSection(title: "Chat Model", icon: "sparkles") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Select a model for AI chat. Models are downloaded from Hugging Face on first use.")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.Colors.textMuted)
+                                .padding(.bottom, 4)
+
+                            ForEach(availableModels) { model in
+                                modelRow(model)
+                            }
+                        }
+                    }
+                }
+
+                // OpenAI Configuration Section
+                if aiService.provider == .openAICompatible {
+                    SettingsSection(title: "OpenAI Configuration", icon: "key") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("API Key")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                SecureField("sk-...", text: $aiService.openAIKey)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .padding(8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Theme.Colors.surface)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Theme.Colors.border, lineWidth: 1)
+                                    )
+                            }
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Base URL (optional)")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                TextField("https://api.openai.com/v1", text: $aiService.openAIBaseURL)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .padding(8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Theme.Colors.surface)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Theme.Colors.border, lineWidth: 1)
+                                    )
+
+                                Text("Leave empty for default OpenAI endpoint")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Model")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                TextField("gpt-4o-mini", text: $aiService.openAIModel)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .padding(8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Theme.Colors.surface)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Theme.Colors.border, lineWidth: 1)
+                                    )
+                            }
+
+                            Button("Save & Connect") {
+                                aiService.configureOpenAI()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(aiService.openAIKey.isEmpty)
+                        }
+                    }
+                }
+
+                // Indexing Section
+                SettingsSection(title: "Indexing", icon: "doc.text.magnifyingglass") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SettingsToggle(
+                            title: "Auto-index new transcripts",
+                            subtitle: "Automatically index transcripts for AI search when created",
+                            isOn: $autoIndexTranscripts
+                        )
+
+                        Divider()
+
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Indexed Recordings")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+                                Text("\(aiService.indexedCount) recordings indexed for AI search")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                rebuildIndex()
+                            } label: {
+                                if isRebuildingIndex {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Text("Rebuild")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(isRebuildingIndex)
+                        }
+                    }
+                }
+
+                // Storage Section
+                SettingsSection(title: "Model Storage", icon: "internaldrive") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Storage Location")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+                                Text(modelStoragePath)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+
+                            Spacer()
+
+                            Button("Reveal") {
+                                revealModelStorage()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .background(Theme.Colors.background)
+    }
+
+    // MARK: - Status Section
+
+    @ViewBuilder
+    private var statusSection: some View {
+        SettingsSection(title: "Status", icon: "info.circle") {
+            HStack(spacing: 12) {
+                // Status indicator
+                Circle()
+                    .fill(aiService.statusColor)
+                    .frame(width: 10, height: 10)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(statusTitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(Theme.Colors.textPrimary)
+                    Text(aiService.statusText)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+
+                Spacer()
+
+                // Action button based on status
+                if case .error = aiService.status {
+                    Button("Retry") {
+                        aiService.setupModel(aiService.selectedModelId)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private var statusTitle: String {
+        switch aiService.status {
+        case .notConfigured:
+            return "Not Configured"
+        case .downloading:
+            return "Downloading"
+        case .loading:
+            return "Loading"
+        case .ready:
+            return "Ready"
+        case .error:
+            return "Error"
+        }
+    }
+
+    // MARK: - Model Row
+
+    private func modelRow(_ model: ModelRegistry.ModelInfo) -> some View {
+        let isSelected = aiService.selectedModelId == model.id
+        let isCached = aiService.isModelCached(model.id)
+        let isActive = isSelected && aiService.isReady
+
+        return HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(model.displayName)
+                        .font(.system(size: 13))
+                        .foregroundColor(Theme.Colors.textPrimary)
+
+                    if model.isDefault {
+                        Text("Recommended")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.Colors.primary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule()
+                                    .fill(Theme.Colors.primaryMuted)
+                            )
+                    }
+
+                    if isCached {
+                        Text("Downloaded")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.Colors.success)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule()
+                                    .fill(Theme.Colors.successMuted)
+                            )
+                    }
+
+                    if isActive {
+                        Text("Active")
+                            .font(.system(size: 10))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule()
+                                    .fill(Theme.Colors.success)
+                            )
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Text(model.sizeString)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.Colors.textMuted)
+
+                    Text(model.description)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.Colors.textMuted)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            // Action button
+            if isActive {
+                // Already active - no action needed
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(Theme.Colors.success)
+            } else if aiService.isLoading {
+                // Loading something - disable buttons
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button {
+                    aiService.setupModel(model.id)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isCached ? "play.circle" : "arrow.down.circle")
+                            .font(.system(size: 12))
+                        Text(isCached ? "Load" : "Download & Load")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundColor(Theme.Colors.primary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isActive ? Theme.Colors.successMuted.opacity(0.3) :
+                      isCached ? Theme.Colors.surface : Theme.Colors.background)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isActive ? Theme.Colors.success.opacity(0.5) :
+                        isCached ? Theme.Colors.success.opacity(0.3) : Theme.Colors.borderSubtle, lineWidth: 1)
+        )
+    }
+
+    // MARK: - Computed Properties
+
+    private var providerDescription: String {
+        switch aiService.provider {
+        case .localMLX:
+            return "Uses Apple's MLX framework for on-device AI. Best for Apple Silicon Macs. Your data stays private."
+        case .openAICompatible:
+            return "Uses OpenAI's API. Requires internet connection and API key. Faster but data is sent to OpenAI."
+        }
+    }
+
+    private var modelStoragePath: String {
+        // MLX models are cached in ~/.cache/huggingface/hub
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".cache/huggingface/hub").path
+    }
+
+    // MARK: - Actions
+
+    private func rebuildIndex() {
+        isRebuildingIndex = true
+        logToFile("[Settings] Rebuild button clicked")
+        Task {
+            do {
+                logToFile("[Settings] Calling AIService.rebuildIndex...")
+                try await AIService.shared.rebuildIndex()
+                logToFile("[Settings] Rebuild completed successfully")
+            } catch {
+                logToFile("[Settings] Rebuild failed: \(error.localizedDescription)")
+                print("Failed to rebuild index: \(error.localizedDescription)")
+            }
+            await MainActor.run {
+                isRebuildingIndex = false
+            }
+        }
+    }
+
+    private func logToFile(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(message)\n"
+        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_rag.log")
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logURL.path) {
+                if let handle = try? FileHandle(forWritingTo: logURL) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: logURL)
+            }
+        }
+    }
+
+    private func revealModelStorage() {
+        let url = URL(fileURLWithPath: modelStoragePath)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
     }
 }
 

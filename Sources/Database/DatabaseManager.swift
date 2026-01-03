@@ -57,7 +57,7 @@ public actor DatabaseManager {
         public let text: String
         public let speaker: String
         public let confidence: Float
-        
+
         public init(id: Int64, transcriptId: Int64, startTime: TimeInterval, endTime: TimeInterval, text: String, speaker: String, confidence: Float) {
             self.id = id
             self.transcriptId = transcriptId
@@ -68,7 +68,43 @@ public actor DatabaseManager {
             self.confidence = confidence
         }
     }
-    
+
+    public struct Embedding: Sendable {
+        public let id: Int64
+        public let segmentId: Int64
+        public let vector: [Float]
+        public let model: String
+        public let createdAt: Date
+
+        public init(id: Int64, segmentId: Int64, vector: [Float], model: String, createdAt: Date) {
+            self.id = id
+            self.segmentId = segmentId
+            self.vector = vector
+            self.model = model
+            self.createdAt = createdAt
+        }
+    }
+
+    public struct ChatMessage: Identifiable, Sendable {
+        public let id: Int64
+        public let sessionId: String
+        public let recordingId: Int64?
+        public let role: String  // "user" or "assistant"
+        public let content: String
+        public let citations: [Int64]?  // segment IDs
+        public let timestamp: Date
+
+        public init(id: Int64, sessionId: String, recordingId: Int64?, role: String, content: String, citations: [Int64]?, timestamp: Date) {
+            self.id = id
+            self.sessionId = sessionId
+            self.recordingId = recordingId
+            self.role = role
+            self.content = content
+            self.citations = citations
+            self.timestamp = timestamp
+        }
+    }
+
     public enum DatabaseError: Error {
         case initializationFailed
         case insertFailed
@@ -86,6 +122,8 @@ public actor DatabaseManager {
     private let transcripts = Table("transcripts")
     private let segments = Table("transcript_segments")
     private let searchIndex = Table("transcript_search")
+    private let embeddings = Table("embeddings")
+    private let chatHistory = Table("chat_history")
     
     // Column definitions - Recordings
     private let id = Expression<Int64>("id")
@@ -112,6 +150,19 @@ public actor DatabaseManager {
     private let text = Expression<String>("text")
     private let speaker = Expression<String>("speaker")
     private let confidence = Expression<Double>("confidence")
+
+    // Column definitions - Embeddings
+    private let segmentId = Expression<Int64>("segment_id")
+    private let embeddingVector = Expression<Data>("embedding_vector")
+    private let embeddingModel = Expression<String>("embedding_model")
+
+    // Column definitions - Chat History
+    private let chatSessionId = Expression<String>("chat_session_id")
+    private let chatRecordingId = Expression<Int64?>("recording_id")
+    private let role = Expression<String>("role")
+    private let content = Expression<String>("content")
+    private let citations = Expression<String?>("citations")
+    private let timestamp = Expression<Date>("timestamp")
     
     // MARK: - Initialization
     
@@ -181,10 +232,38 @@ public actor DatabaseManager {
         
         // FTS5 search index - Using raw SQL for FTS5
         try db.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS transcript_search 
+            CREATE VIRTUAL TABLE IF NOT EXISTS transcript_search
             USING fts5(text, title, content='transcript_segments', content_rowid='id')
         """)
-        
+
+        // Embeddings table - stores vector embeddings linked to transcript segments
+        try db.run(embeddings.create(ifNotExists: true) { t in
+            t.column(id, primaryKey: .autoincrement)
+            t.column(segmentId)
+            t.column(embeddingVector)
+            t.column(embeddingModel)
+            t.column(createdAt, defaultValue: Date())
+            t.foreignKey(segmentId, references: segments, id, delete: .cascade)
+        })
+
+        // Index for fast segment lookups
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_segment ON embeddings(segment_id)")
+
+        // Chat history table - stores chat messages per session
+        try db.run(chatHistory.create(ifNotExists: true) { t in
+            t.column(id, primaryKey: .autoincrement)
+            t.column(chatSessionId)
+            t.column(chatRecordingId)
+            t.column(role)
+            t.column(content)
+            t.column(citations)
+            t.column(timestamp, defaultValue: Date())
+            t.foreignKey(chatRecordingId, references: recordings, id, delete: .setNull)
+        })
+
+        // Index for fast session lookups
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_history(chat_session_id)")
+
         logger.info("Database schema created successfully")
     }
 
@@ -396,25 +475,25 @@ public actor DatabaseManager {
     
     public func searchTranscripts(query: String) async throws -> [Recording] {
         guard let db = db else { throw DatabaseError.initializationFailed }
-        
+
         // Simple LIKE-based search (FTS5 match() requires more setup)
         var matchedRecordingIds: Set<Int64> = []
-        
+
         // Find matching segments using LIKE
         for segmentRow in try db.prepare(segments.filter(text.like("%\(query)%"))) {
             let tId = segmentRow[transcriptId]
-            
+
             // Find parent transcript
             if let transcriptRow = try db.pluck(transcripts.filter(id == tId)) {
                 matchedRecordingIds.insert(transcriptRow[recordingId])
             }
         }
-        
+
         // Also search in recording titles
         for recordingRow in try db.prepare(recordings.filter(title.like("%\(query)%"))) {
             matchedRecordingIds.insert(recordingRow[id])
         }
-        
+
         // Fetch recordings
         var results: [Recording] = []
         for recId in matchedRecordingIds {
@@ -422,7 +501,220 @@ public actor DatabaseManager {
                 results.append(recording)
             }
         }
-        
+
         return results
+    }
+
+    // MARK: - Embedding Operations
+
+    /// Saves an embedding vector for a transcript segment
+    public func saveEmbedding(segmentId: Int64, vector: [Float], model: String) async throws -> Int64 {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        // Convert [Float] to Data for storage
+        let vectorData = vector.withUnsafeBufferPointer { buffer in
+            Data(buffer: buffer)
+        }
+
+        do {
+            let insert = embeddings.insert(
+                self.segmentId <- segmentId,
+                self.embeddingVector <- vectorData,
+                self.embeddingModel <- model,
+                self.createdAt <- Date()
+            )
+
+            let rowId = try db.run(insert)
+            logger.info("Embedding saved for segment \(segmentId) (ID: \(rowId))")
+            return rowId
+        } catch {
+            logger.error("Failed to save embedding: \(error.localizedDescription)")
+            throw DatabaseError.insertFailed
+        }
+    }
+
+    /// Gets the embedding for a specific segment
+    public func getEmbedding(forSegmentId segmentId: Int64) async throws -> Embedding? {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = embeddings.filter(self.segmentId == segmentId)
+
+        guard let row = try db.pluck(query) else {
+            return nil
+        }
+
+        // Convert Data back to [Float]
+        let vectorData = row[embeddingVector]
+        let vector = vectorData.withUnsafeBytes { buffer in
+            Array(buffer.bindMemory(to: Float.self))
+        }
+
+        return Embedding(
+            id: row[id],
+            segmentId: row[self.segmentId],
+            vector: vector,
+            model: row[embeddingModel],
+            createdAt: row[createdAt]
+        )
+    }
+
+    /// Checks if an embedding exists for a segment
+    public func hasEmbedding(forSegmentId segmentId: Int64) async throws -> Bool {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = embeddings.filter(self.segmentId == segmentId)
+        return try db.pluck(query) != nil
+    }
+
+    /// Deletes all embeddings for segments belonging to a transcript
+    public func deleteEmbeddings(forTranscriptId transcriptId: Int64) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        // Get all segment IDs for this transcript
+        let segmentQuery = segments.filter(self.transcriptId == transcriptId).select(id)
+        var segmentIds: [Int64] = []
+
+        for row in try db.prepare(segmentQuery) {
+            segmentIds.append(row[id])
+        }
+
+        // Delete embeddings for each segment
+        for segId in segmentIds {
+            let embeddingQuery = embeddings.filter(self.segmentId == segId)
+            try db.run(embeddingQuery.delete())
+        }
+
+        logger.info("Deleted embeddings for transcript \(transcriptId)")
+    }
+
+    /// Gets all embeddings for a transcript (for batch operations like similarity search)
+    public func getAllEmbeddings(forTranscriptId transcriptId: Int64) async throws -> [Embedding] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        // Join embeddings with segments to filter by transcript
+        var results: [Embedding] = []
+
+        let segmentQuery = segments.filter(self.transcriptId == transcriptId).select(id)
+        var segmentIds: [Int64] = []
+
+        for row in try db.prepare(segmentQuery) {
+            segmentIds.append(row[id])
+        }
+
+        for segId in segmentIds {
+            if let embedding = try await getEmbedding(forSegmentId: segId) {
+                results.append(embedding)
+            }
+        }
+
+        return results
+    }
+
+    // MARK: - Chat History Operations
+
+    /// Saves a chat message to the history
+    public func saveChatMessage(sessionId: String, recordingId: Int64?, role: String, content: String, citations: [Int64]?) async throws -> Int64 {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        // Convert citations array to JSON string
+        var citationsJson: String? = nil
+        if let citations = citations {
+            let encoder = JSONEncoder()
+            if let data = try? encoder.encode(citations) {
+                citationsJson = String(data: data, encoding: .utf8)
+            }
+        }
+
+        do {
+            let insert = chatHistory.insert(
+                self.chatSessionId <- sessionId,
+                self.chatRecordingId <- recordingId,
+                self.role <- role,
+                self.content <- content,
+                self.citations <- citationsJson,
+                self.timestamp <- Date()
+            )
+
+            let rowId = try db.run(insert)
+            logger.info("Chat message saved (session: \(sessionId), ID: \(rowId))")
+            return rowId
+        } catch {
+            logger.error("Failed to save chat message: \(error.localizedDescription)")
+            throw DatabaseError.insertFailed
+        }
+    }
+
+    /// Gets all chat messages for a session, ordered by timestamp
+    public func getChatHistory(sessionId: String) async throws -> [ChatMessage] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = chatHistory
+            .filter(self.chatSessionId == sessionId)
+            .order(timestamp.asc)
+
+        var results: [ChatMessage] = []
+        let decoder = JSONDecoder()
+
+        for row in try db.prepare(query) {
+            // Parse citations JSON back to array
+            var citationsArray: [Int64]? = nil
+            if let citationsJson = row[citations],
+               let data = citationsJson.data(using: .utf8) {
+                citationsArray = try? decoder.decode([Int64].self, from: data)
+            }
+
+            let message = ChatMessage(
+                id: row[id],
+                sessionId: row[chatSessionId],
+                recordingId: row[chatRecordingId],
+                role: row[self.role],
+                content: row[self.content],
+                citations: citationsArray,
+                timestamp: row[timestamp]
+            )
+            results.append(message)
+        }
+
+        return results
+    }
+
+    /// Deletes all messages for a chat session
+    public func deleteChatSession(sessionId: String) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = chatHistory.filter(self.chatSessionId == sessionId)
+        let deletedCount = try db.run(query.delete())
+
+        logger.info("Deleted chat session \(sessionId) (\(deletedCount) messages)")
+    }
+
+    /// Gets all chat sessions (unique session IDs)
+    public func getAllChatSessions() async throws -> [String] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        var sessions: [String] = []
+        let query = chatHistory.select(chatSessionId).group(chatSessionId)
+
+        for row in try db.prepare(query) {
+            sessions.append(row[chatSessionId])
+        }
+
+        return sessions
+    }
+
+    /// Gets the most recent chat message timestamp for a session
+    public func getLastChatTimestamp(sessionId: String) async throws -> Date? {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = chatHistory
+            .filter(self.chatSessionId == sessionId)
+            .order(timestamp.desc)
+            .limit(1)
+
+        if let row = try db.pluck(query) {
+            return row[timestamp]
+        }
+
+        return nil
     }
 }

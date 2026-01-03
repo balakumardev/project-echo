@@ -17,6 +17,10 @@ let package = Package(
         // FluidAudio for speaker diarization (CoreML, local)
         // Using main branch for Swift 6 compatibility fixes
         .package(url: "https://github.com/FluidInference/FluidAudio.git", branch: "main"),
+        // VecturaKit for vector database and embeddings (RAG)
+        .package(url: "https://github.com/rryam/VecturaKit.git", from: "2.3.1"),
+        // MLX Swift LM for local LLM inference on Apple Silicon (official Apple library)
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", branch: "main"),
     ],
     targets: [
         // Core Audio Engine
@@ -32,6 +36,14 @@ let package = Package(
             dependencies: [
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                // RAG dependencies
+                .product(name: "VecturaKit", package: "VecturaKit"),
+                .product(name: "VecturaNLKit", package: "VecturaKit"),
+                // MLX for local LLM inference (Apple's official library)
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                // Database access for RAG
+                "Database",
             ],
             path: "Sources/Intelligence"
         ),

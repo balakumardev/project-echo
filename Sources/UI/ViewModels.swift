@@ -231,7 +231,7 @@ class RecordingDetailViewModel: ObservableObject {
             }
 
             let db = try await getDatabase()
-            _ = try await db.saveTranscript(
+            let transcriptId = try await db.saveTranscript(
                 recordingId: recording.id,
                 fullText: result.text,
                 language: result.language,
@@ -241,8 +241,32 @@ class RecordingDetailViewModel: ObservableObject {
 
             // Reload
             await loadTranscript(for: recording)
+
+            // Auto-index if enabled (defaults to true if not set)
+            let autoIndex = UserDefaults.standard.object(forKey: "autoIndexTranscripts") as? Bool ?? true
+            if autoIndex {
+                await autoIndexTranscript(recording: recording, transcriptId: transcriptId)
+            }
         } catch {
             print("Failed to generate transcript: \(error)")
+        }
+    }
+
+    /// Automatically index a transcript for RAG search
+    private func autoIndexTranscript(recording: Recording, transcriptId: Int64) async {
+        do {
+            let db = try await getDatabase()
+            guard let transcript = try await db.getTranscript(forRecording: recording.id) else {
+                print("No transcript found for recording \(recording.id), skipping indexing")
+                return
+            }
+            let segments = try await db.getSegments(forTranscriptId: transcriptId)
+
+            // Index using AIService
+            try await AIService.shared.indexRecording(recording, transcript: transcript, segments: segments)
+            print("Auto-indexed transcript for recording \(recording.id)")
+        } catch {
+            print("Auto-indexing failed for recording \(recording.id): \(error.localizedDescription)")
         }
     }
 
