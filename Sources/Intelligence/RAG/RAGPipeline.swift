@@ -648,23 +648,24 @@ public actor RAGPipeline {
             .appendingPathComponent("VectorDB")
     }
 
-    /// Loads and rebuilds the vector index from the database
-    /// VecturaKit's index is ephemeral, so we need to re-add documents on each launch
+    /// Loads indexed recordings from persisted VecturaKit storage
+    /// VecturaKit persists documents with embeddings to disk - we just need to rebuild mappings
     private func loadIndexedRecordingsFromDB() async {
         guard let vectorDB = vectorDB else { return }
 
         do {
+            // Get existing documents from VecturaKit's persistent storage (instant - no re-embedding!)
+            let existingDocs = try await vectorDB.getAllDocuments()
+            let existingDocIds = Set(existingDocs.map { $0.id })
+            debugLog("[Init] Found \(existingDocs.count) persisted documents in VecturaKit")
+
             let recordings = try await databaseManager.getAllRecordings()
-            debugLog("[Init] Total recordings in database: \(recordings.count)")
-            let recordingsWithEmbeddings = recordings.filter { $0.hasTranscript }
-            debugLog("[Init] Recordings with transcripts: \(recordingsWithEmbeddings.count)")
+            let recordingsWithTranscripts = recordings.filter { $0.hasTranscript }
+            debugLog("[Init] Recordings with transcripts: \(recordingsWithTranscripts.count)")
 
-            logger.info("Found \(recordingsWithEmbeddings.count) recordings with transcripts, rebuilding index...")
-            debugLog("[Init] Starting to index \(recordingsWithEmbeddings.count) recordings...")
+            var newDocsToAdd: [(text: String, id: UUID, segmentId: Int64, recordingId: Int64)] = []
 
-            for (idx, recording) in recordingsWithEmbeddings.enumerated() {
-                debugLog("[Init] Processing recording \(idx+1)/\(recordingsWithEmbeddings.count): \(recording.id)")
-
+            for recording in recordingsWithTranscripts {
                 guard let transcript = try await databaseManager.getTranscript(forRecording: recording.id) else {
                     continue
                 }
@@ -672,59 +673,61 @@ public actor RAGPipeline {
                 let segments = try await databaseManager.getSegments(forTranscriptId: transcript.id)
                 guard !segments.isEmpty else { continue }
 
-                // Check if this recording has embeddings stored in the database
-                guard let firstSegment = segments.first else { continue }
-                let hasEmbedding = try await databaseManager.hasEmbedding(forSegmentId: firstSegment.id)
+                var recordingHasAllDocs = true
 
-                // Prepare texts for embedding (include speaker context)
-                let texts = segments.map { segment in
-                    "[\(segment.speaker)] \(segment.text)"
-                }
+                for segment in segments {
+                    let docId = generateDocumentId(segmentId: segment.id, recordingId: recording.id, transcriptId: transcript.id)
 
-                // Generate deterministic UUIDs for consistency
-                let documentIds = segments.map { segment in
-                    generateDocumentId(segmentId: segment.id, recordingId: recording.id, transcriptId: transcript.id)
-                }
-
-                // Add documents to VecturaKit (it handles embedding internally)
-                do {
-                    debugLog("[Init] Recording \(recording.id): Adding \(texts.count) docs to vectorDB...")
-                    _ = try await vectorDB.addDocuments(texts: texts, ids: documentIds)
-                    debugLog("[Init] Recording \(recording.id): Added to vectorDB")
-
-                    // Update mappings
-                    for (index, segment) in segments.enumerated() {
-                        let docId = documentIds[index]
+                    if existingDocIds.contains(docId) {
+                        // Document already persisted - just update mappings (instant!)
                         documentToSegment[docId] = (recordingId: recording.id, segmentId: segment.id)
                         segmentToDocument[segment.id] = docId
+                    } else {
+                        // New document - need to add it
+                        let text = "[\(segment.speaker)] \(segment.text)"
+                        newDocsToAdd.append((text: text, id: docId, segmentId: segment.id, recordingId: recording.id))
+                        recordingHasAllDocs = false
                     }
+                }
 
-                    // If no embeddings stored yet, save them now (auto-index on startup)
-                    if !hasEmbedding {
-                        debugLog("[Init] Recording \(recording.id): Generating embeddings for \(segments.count) segments...")
-                        for (index, segment) in segments.enumerated() {
-                            let embedding = try await embeddingEngine.embed(texts[index])
-                            _ = try await databaseManager.saveEmbedding(
-                                segmentId: segment.id,
-                                vector: embedding,
-                                model: "NLContextualEmbedder"
-                            )
-                        }
-                    }
-
+                if recordingHasAllDocs {
                     indexedRecordings.insert(recording.id)
-                } catch {
-                    logger.warning("Failed to re-index recording \(recording.id): \(error.localizedDescription)")
-                    debugLog("[Init] Recording \(recording.id): Failed - \(error.localizedDescription)")
                 }
             }
 
-            debugLog("[Init] Complete - indexed \(indexedRecordings.count) recordings")
+            // Add any new documents that weren't persisted yet
+            if !newDocsToAdd.isEmpty {
+                debugLog("[Init] Adding \(newDocsToAdd.count) new documents to index...")
+                for doc in newDocsToAdd {
+                    do {
+                        _ = try await vectorDB.addDocument(text: doc.text, id: doc.id)
+                        documentToSegment[doc.id] = (recordingId: doc.recordingId, segmentId: doc.segmentId)
+                        segmentToDocument[doc.segmentId] = doc.id
 
-            logger.info("Rebuilt index with \(self.indexedRecordings.count) recordings")
+                        // Also save embedding to database
+                        let embedding = try await embeddingEngine.embed(doc.text)
+                        _ = try await databaseManager.saveEmbedding(
+                            segmentId: doc.segmentId,
+                            vector: embedding,
+                            model: "NLContextualEmbedder"
+                        )
+                    } catch {
+                        debugLog("[Init] Failed to add doc \(doc.id): \(error.localizedDescription)")
+                    }
+                }
+
+                // Mark recordings as indexed after adding new docs
+                for recording in recordingsWithTranscripts {
+                    indexedRecordings.insert(recording.id)
+                }
+            }
+
+            debugLog("[Init] Complete - \(self.indexedRecordings.count) recordings, \(self.documentToSegment.count) segments mapped")
+            logger.info("Loaded \(self.indexedRecordings.count) recordings (\(existingDocs.count) from cache, \(newDocsToAdd.count) new)")
 
         } catch {
             logger.warning("Failed to load indexed recordings: \(error.localizedDescription)")
+            debugLog("[Init] Error: \(error.localizedDescription)")
         }
     }
 

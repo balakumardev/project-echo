@@ -210,17 +210,31 @@ public actor AIService {
         }
 
         isInitialized = true
-        print("[AIService] Initialize complete - ragPipeline: \(ragPipeline != nil)")
+        logToFile("[AIService] Initialize complete - ragPipeline: \(ragPipeline != nil)")
 
-        // Check if we have a previously selected model that's cached
-        if provider == .localMLX && isModelCached(config.selectedModelId) {
-            // Don't auto-load - let user trigger it
-            logger.info("Found cached model: \(self.config.selectedModelId)")
+        // Auto-load cached model on startup
+        let modelId = self.config.selectedModelId
+        let isCached = isModelCached(modelId)
+        logToFile("[AIService] Auto-load check: provider=\(provider.rawValue), modelId=\(modelId), isCached=\(isCached)")
+
+        if provider == .localMLX && isCached {
+            logger.info("Auto-loading cached model: \(modelId)")
+            logToFile("[AIService] Auto-loading cached model: \(modelId)")
+            do {
+                try await setupModel(modelId)
+                logToFile("[AIService] Model auto-loaded successfully")
+            } catch {
+                logger.warning("Failed to auto-load model: \(error.localizedDescription)")
+                logToFile("[AIService] Failed to auto-load model: \(error.localizedDescription)")
+                // Status will remain .notConfigured, user can manually load
+            }
+        } else if provider == .localMLX && !isCached {
+            logToFile("[AIService] Model not cached, skipping auto-load")
         }
 
         // Update indexing count
         await refreshIndexingStatus()
-        print("[AIService] Indexed recordings count: \(indexedRecordingsCount)")
+        logToFile("[AIService] Indexed recordings count: \(indexedRecordingsCount)")
 
         logger.info("AI service initialized")
     }
@@ -230,11 +244,28 @@ public actor AIService {
     /// Setup a local MLX model (downloads if needed, then loads)
     /// This is the MAIN method for getting a model ready
     public func setupModel(_ modelId: String) async throws {
-        // Prevent multiple simultaneous setup calls
-        guard !isSettingUp else {
-            print("[AIService] setupModel already in progress, ignoring call for: \(modelId)")
-            return
+        // If setup is already in progress, wait for it to complete
+        if isSettingUp {
+            logToFile("[AIService] setupModel already in progress, waiting for completion...")
+            for _ in 0..<120 {  // Wait up to 60 seconds
+                try await Task.sleep(nanoseconds: 500_000_000)
+                if !isSettingUp {
+                    logToFile("[AIService] Previous setup completed, checking status")
+                    // If model is now ready, return success
+                    if case .ready = status {
+                        return
+                    }
+                    // Otherwise fall through to try setup
+                    break
+                }
+            }
+            // If still setting up after timeout, return
+            if isSettingUp {
+                logToFile("[AIService] Setup timeout, returning")
+                return
+            }
         }
+
         isSettingUp = true
         defer { isSettingUp = false }
 
@@ -520,50 +551,91 @@ public actor AIService {
     }
 
     /// Check if a model is cached locally
+    /// Checks both HuggingFace cache and app's local Models directory
     public func isModelCached(_ modelId: String) -> Bool {
-        // MLX caches to ~/.cache/huggingface/hub/models--{org}--{model}
+        // Check 1: App's local Models directory (~/Library/Application Support/ProjectEcho/Models/llm/)
+        let modelName = modelId.components(separatedBy: "/").last ?? modelId
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let localModelPath = appSupport
+                .appendingPathComponent("ProjectEcho")
+                .appendingPathComponent("Models")
+                .appendingPathComponent("llm")
+                .appendingPathComponent(modelName)
+
+            let configPath = localModelPath.appendingPathComponent("config.json")
+            if fileManager.fileExists(atPath: configPath.path) {
+                let contents = (try? fileManager.contentsOfDirectory(atPath: localModelPath.path)) ?? []
+                let hasSafetensors = contents.contains { $0.hasSuffix(".safetensors") }
+                if hasSafetensors {
+                    logToFile("[isModelCached] Found in local cache: \(localModelPath.path)")
+                    return true
+                }
+            }
+        }
+
+        // Check 2: HuggingFace cache (~/.cache/huggingface/hub/models--{org}--{model})
         let cacheKey = "models--\(modelId.replacingOccurrences(of: "/", with: "--"))"
         let cacheDir = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/hub")
             .appendingPathComponent(cacheKey)
             .appendingPathComponent("snapshots")
 
-        // Check for actual model files
         guard let snapshots = try? fileManager.contentsOfDirectory(atPath: cacheDir.path),
               let latestSnapshot = snapshots.first else {
+            logToFile("[isModelCached] No cache found for \(modelId)")
             return false
         }
 
         let modelPath = cacheDir.appendingPathComponent(latestSnapshot)
-
-        // Must have config.json at minimum
         let configPath = modelPath.appendingPathComponent("config.json")
         guard fileManager.fileExists(atPath: configPath.path) else {
+            logToFile("[isModelCached] No config.json found for \(modelId)")
             return false
         }
 
-        // Check for model weights (.safetensors files)
         let contents = (try? fileManager.contentsOfDirectory(atPath: modelPath.path)) ?? []
-        return contents.contains { $0.hasSuffix(".safetensors") }
+        let hasSafetensors = contents.contains { $0.hasSuffix(".safetensors") }
+        logToFile("[isModelCached] HuggingFace cache \(modelId): hasSafetensors=\(hasSafetensors)")
+        return hasSafetensors
     }
 
     /// Synchronous version for UI (non-async context)
     public nonisolated func isModelCachedSync(_ modelId: String) -> Bool {
+        let fm = FileManager.default
+
+        // Check 1: App's local Models directory
+        let modelName = modelId.components(separatedBy: "/").last ?? modelId
+        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let localModelPath = appSupport
+                .appendingPathComponent("ProjectEcho")
+                .appendingPathComponent("Models")
+                .appendingPathComponent("llm")
+                .appendingPathComponent(modelName)
+
+            let configPath = localModelPath.appendingPathComponent("config.json")
+            if fm.fileExists(atPath: configPath.path) {
+                let contents = (try? fm.contentsOfDirectory(atPath: localModelPath.path)) ?? []
+                if contents.contains(where: { $0.hasSuffix(".safetensors") }) {
+                    return true
+                }
+            }
+        }
+
+        // Check 2: HuggingFace cache
         let cacheKey = "models--\(modelId.replacingOccurrences(of: "/", with: "--"))"
-        let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+        let cacheDir = fm.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/hub")
             .appendingPathComponent(cacheKey)
             .appendingPathComponent("snapshots")
 
-        guard let snapshots = try? FileManager.default.contentsOfDirectory(atPath: cacheDir.path),
+        guard let snapshots = try? fm.contentsOfDirectory(atPath: cacheDir.path),
               let latestSnapshot = snapshots.first else {
             return false
         }
 
         let modelPath = cacheDir.appendingPathComponent(latestSnapshot)
         let configPath = modelPath.appendingPathComponent("config.json")
-
-        return FileManager.default.fileExists(atPath: configPath.path)
+        return fm.fileExists(atPath: configPath.path)
     }
 
     /// Check if service is ready for chat

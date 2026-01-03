@@ -60,12 +60,28 @@ public class AIServiceObservable: ObservableObject {
     private func loadFromService() {
         Task {
             let config = await AIService.shared.currentConfig
+            let currentStatus = await AIService.shared.status
+
             await MainActor.run {
                 self.selectedModelId = config.selectedModelId
                 self.openAIKey = config.openAIKey
                 self.openAIBaseURL = config.openAIBaseURL
                 self.openAIModel = config.openAIModel
                 self.provider = config.provider
+            }
+
+            // Auto-trigger model setup if model is cached but not loaded
+            // This handles the race condition where AIService.initialize() hasn't completed yet
+            if config.provider == .localMLX,
+               case .notConfigured = currentStatus,
+               AIService.shared.isModelCachedSync(config.selectedModelId) {
+                print("[AIServiceObservable] Auto-triggering setup for cached model: \(config.selectedModelId)")
+                do {
+                    try await AIService.shared.setupModel(config.selectedModelId)
+                    print("[AIServiceObservable] Cached model auto-loaded successfully")
+                } catch {
+                    print("[AIServiceObservable] Failed to auto-load cached model: \(error)")
+                }
             }
         }
     }
@@ -119,15 +135,37 @@ public class AIServiceObservable: ObservableObject {
     /// Setup a model (downloads if needed, then loads)
     public func setupModel(_ modelId: String) {
         print("[AIServiceObservable] setupModel called for: \(modelId)")
+        logToFile("[AIServiceObservable] setupModel called for: \(modelId)")
         selectedModelId = modelId
         Task {
             do {
                 print("[AIServiceObservable] Calling AIService.shared.setupModel...")
+                logToFile("[AIServiceObservable] Calling AIService.shared.setupModel...")
                 try await AIService.shared.setupModel(modelId)
                 print("[AIServiceObservable] setupModel completed successfully")
+                logToFile("[AIServiceObservable] setupModel completed successfully")
             } catch {
                 print("[AIServiceObservable] setupModel failed: \(error)")
+                logToFile("[AIServiceObservable] setupModel failed: \(error)")
                 // Error is reflected in status
+            }
+        }
+    }
+
+    /// Write to debug log file
+    private func logToFile(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(message)\n"
+        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_rag.log")
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logURL.path) {
+                if let handle = try? FileHandle(forWritingTo: logURL) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: logURL)
             }
         }
     }

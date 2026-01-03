@@ -26,9 +26,14 @@ public struct ChatView: View {
             // Model status header with error display
             modelStatusHeader
 
-            // Inline setup prompt when not configured
-            if case .notConfigured = aiService.status {
+            // Inline setup prompt when not configured AND no cached model
+            // If model is cached, it will auto-load - show loading state instead
+            if case .notConfigured = aiService.status,
+               !aiService.isModelCached(aiService.selectedModelId) {
                 inlineSetupPrompt
+            } else if case .notConfigured = aiService.status {
+                // Model is cached but still loading - show loading indicator
+                loadingModelView
             }
 
             // Messages area
@@ -85,6 +90,35 @@ public struct ChatView: View {
                     inlineModelOption(model)
                 }
             }
+        }
+        .padding(Theme.Spacing.lg)
+        .background(Theme.Colors.surface)
+        .overlay(
+            Rectangle()
+                .fill(Theme.Colors.borderSubtle)
+                .frame(height: 1),
+            alignment: .bottom
+        )
+    }
+
+    // MARK: - Loading Model View
+
+    private var loadingModelView: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            ProgressView()
+                .scaleEffect(0.8)
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                Text("Loading AI Model...")
+                    .font(Theme.Typography.headline)
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Text("This may take a moment")
+                    .font(Theme.Typography.caption)
+                    .foregroundColor(Theme.Colors.textSecondary)
+            }
+
+            Spacer()
         }
         .padding(Theme.Spacing.lg)
         .background(Theme.Colors.surface)
