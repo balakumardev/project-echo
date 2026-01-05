@@ -503,8 +503,47 @@ public actor MeetingDetector {
         debugLog("Starting microphone usage monitoring...")
         logger.info("Starting microphone usage monitoring")
 
-        await monitor.startMonitoring()
+        // IMPORTANT: Set up event listener BEFORE starting monitoring
+        // to avoid race condition where first poll yields events before listener is ready
         startMicrophoneEventMonitoring()
+        
+        // Small delay to ensure the event stream is set up
+        try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        
+        await monitor.startMonitoring()
+        
+        // Check for any meeting apps already using the microphone
+        await checkExistingMicUsers()
+    }
+    
+    private func checkExistingMicUsers() async {
+        guard let monitor = mediaDeviceMonitor else { return }
+        
+        let existingUsers = await monitor.getProcessesUsingMicrophone()
+        debugLog("Checking existing mic users: \(existingUsers.count) found")
+        
+        for usage in existingUsers {
+            guard let bundleID = usage.bundleID else { continue }
+            
+            let isMeetingApp = Self.meetingAppBundleIDs.contains(bundleID)
+            let isBrowser = Self.isBrowserBundleID(bundleID)
+            let isCustomApp = await MainActor.run {
+                CustomMeetingAppsManager.shared.isCustomApp(bundleId: bundleID) &&
+                CustomMeetingAppsManager.shared.isEnabled(bundleId: bundleID)
+            }
+            
+            if isMeetingApp || isBrowser || isCustomApp {
+                debugLog("Found existing mic user that is a meeting app: \(bundleID) (\(usage.appName ?? "unknown"))")
+                
+                // Check if we're in monitoring state and should start recording
+                if case .monitoring = currentState {
+                    let recordingBundleID = isBrowser ? Self.getMainBrowserBundleID(bundleID) : bundleID
+                    debugLog("Triggering recording for existing mic user: \(recordingBundleID)")
+                    await triggerMeetingDetection(app: usage.appName ?? recordingBundleID, bundleID: recordingBundleID)
+                    return // Only trigger for the first matching app
+                }
+            }
+        }
     }
 
     private func stopMicrophoneMonitoring() async {
