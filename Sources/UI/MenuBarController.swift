@@ -30,7 +30,7 @@ public class MenuBarController: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Project Echo")
+            button.image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Engram")
             button.image?.isTemplate = true
         }
 
@@ -89,6 +89,18 @@ public class MenuBarController: NSObject {
         )
         menu.addItem(libraryItem)
 
+        menu.addItem(NSMenuItem.separator())
+
+        let aiChatItem = NSMenuItem(
+            title: "AI Chat",
+            action: #selector(openAIChat),
+            keyEquivalent: ""
+        )
+        aiChatItem.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "AI Chat")
+        aiChatItem.target = self
+        aiChatItem.isEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true
+        menu.addItem(aiChatItem)
+
         let settingsItem = createMenuItem(
             title: "Settings",
             icon: "gearshape.fill",
@@ -101,12 +113,19 @@ public class MenuBarController: NSObject {
 
         // Quit
         let quitItem = createMenuItem(
-            title: "Quit Project Echo",
+            title: "Quit Engram",
             icon: "power",
             action: #selector(quit),
             keyEquivalent: "q"
         )
         menu.addItem(quitItem)
+
+        // Attribution footer
+        menu.addItem(NSMenuItem.separator())
+        let footerView = createFooterView()
+        let footerItem = NSMenuItem()
+        footerItem.view = footerView
+        menu.addItem(footerItem)
     }
 
     private func createMenuItem(title: String, icon: String, action: Selector, keyEquivalent: String) -> NSMenuItem {
@@ -127,7 +146,7 @@ public class MenuBarController: NSObject {
         let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 44))
 
         // App name label
-        let titleLabel = NSTextField(labelWithString: "Project Echo")
+        let titleLabel = NSTextField(labelWithString: "Engram")
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.frame = NSRect(x: 14, y: 22, width: 120, height: 18)
@@ -182,6 +201,21 @@ public class MenuBarController: NSObject {
         }
         return String(format: "%02d:%02d", minutes, seconds)
     }
+
+    private func createFooterView() -> NSView {
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+
+        // Attribution label with subtle styling
+        let attributionLabel = NSTextField(labelWithString: "by Bala Kumar")
+        attributionLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        attributionLabel.textColor = .tertiaryLabelColor
+        attributionLabel.alignment = .center
+        attributionLabel.frame = NSRect(x: 0, y: 4, width: 240, height: 16)
+
+        containerView.addSubview(attributionLabel)
+
+        return containerView
+    }
     
     // MARK: - Actions
     
@@ -205,6 +239,10 @@ public class MenuBarController: NSObject {
 
     @objc func openSettings() {
         delegate?.menuBarDidRequestOpenSettings()
+    }
+
+    @objc func openAIChat() {
+        delegate?.menuBarDidRequestOpenAIChat()
     }
 
     @objc func quit() {
@@ -255,7 +293,7 @@ public class MenuBarController: NSObject {
             iconColor = nil
         }
 
-        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Project Echo") {
+        if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Engram") {
             if let color = iconColor {
                 // Create a colored version of the icon
                 let coloredImage = image.copy() as! NSImage
@@ -310,4 +348,5 @@ public protocol MenuBarDelegate: AnyObject {
     func menuBarDidRequestInsertMarker()
     func menuBarDidRequestOpenLibrary()
     func menuBarDidRequestOpenSettings()
+    func menuBarDidRequestOpenAIChat()
 }

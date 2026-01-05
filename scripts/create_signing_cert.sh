@@ -1,11 +1,15 @@
 #!/bin/bash
 
-# Creates a self-signed code signing certificate for Project Echo
+# Engram - Code Signing Certificate Creation Script
+# Copyright © 2024-2026 Bala Kumar. All rights reserved.
+# https://balakumar.dev
+#
+# Creates a self-signed code signing certificate for Engram
 # This certificate allows stable code signing so permissions persist across rebuilds
 
 set -e
 
-CERT_NAME="ProjectEcho Development"
+CERT_NAME="Engram Development"
 
 echo "Creating self-signed code signing certificate: '$CERT_NAME'"
 echo ""
@@ -78,4 +82,4 @@ security find-identity -v -p codesigning 2>/dev/null | grep "$CERT_NAME" || {
 }
 
 echo ""
-echo "Done! You can now run ./scripts/run_app.sh and permissions will persist."
+echo "Done! You can now run ./scripts/build_app.sh and permissions will persist."

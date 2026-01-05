@@ -67,7 +67,7 @@ public actor SpeakerDiarizationEngine {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "SpeakerDiarization")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "SpeakerDiarization")
     private var diarizerManager: OfflineDiarizerManager?
     private var vadManager: VadManager?
     private var isModelLoaded = false

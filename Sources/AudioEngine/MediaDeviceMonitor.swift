@@ -6,7 +6,7 @@ import os.log
 // Debug logging for MediaDeviceMonitor
 #if DEBUG
 private func mediaDeviceLog(_ message: String) {
-    let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_debug.log")
+    let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("engram_debug.log")
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] [MediaDevice] \(message)\n"
     if let data = line.data(using: .utf8) {
@@ -64,7 +64,7 @@ public actor MediaDeviceMonitor {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "MediaDeviceMonitor")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "MediaDeviceMonitor")
     private var configuration: Configuration
     private var pollingTask: Task<Void, Never>?
     private var isMonitoring = false

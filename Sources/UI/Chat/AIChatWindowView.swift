@@ -9,6 +9,7 @@ public struct AIChatWindowView: View {
     @StateObject private var aiService = AIServiceObservable()
     @State private var recordings: [Recording] = []
     @State private var isLoadingRecordings = false
+    @AppStorage("aiEnabled") private var aiEnabled = true
 
     @Environment(\.dismiss) private var dismiss
 
@@ -17,36 +18,59 @@ public struct AIChatWindowView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // Title bar
-            titleBar
+        Group {
+            if !aiEnabled {
+                AIDisabledView()
+            } else {
+                VStack(spacing: 0) {
+                    // Title bar
+                    titleBar
 
-            // Recording filter
-            recordingFilterBar
+                    // Recording filter
+                    recordingFilterBar
 
-            Divider()
-                .background(Theme.Colors.border)
+                    Divider()
+                        .background(Theme.Colors.border)
 
-            // Chat view
-            ChatView(
-                viewModel: viewModel,
-                onCitationTap: handleCitationTap
-            )
+                    // Chat view
+                    ChatView(
+                        viewModel: viewModel,
+                        onCitationTap: handleCitationTap
+                    )
+                }
+                .task {
+                    await loadRecordings()
+                }
+            }
         }
         .frame(minWidth: 400, minHeight: 500)
         .background(Theme.Colors.background)
-        .task {
-            await loadRecordings()
-        }
     }
 
     // MARK: - Title Bar
 
     private var titleBar: some View {
         HStack {
-            Text("AI Chat")
-                .font(Theme.Typography.headline)
-                .foregroundColor(Theme.Colors.textPrimary)
+            // App branding
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(Theme.Colors.primary)
+
+                Text("Engram")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Text("AI")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.Colors.primary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Theme.Colors.primaryMuted)
+                    )
+            }
 
             Spacer()
 
@@ -119,10 +143,20 @@ public struct AIChatWindowView: View {
                     .controlSize(.small)
             }
 
-            // Show indexed count
-            Text("\(viewModel.indexedCount) indexed")
-                .font(Theme.Typography.caption)
-                .foregroundColor(Theme.Colors.textMuted)
+            // Show indexed count (use aiService which polls periodically)
+            if aiService.isIndexingLoading {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Loading...")
+                        .font(Theme.Typography.caption)
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+            } else {
+                Text("\(aiService.indexedCount) indexed")
+                    .font(Theme.Typography.caption)
+                    .foregroundColor(Theme.Colors.textMuted)
+            }
         }
         .padding(.horizontal, Theme.Spacing.lg)
         .padding(.vertical, Theme.Spacing.sm)
@@ -148,6 +182,39 @@ public struct AIChatWindowView: View {
     private func handleCitationTap(_ citation: Citation) {
         // TODO: Open the recording at the citation timestamp
         print("Citation tapped: \(citation.recordingTitle) at \(citation.timestamp)")
+    }
+}
+
+// MARK: - AI Disabled View
+
+@available(macOS 14.0, *)
+struct AIDisabledView: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.xl) {
+            Image(systemName: "sparkles.slash")
+                .font(.system(size: 48))
+                .foregroundColor(Theme.Colors.textMuted)
+
+            VStack(spacing: Theme.Spacing.sm) {
+                Text("AI Features Disabled")
+                    .font(Theme.Typography.title2)
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Text("Enable AI features in Settings to use AI Chat")
+                    .font(Theme.Typography.body)
+                    .foregroundColor(Theme.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button("Open Settings") {
+                openSettings()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.Colors.background)
     }
 }
 

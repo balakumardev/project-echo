@@ -38,6 +38,8 @@ public struct LibraryView: View {
     @State private var searchText = ""
     @State private var selectedFilter: RecordingFilter = .all
     @State private var selectedSort: RecordingSort = .dateDesc
+    @State private var customStartDate: Date? = nil
+    @State private var customEndDate: Date? = nil
 
     public init() {}
 
@@ -49,7 +51,9 @@ public struct LibraryView: View {
                 selectedRecording: $selectedRecording,
                 searchText: $searchText,
                 selectedFilter: $selectedFilter,
-                selectedSort: $selectedSort
+                selectedSort: $selectedSort,
+                customStartDate: $customStartDate,
+                customEndDate: $customEndDate
             )
             .frame(width: 340)
 

@@ -17,7 +17,7 @@ public class SystemEventHandler {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "SystemEventHandler")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "SystemEventHandler")
     private var observers: [NSObjectProtocol] = []
     private var eventContinuation: AsyncStream<SystemEvent>.Continuation?
 

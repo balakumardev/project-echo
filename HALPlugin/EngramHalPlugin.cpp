@@ -1,16 +1,19 @@
 //
-//  EchoHalPlugin.cpp
-//  Echo Virtual Audio Device Implementation
+//  EngramHalPlugin.cpp
+//  Engram Virtual Audio Device Implementation
+//
+//  Copyright © 2024-2026 Bala Kumar. All rights reserved.
+//  https://balakumar.dev
 //
 
-#include "EchoHalPlugin.h"
+#include "EngramHalPlugin.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 // MARK: - Ring Buffer Implementation
 
-void EchoRingBuffer_Init(EchoRingBuffer* rb, UInt32 size) {
+void EngramRingBuffer_Init(EngramRingBuffer* rb, UInt32 size) {
     rb->size = size;
     rb->buffer = (Float32*)calloc(size, sizeof(Float32));
     rb->writeIndex = 0;
@@ -18,7 +21,7 @@ void EchoRingBuffer_Init(EchoRingBuffer* rb, UInt32 size) {
     pthread_mutex_init(&rb->lock, NULL);
 }
 
-void EchoRingBuffer_Destroy(EchoRingBuffer* rb) {
+void EngramRingBuffer_Destroy(EngramRingBuffer* rb) {
     if (rb->buffer) {
         free(rb->buffer);
         rb->buffer = NULL;
@@ -26,67 +29,67 @@ void EchoRingBuffer_Destroy(EchoRingBuffer* rb) {
     pthread_mutex_destroy(&rb->lock);
 }
 
-UInt32 EchoRingBuffer_Write(EchoRingBuffer* rb, const Float32* data, UInt32 frames) {
+UInt32 EngramRingBuffer_Write(EngramRingBuffer* rb, const Float32* data, UInt32 frames) {
     pthread_mutex_lock(&rb->lock);
-    
-    UInt32 available = EchoRingBuffer_GetAvailableWrite(rb);
+
+    UInt32 available = EngramRingBuffer_GetAvailableWrite(rb);
     UInt32 toWrite = (frames < available) ? frames : available;
-    
+
     for (UInt32 i = 0; i < toWrite; i++) {
         rb->buffer[rb->writeIndex] = data[i];
         rb->writeIndex = (rb->writeIndex + 1) % rb->size;
     }
-    
+
     pthread_mutex_unlock(&rb->lock);
     return toWrite;
 }
 
-UInt32 EchoRingBuffer_Read(EchoRingBuffer* rb, Float32* data, UInt32 frames) {
+UInt32 EngramRingBuffer_Read(EngramRingBuffer* rb, Float32* data, UInt32 frames) {
     pthread_mutex_lock(&rb->lock);
-    
-    UInt32 available = EchoRingBuffer_GetAvailableRead(rb);
+
+    UInt32 available = EngramRingBuffer_GetAvailableRead(rb);
     UInt32 toRead = (frames < available) ? frames : available;
-    
+
     for (UInt32 i = 0; i < toRead; i++) {
         data[i] = rb->buffer[rb->readIndex];
         rb->readIndex = (rb->readIndex + 1) % rb->size;
     }
-    
+
     // Zero-fill if not enough data
     for (UInt32 i = toRead; i < frames; i++) {
         data[i] = 0.0f;
     }
-    
+
     pthread_mutex_unlock(&rb->lock);
     return toRead;
 }
 
-UInt32 EchoRingBuffer_GetAvailableRead(EchoRingBuffer* rb) {
+UInt32 EngramRingBuffer_GetAvailableRead(EngramRingBuffer* rb) {
     UInt32 w = rb->writeIndex;
     UInt32 r = rb->readIndex;
     return (w >= r) ? (w - r) : (rb->size - r + w);
 }
 
-UInt32 EchoRingBuffer_GetAvailableWrite(EchoRingBuffer* rb) {
-    return rb->size - EchoRingBuffer_GetAvailableRead(rb) - 1;
+UInt32 EngramRingBuffer_GetAvailableWrite(EngramRingBuffer* rb) {
+    return rb->size - EngramRingBuffer_GetAvailableRead(rb) - 1;
 }
 
 // MARK: - Global State
 
-static EchoDevice gDevice;
+static EngramDevice gDevice;
 static AudioServerPlugInHostRef gHost = NULL;
 static UInt32 gRefCount = 0;
 
 // MARK: - Plugin Factory
 
-extern "C" void* EchoPlugIn_Create(CFAllocatorRef allocator, CFUUIDRef requestedTypeUUID) {
+extern "C" void* EngramPlugIn_Create(CFAllocatorRef allocator, CFUUIDRef requestedTypeUUID) {
     // Initialize device
-    memset(&gDevice, 0, sizeof(EchoDevice));
+    memset(&gDevice, 0, sizeof(EngramDevice));
     gDevice.objectID = kAudioObjectUnknown;
-    gDevice.sampleRate = kEchoSampleRate;
-    gDevice.channels = kEchoChannels;
-    
-    EchoRingBuffer_Init(&gDevice.ringBuffer, kEchoRingBufferSize);
+    gDevice.sampleRate = kEngramSampleRate;
+    gDevice.channels = kEngramChannels;
+
+    EngramRingBuffer_Init(&gDevice.ringBuffer, kEngramRingBufferSize);
     pthread_mutex_init(&gDevice.stateLock, NULL);
     
     // Calculate host ticks per frame
@@ -99,45 +102,45 @@ extern "C" void* EchoPlugIn_Create(CFAllocatorRef allocator, CFUUIDRef requested
     // Return interface
     static AudioServerPlugInDriverInterface interface = {
         NULL, // _reserved
-        EchoPlugIn_QueryInterface,
-        EchoPlugIn_AddRef,
-        EchoPlugIn_Release,
-        EchoPlugIn_Initialize,
-        EchoPlugIn_CreateDevice,
-        EchoPlugIn_DestroyDevice,
+        EngramPlugIn_QueryInterface,
+        EngramPlugIn_AddRef,
+        EngramPlugIn_Release,
+        EngramPlugIn_Initialize,
+        EngramPlugIn_CreateDevice,
+        EngramPlugIn_DestroyDevice,
         NULL, // AddDeviceClient
         NULL, // RemoveDeviceClient
         NULL, // PerformDeviceConfigurationChange
         NULL, // AbortDeviceConfigurationChange
-        
+
         // Property operations
-        EchoDevice_HasProperty,
-        EchoDevice_IsPropertySettable,
-        EchoDevice_GetPropertyDataSize,
-        EchoDevice_GetPropertyData,
-        EchoDevice_SetPropertyData,
-        
+        EngramDevice_HasProperty,
+        EngramDevice_IsPropertySettable,
+        EngramDevice_GetPropertyDataSize,
+        EngramDevice_GetPropertyData,
+        EngramDevice_SetPropertyData,
+
         // IO operations
-        EchoDevice_StartIO,
-        EchoDevice_StopIO,
-        EchoDevice_GetZeroTimeStamp,
-        EchoDevice_WillDoIOOperation,
-        EchoDevice_BeginIOOperation,
-        EchoDevice_DoIOOperation,
-        EchoDevice_EndIOOperation
+        EngramDevice_StartIO,
+        EngramDevice_StopIO,
+        EngramDevice_GetZeroTimeStamp,
+        EngramDevice_WillDoIOOperation,
+        EngramDevice_BeginIOOperation,
+        EngramDevice_DoIOOperation,
+        EngramDevice_EndIOOperation
     };
-    
+
     return &interface;
 }
 
 // MARK: - COM Interface
 
-static HRESULT EchoPlugIn_QueryInterface(void* driver, REFIID iid, LPVOID* ppv) {
+static HRESULT EngramPlugIn_QueryInterface(void* driver, REFIID iid, LPVOID* ppv) {
     CFUUIDRef interfaceID = CFUUIDCreateFromUUIDBytes(NULL, iid);
 
     if (CFEqual(interfaceID, IUnknownUUID) || CFEqual(interfaceID, kAudioServerPlugInDriverInterfaceUUID)) {
         *ppv = driver;
-        EchoPlugIn_AddRef(driver);
+        EngramPlugIn_AddRef(driver);
         CFRelease(interfaceID);
         return S_OK;
     }
@@ -147,45 +150,45 @@ static HRESULT EchoPlugIn_QueryInterface(void* driver, REFIID iid, LPVOID* ppv) 
     return E_NOINTERFACE;
 }
 
-static ULONG EchoPlugIn_AddRef(void* driver) {
+static ULONG EngramPlugIn_AddRef(void* driver) {
     return ++gRefCount;
 }
 
-static ULONG EchoPlugIn_Release(void* driver) {
+static ULONG EngramPlugIn_Release(void* driver) {
     UInt32 refCount = --gRefCount;
-    
+
     if (refCount == 0) {
-        EchoRingBuffer_Destroy(&gDevice.ringBuffer);
+        EngramRingBuffer_Destroy(&gDevice.ringBuffer);
         pthread_mutex_destroy(&gDevice.stateLock);
     }
-    
+
     return refCount;
 }
 
 // MARK: - Plugin Lifecycle
 
-static OSStatus EchoPlugIn_Initialize(AudioServerPlugInDriverRef driver, AudioServerPlugInHostRef host) {
+static OSStatus EngramPlugIn_Initialize(AudioServerPlugInDriverRef driver, AudioServerPlugInHostRef host) {
     gHost = host;
-    
+
     // Register device
     gDevice.objectID = 1000; // Arbitrary but unique
-    
-    printf("Echo HAL Plugin initialized\n");
+
+    printf("Engram HAL Plugin initialized\n");
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoPlugIn_CreateDevice(AudioServerPlugInDriverRef driver, CFDictionaryRef description, const AudioServerPlugInClientInfo* clientInfo, AudioObjectID* outDeviceObjectID) {
+static OSStatus EngramPlugIn_CreateDevice(AudioServerPlugInDriverRef driver, CFDictionaryRef description, const AudioServerPlugInClientInfo* clientInfo, AudioObjectID* outDeviceObjectID) {
     *outDeviceObjectID = gDevice.objectID;
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoPlugIn_DestroyDevice(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID) {
+static OSStatus EngramPlugIn_DestroyDevice(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID) {
     return kAudioHardwareNoError;
 }
 
 // MARK: - Property Management (Simplified - Full implementation would be extensive)
 
-static Boolean EchoDevice_HasProperty(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address) {
+static Boolean EngramDevice_HasProperty(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address) {
     // Basic properties only
     switch (address->mSelector) {
         case kAudioObjectPropertyName:
@@ -198,12 +201,12 @@ static Boolean EchoDevice_HasProperty(AudioServerPlugInDriverRef driver, AudioOb
     }
 }
 
-static OSStatus EchoDevice_IsPropertySettable(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, Boolean* outIsSettable) {
+static OSStatus EngramDevice_IsPropertySettable(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, Boolean* outIsSettable) {
     *outIsSettable = false;
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_GetPropertyDataSize(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32* outDataSize) {
+static OSStatus EngramDevice_GetPropertyDataSize(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32* outDataSize) {
     switch (address->mSelector) {
         case kAudioObjectPropertyName:
         case kAudioObjectPropertyManufacturer:
@@ -219,14 +222,14 @@ static OSStatus EchoDevice_GetPropertyDataSize(AudioServerPlugInDriverRef driver
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_GetPropertyData(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, UInt32* outDataSize, void* outData) {
+static OSStatus EngramDevice_GetPropertyData(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, UInt32* outDataSize, void* outData) {
     switch (address->mSelector) {
         case kAudioObjectPropertyName:
-            *((CFStringRef*)outData) = CFSTR(kEchoDeviceName);
+            *((CFStringRef*)outData) = CFSTR(kEngramDeviceName);
             *outDataSize = sizeof(CFStringRef);
             break;
         case kAudioObjectPropertyManufacturer:
-            *((CFStringRef*)outData) = CFSTR(kEchoDeviceManufacturer);
+            *((CFStringRef*)outData) = CFSTR(kEngramDeviceManufacturer);
             *outDataSize = sizeof(CFStringRef);
             break;
         case kAudioDevicePropertyNominalSampleRate:
@@ -240,60 +243,60 @@ static OSStatus EchoDevice_GetPropertyData(AudioServerPlugInDriverRef driver, Au
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_SetPropertyData(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, const void* inData) {
+static OSStatus EngramDevice_SetPropertyData(AudioServerPlugInDriverRef driver, AudioObjectID objectID, pid_t clientPID, const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize, const void* qualifierData, UInt32 inDataSize, const void* inData) {
     return kAudioHardwareUnsupportedOperationError;
 }
 
 // MARK: - IO Operations
 
-static OSStatus EchoDevice_StartIO(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID) {
+static OSStatus EngramDevice_StartIO(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID) {
     pthread_mutex_lock(&gDevice.stateLock);
     gDevice.isRunning = true;
     gDevice.anchorHostTime = mach_absolute_time();
     pthread_mutex_unlock(&gDevice.stateLock);
-    
-    printf("Echo device started\n");
+
+    printf("Engram device started\n");
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_StopIO(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID) {
+static OSStatus EngramDevice_StopIO(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID) {
     pthread_mutex_lock(&gDevice.stateLock);
     gDevice.isRunning = false;
     pthread_mutex_unlock(&gDevice.stateLock);
-    
-    printf("Echo device stopped\n");
+
+    printf("Engram device stopped\n");
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_GetZeroTimeStamp(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, Float64* outSampleTime, UInt64* outHostTime, UInt64* outSeed) {
+static OSStatus EngramDevice_GetZeroTimeStamp(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, Float64* outSampleTime, UInt64* outHostTime, UInt64* outSeed) {
     *outSampleTime = 0;
     *outHostTime = gDevice.anchorHostTime;
     *outSeed = 1;
-    
+
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_WillDoIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, UInt32 operationID, Boolean* outWillDo, Boolean* outWillDoInPlace) {
+static OSStatus EngramDevice_WillDoIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, UInt32 operationID, Boolean* outWillDo, Boolean* outWillDoInPlace) {
     *outWillDo = (operationID == kAudioServerPlugInIOOperationReadInput);
     *outWillDoInPlace = true;
-    
+
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_BeginIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, UInt32 operationID, UInt32 ioBufferFrameSize, const AudioServerPlugInIOCycleInfo* ioCycleInfo) {
+static OSStatus EngramDevice_BeginIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, UInt32 operationID, UInt32 ioBufferFrameSize, const AudioServerPlugInIOCycleInfo* ioCycleInfo) {
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_DoIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, AudioObjectID streamObjectID, UInt32 clientID, UInt32 operationID, UInt32 ioBufferFrameSize, const AudioServerPlugInIOCycleInfo* ioCycleInfo, void* ioMainBuffer, void* ioSecondaryBuffer) {
+static OSStatus EngramDevice_DoIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, AudioObjectID streamObjectID, UInt32 clientID, UInt32 operationID, UInt32 ioBufferFrameSize, const AudioServerPlugInIOCycleInfo* ioCycleInfo, void* ioMainBuffer, void* ioSecondaryBuffer) {
     if (operationID == kAudioServerPlugInIOOperationReadInput) {
         // Read from ring buffer (data injected by main app)
         Float32* buffer = (Float32*)ioMainBuffer;
-        EchoRingBuffer_Read(&gDevice.ringBuffer, buffer, ioBufferFrameSize * gDevice.channels);
+        EngramRingBuffer_Read(&gDevice.ringBuffer, buffer, ioBufferFrameSize * gDevice.channels);
     }
-    
+
     return kAudioHardwareNoError;
 }
 
-static OSStatus EchoDevice_EndIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, UInt32 operationID, UInt32 ioBufferFrameSize, const AudioServerPlugInIOCycleInfo* ioCycleInfo) {
+static OSStatus EngramDevice_EndIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID deviceObjectID, UInt32 clientID, UInt32 operationID, UInt32 ioBufferFrameSize, const AudioServerPlugInIOCycleInfo* ioCycleInfo) {
     return kAudioHardwareNoError;
 }

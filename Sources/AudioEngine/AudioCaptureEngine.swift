@@ -10,7 +10,7 @@ func debugLog(_ message: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] \(message)\n"
     let logFile = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("ProjectEcho/debug.log")
+        .appendingPathComponent("Engram/debug.log")
 
     if let handle = try? FileHandle(forWritingTo: logFile) {
         handle.seekToEndOfFile()
@@ -29,7 +29,7 @@ func debugLog(_ message: String) {
 @available(macOS 14.0, *)
 final class AudioWriter: @unchecked Sendable {
     private let lock = NSLock()
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "AudioWriter")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "AudioWriter")
     
     private var assetWriter: AVAssetWriter?
     private var microphoneInput: AVAssetWriterInput?
@@ -238,7 +238,7 @@ public actor AudioCaptureEngine {
     
     // MARK: - Properties
     
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "AudioEngine")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "AudioEngine")
     
     private var screenStream: SCStream?
     private var microphoneCaptureSession: AVCaptureSession?
@@ -265,7 +265,7 @@ public actor AudioCaptureEngine {
     
     /// Request necessary permissions for screen recording and microphone access
     public nonisolated func requestPermissions() async throws {
-        let logger = Logger(subsystem: "com.projectecho.app", category: "AudioEngine")
+        let logger = Logger(subsystem: "dev.balakumar.engram", category: "AudioEngine")
         
         // Check microphone permission first (this will prompt if needed)
         let micPermission = await AVCaptureDevice.requestAccess(for: .audio)
@@ -562,7 +562,7 @@ public actor AudioCaptureEngine {
 private final class ScreenCaptureDelegate: NSObject, SCStreamOutput {
     private let audioWriter: AudioWriter
     private var bufferCount = 0
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "ScreenCapture")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "ScreenCapture")
 
     init(audioWriter: AudioWriter) {
         self.audioWriter = audioWriter
@@ -588,7 +588,7 @@ private final class ScreenCaptureDelegate: NSObject, SCStreamOutput {
 private final class MicrophoneCaptureDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let audioWriter: AudioWriter
     private var bufferCount = 0
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "MicCapture")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "MicCapture")
 
     init(audioWriter: AudioWriter) {
         self.audioWriter = audioWriter

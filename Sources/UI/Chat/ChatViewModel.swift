@@ -127,6 +127,9 @@ public class ChatViewModel: ObservableObject {
     /// Number of indexed recordings
     @Published public var indexedCount: Int = 0
 
+    /// Whether the indexing count is still loading
+    @Published public var isIndexingLoading: Bool = true
+
     // MARK: - Properties
 
     /// The recording to scope queries to (nil = global search across all recordings)
@@ -176,7 +179,11 @@ public class ChatViewModel: ObservableObject {
 
     /// Refresh the indexing status
     public func refreshIndexingStatus() async {
-        indexedCount = await AIService.shared.indexedRecordingsCount
+        let service = AIService.shared
+        indexedCount = await service.indexedRecordingsCount
+        let initialized = await service.isInitialized
+        let initializing = await service.isInitializing
+        isIndexingLoading = !initialized || initializing
     }
 
     /// Send the current input as a message
@@ -205,30 +212,41 @@ public class ChatViewModel: ObservableObject {
         // Create generation task
         generationTask = Task {
             do {
-                // Use AIService for chat
+                // Use AIService for agentic chat (intelligent intent-based routing)
                 // Use recordingFilter which can be dynamically changed via the UI
-                let stream = await AIService.shared.chat(
+                let stream = await AIService.shared.agentChat(
                     query: query,
-                    recordingId: self.recordingFilter,
-                    sessionId: sessionId
+                    sessionId: sessionId,
+                    recordingFilter: self.recordingFilter
                 )
 
+                var rawResponse = ""
                 for try await token in stream {
                     // Check for cancellation
                     if Task.isCancelled { break }
 
-                    // Append token to streaming response
-                    streamingResponse += token
+                    // Accumulate the raw response
+                    rawResponse += token
+
+                    // Clean thinking patterns for display during streaming
+                    // This ensures users don't see "*Thinking...*" while content is generating
+                    streamingResponse = ResponseProcessor.stripThinkingPatterns(rawResponse)
                 }
 
                 // Add assistant message with final response
                 if !Task.isCancelled && !streamingResponse.isEmpty {
-                    let assistantMessage = DisplayMessage(
-                        role: "assistant",
-                        content: streamingResponse,
-                        citations: pendingCitations.isEmpty ? nil : pendingCitations
-                    )
-                    messages.append(assistantMessage)
+                    // Clean up any thinking patterns from the response
+                    let cleanedResponse = ResponseProcessor.stripThinkingPatterns(streamingResponse)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if !cleanedResponse.isEmpty {
+                        let assistantMessage = DisplayMessage(
+                            role: "assistant",
+                            content: cleanedResponse,
+                            citations: pendingCitations.isEmpty ? nil : pendingCitations
+                        )
+                        messages.append(assistantMessage)
+                    }
                 }
 
             } catch {

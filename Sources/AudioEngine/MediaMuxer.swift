@@ -37,7 +37,7 @@ public actor MediaMuxer {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "MediaMuxer")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "MediaMuxer")
 
     // MARK: - Initialization
 

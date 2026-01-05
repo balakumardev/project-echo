@@ -86,8 +86,13 @@ public struct ChatInputField: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .focused($isFocused)
                 .disabled(!isEnabled)
-                .onSubmit {
+                .onKeyPress(keys: [.return], phases: .down) { keyPress in
+                    // Shift+Enter inserts a newline, Enter alone sends the message
+                    if keyPress.modifiers.contains(.shift) {
+                        return .ignored  // Let the TextEditor handle Shift+Enter for newlines
+                    }
                     handleSubmit()
+                    return .handled
                 }
                 .onChange(of: text) { _, newValue in
                     // Auto-resize based on content
@@ -175,7 +180,7 @@ public struct ChatInputField: View {
         if !isEnabled {
             return "Model not ready"
         }
-        return "Send message (Cmd+Enter)"
+        return "Send message (Enter)"
     }
 
     // MARK: - Actions

@@ -375,6 +375,9 @@ struct VideoPlayerCard: View {
 
                 // Video player with click overlay
                 ZStack {
+                    // Black background for proper letterboxing
+                    Color.black
+
                     NativeVideoPlayerView(player: model.player)
                         .aspectRatio(16/9, contentMode: .fit)
 
@@ -414,6 +417,8 @@ struct VideoPlayerCard: View {
                         .transition(.opacity)
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .aspectRatio(16/9, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md))
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.Radius.md)

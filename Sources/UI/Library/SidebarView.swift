@@ -11,6 +11,8 @@ struct SidebarView: View {
     @Binding var searchText: String
     @Binding var selectedFilter: RecordingFilter
     @Binding var selectedSort: RecordingSort
+    @Binding var customStartDate: Date?
+    @Binding var customEndDate: Date?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,7 +33,11 @@ struct SidebarView: View {
 
             // Filters
             VStack(spacing: Theme.Spacing.sm) {
-                FilterChips(selectedFilter: $selectedFilter)
+                FilterChips(
+                    selectedFilter: $selectedFilter,
+                    customStartDate: $customStartDate,
+                    customEndDate: $customEndDate
+                )
                     .onChange(of: selectedFilter) { _, _ in
                         // Filter will be applied in filteredRecordings
                     }
@@ -77,6 +83,9 @@ struct SidebarView: View {
                     }
                 )
             }
+
+            // Footer with branding
+            SidebarFooter()
         }
         .background(Theme.Colors.surface)
     }
@@ -94,6 +103,14 @@ struct SidebarView: View {
         case .thisWeek:
             let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
             recordings = recordings.filter { $0.date >= weekAgo }
+        case .custom:
+            // Custom date range filter
+            if let start = customStartDate {
+                recordings = recordings.filter { $0.date >= start }
+            }
+            if let end = customEndDate {
+                recordings = recordings.filter { $0.date < end }
+            }
         case .hasTranscript:
             recordings = recordings.filter { $0.hasTranscript }
         case .favorites:
@@ -155,14 +172,23 @@ struct SidebarHeader: View {
     let onSearch: (String) -> Void
     let onRefresh: () -> Void
 
+    @AppStorage("aiEnabled") private var aiEnabled = true
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
         VStack(spacing: Theme.Spacing.md) {
-            // Title row
+            // Title row with AI controls
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Recordings")
-                        .font(Theme.Typography.title2)
-                        .foregroundColor(Theme.Colors.textPrimary)
+                    HStack(spacing: 6) {
+                        Image(systemName: "waveform.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(Theme.Colors.primary)
+
+                        Text("Engram")
+                            .font(Theme.Typography.title2)
+                            .foregroundColor(Theme.Colors.textPrimary)
+                    }
                     Text("Your meeting recordings")
                         .font(Theme.Typography.caption)
                         .foregroundColor(Theme.Colors.textMuted)
@@ -170,8 +196,23 @@ struct SidebarHeader: View {
 
                 Spacer()
 
-                IconButton(icon: "arrow.clockwise", size: 28, style: .ghost) {
-                    onRefresh()
+                // AI Status and Controls
+                HStack(spacing: Theme.Spacing.sm) {
+                    // AI Status Indicator
+                    AIStatusIndicator(style: .headerBar)
+
+                    // AI Chat Button
+                    IconButton(icon: "bubble.left.and.bubble.right", size: 28, style: .ghost) {
+                        openWindow(id: "ai-chat")
+                    }
+                    .help("Open AI Chat")
+                    .disabled(!aiEnabled)
+                    .opacity(aiEnabled ? 1.0 : 0.5)
+
+                    // Refresh Button
+                    IconButton(icon: "arrow.clockwise", size: 28, style: .ghost) {
+                        onRefresh()
+                    }
                 }
             }
 
@@ -221,6 +262,12 @@ struct RecordingList: View {
                 Divider()
 
                 Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([recording.fileURL])
+                } label: {
+                    Label("Show in Finder", systemImage: "folder")
+                }
+
+                Button {
                     onExportAudio(recording)
                 } label: {
                     Label("Export Audio", systemImage: "square.and.arrow.up")
@@ -248,97 +295,169 @@ struct RecordingList: View {
     }
 }
 
+// MARK: - Status Indicators
+
+/// Compact icon-based status indicators for recording metadata
+/// Shows transcript and video status as small, subtle icons
+@available(macOS 14.0, *)
+struct StatusIndicators: View {
+    let hasTranscript: Bool
+    let hasVideo: Bool
+    let isHovered: Bool
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            if hasTranscript {
+                Image(systemName: "text.quote")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.Colors.success)
+                    .opacity(isHovered ? 1.0 : 0.5)
+                    .help("Transcribed")
+            }
+
+            if hasVideo {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.Colors.primary)
+                    .opacity(isHovered ? 1.0 : 0.5)
+                    .help("Has video")
+            }
+        }
+        .animation(Theme.Animation.fast, value: isHovered)
+    }
+}
+
 // MARK: - Recording Row
 
+/// A single recording item in the sidebar list
+/// Displays: selection indicator, app icon, title, relative date, duration, status icons, favorite star, file size
 @available(macOS 14.0, *)
 struct RecordingRow: View {
     let recording: Recording
     let isSelected: Bool
 
+    @State private var isHovered = false
+
     var body: some View {
         HStack(spacing: Theme.Spacing.md) {
-            // Selection indicator
+            // Selection indicator - purple bar on left when selected
             RoundedRectangle(cornerRadius: 2)
                 .fill(isSelected ? Theme.Colors.primary : .clear)
                 .frame(width: 3)
 
-            // App icon
-            AppIconBadge(appName: recording.appName, size: 40)
+            // App icon badge (reduced size for compact look)
+            AppIconBadge(appName: recording.appName, size: 36)
 
-            // Content
+            // Main content - title and metadata
             VStack(alignment: .leading, spacing: 3) {
-                // Title with favorite indicator
-                HStack(spacing: 4) {
-                    if recording.isFavorite {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.yellow)
-                    }
-                    Text(recording.title)
-                        .font(Theme.Typography.headline)
-                        .foregroundColor(Theme.Colors.textPrimary)
-                        .lineLimit(1)
-                }
+                // Title row
+                Text(recording.title)
+                    .font(Theme.Typography.headline)
+                    .foregroundColor(Theme.Colors.textPrimary)
+                    .lineLimit(1)
 
-                // Metadata
+                // Metadata row - relative date and duration
                 HStack(spacing: Theme.Spacing.xs) {
-                    Text(recording.date.formatted(date: .abbreviated, time: .shortened))
+                    // Relative date - tooltip shows full date/time on hover
+                    Text(Formatters.formatRelativeDate(recording.date, expanded: false))
+                        .help(Formatters.formatRelativeDate(recording.date, expanded: true))
+
                     Text("•")
+                        .foregroundColor(Theme.Colors.textMuted.opacity(0.5))
+
+                    // Duration with monospaced font for alignment
                     Text(Formatters.formatDuration(recording.duration))
                         .fontDesign(.monospaced)
                 }
                 .font(Theme.Typography.caption)
                 .foregroundColor(Theme.Colors.textMuted)
-
-                // Tags
-                if recording.appName != nil || recording.hasTranscript || recording.hasVideo {
-                    HStack(spacing: Theme.Spacing.xs) {
-                        if let app = recording.appName {
-                            SmallBadge(text: app, color: Theme.Colors.secondary)
-                        }
-                        if recording.hasVideo {
-                            SmallBadge(text: "Video", color: Theme.Colors.primary)
-                        }
-                        if recording.hasTranscript {
-                            SmallBadge(text: "Transcribed", color: Theme.Colors.success)
-                        }
-                    }
-                }
             }
 
             Spacer(minLength: Theme.Spacing.sm)
 
-            // File size
+            // Status indicators (transcript, video) - subtle icons
+            StatusIndicators(
+                hasTranscript: recording.hasTranscript,
+                hasVideo: recording.hasVideo,
+                isHovered: isHovered
+            )
+
+            // Favorite star - trailing position
+            if recording.isFavorite {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.yellow)
+            }
+
+            // File size - muted, more visible on hover
             Text(Formatters.formatFileSize(recording.fileSize))
                 .font(Theme.Typography.caption)
                 .foregroundColor(Theme.Colors.textMuted)
-
-            // Chevron
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(Theme.Colors.textMuted)
+                .opacity(isHovered ? 1.0 : 0.7)
         }
         .padding(.vertical, Theme.Spacing.sm)
         .padding(.trailing, Theme.Spacing.md)
-        .background(isSelected ? Theme.Colors.primaryMuted : .clear)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.sm)
+                .fill(backgroundColor)
+        )
+        .scaleEffect(isHovered && !isSelected ? 1.005 : 1.0)
+        .animation(Theme.Animation.fast, value: isHovered)
         .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
+    /// Background color based on selection and hover state
+    private var backgroundColor: Color {
+        if isSelected {
+            return Theme.Colors.primaryMuted
+        }
+        if isHovered {
+            return Theme.Colors.surfaceHover
+        }
+        return .clear
     }
 }
 
-// MARK: - Small Badge
+// MARK: - Sidebar Footer
 
 @available(macOS 14.0, *)
-struct SmallBadge: View {
-    let text: String
-    let color: Color
+struct SidebarFooter: View {
+    @State private var isHovered = false
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 9, weight: .medium))
-            .foregroundColor(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15))
-            .clipShape(Capsule())
+        HStack(spacing: Theme.Spacing.sm) {
+            Image(systemName: "waveform.circle.fill")
+                .font(.system(size: 12))
+                .foregroundColor(Theme.Colors.primary.opacity(0.6))
+
+            Text("Engram")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Theme.Colors.textMuted)
+
+            Text("•")
+                .foregroundColor(Theme.Colors.textMuted.opacity(0.4))
+
+            Text("by Bala Kumar")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.Colors.textMuted.opacity(0.7))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Theme.Spacing.sm)
+        .background(Theme.Colors.surface.opacity(0.5))
+        .opacity(isHovered ? 1.0 : 0.8)
+        .onHover { hovering in
+            withAnimation(Theme.Animation.fast) {
+                isHovered = hovering
+            }
+        }
+        .onTapGesture {
+            if let url = URL(string: "https://balakumar.dev") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        .help("Visit balakumar.dev")
     }
 }

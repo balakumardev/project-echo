@@ -5,20 +5,22 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>EchoHAL</string>
+    <string>EngramHAL</string>
     <key>CFBundleIdentifier</key>
-    <string>com.projectecho.hal.plugin</string>
+    <string>dev.balakumar.engram.hal.plugin</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Echo Virtual Audio</string>
+    <string>Engram Virtual Audio</string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2024-2026 Bala Kumar. All rights reserved.</string>
     <key>AudioServerPlugIn_FactoryFunction</key>
-    <string>EchoPlugIn_Create</string>
+    <string>EngramPlugIn_Create</string>
 </dict>
 </plist>

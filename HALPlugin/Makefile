@@ -1,6 +1,8 @@
-# Makefile for Echo HAL Plugin
+# Makefile for Engram HAL Plugin
+# Copyright © 2024-2026 Bala Kumar. All rights reserved.
+# https://balakumar.dev
 
-PLUGIN_NAME = EchoHAL
+PLUGIN_NAME = EngramHAL
 BUNDLE_DIR = $(PLUGIN_NAME).driver
 INSTALL_DIR = /Library/Audio/Plug-Ins/HAL
 
@@ -10,7 +12,7 @@ CXXFLAGS = -std=c++17 -O2 -Wall -arch arm64 -arch x86_64
 FRAMEWORKS = -framework CoreAudio -framework CoreFoundation -framework AudioToolbox
 
 # Source files
-SOURCES = EchoHalPlugin.cpp
+SOURCES = EngramHalPlugin.cpp
 OBJECTS = $(SOURCES:.cpp=.o)
 
 # Build targets

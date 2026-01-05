@@ -37,7 +37,7 @@ public actor AudioTrackExtractor {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "AudioTrackExtractor")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "AudioTrackExtractor")
     private let targetSampleRate: Double = 16000.0  // Required by FluidAudio
 
     // MARK: - Initialization
@@ -71,7 +71,7 @@ public actor AudioTrackExtractor {
 
         // Create temp directory for extracted audio
         let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ProjectEcho_Diarization_\(UUID().uuidString)")
+            .appendingPathComponent("Engram_Diarization_\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         let microphoneURL = tempDir.appendingPathComponent("microphone.wav")

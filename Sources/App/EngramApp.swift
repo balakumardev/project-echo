@@ -1,6 +1,11 @@
+// Engram - Privacy-first meeting recorder with local AI
+// Copyright © 2024-2026 Bala Kumar. All rights reserved.
+// https://balakumar.dev
+
 import SwiftUI
 import AppKit
 import Combine
+import ServiceManagement
 import AudioEngine
 import Intelligence
 import Database
@@ -28,14 +33,14 @@ enum WindowActions {
 
 @main
 @available(macOS 14.0, *)
-struct ProjectEchoApp: App {
+struct EngramApp: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
     private func handleIncomingURL(_ url: URL) {
-        guard url.scheme == "projectecho" else { return }
+        guard url.scheme == "engram" else { return }
 
         // Activate app and bring to front
         NSApp.activate(ignoringOtherApps: true)
@@ -46,7 +51,7 @@ struct ProjectEchoApp: App {
 
     var body: some Scene {
         // Library window - single instance only
-        Window("Project Echo Library", id: "library") {
+        Window("Engram Library", id: "library") {
             LibraryView()
                 .frame(minWidth: 900, minHeight: 600)
                 .onOpenURL { url in
@@ -118,7 +123,7 @@ struct ProjectEchoApp: App {
 @available(macOS 14.0, *)
 class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "App")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "App")
 
     // Core engines
     private var audioEngine: AudioCaptureEngine!
@@ -139,6 +144,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     @AppStorage("autoRecord") private var autoRecordEnabled = true
     @AppStorage("enabledMeetingApps") private var enabledMeetingAppsRaw = "zoom,teams,meet,slack,discord"
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
+    @AppStorage("recordVideoEnabled") private var recordVideoEnabled: Bool = false
+
+    // Auto AI Generation Settings
+    @AppStorage("autoGenerateSummary") private var autoGenerateSummary = true
+    @AppStorage("autoGenerateActionItems") private var autoGenerateActionItems = true
 
     // Legacy (kept for migration)
     @AppStorage("monitoredApps") private var monitoredAppsRaw = "Zoom,Microsoft Teams,Google Chrome,FaceTime"
@@ -150,7 +160,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     private var currentRecordingApp: String?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        logger.info("Project Echo starting...")
+        logger.info("Engram starting...")
 
         // Hide dock icon (menu bar only app)
         NSApp.setActivationPolicy(.accessory)
@@ -170,14 +180,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         // Setup Meeting Detection
         setupMeetingDetection()
 
-        logger.info("Project Echo ready")
+        logger.info("Engram ready")
     }
 
     // MARK: - URL Scheme Handling
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            guard url.scheme == "projectecho" else { continue }
+            guard url.scheme == "engram" else { continue }
             logger.info("Handling URL: \(url.absoluteString)")
 
             // Activate and let SwiftUI's handlesExternalEvents handle the window
@@ -188,7 +198,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     
     private func setupOutputDirectory() {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        outputDirectory = documentsURL.appendingPathComponent("ProjectEcho/Recordings")
+        outputDirectory = documentsURL.appendingPathComponent("Engram/Recordings")
         
         try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         logger.info("Output directory: \(self.outputDirectory.path)")
@@ -237,15 +247,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
             logger.error("Database initialization failed: \(error.localizedDescription)")
         }
 
-        // Initialize AI Service in background
-        let aiLog = logger
-        Task.detached(priority: .background) {
-            do {
-                try await AIService.shared.initialize()
-                aiLog.info("AI Service initialized")
-            } catch {
-                aiLog.warning("AI Service initialization failed: \(error.localizedDescription)")
+        // Initialize AI Service in background ONLY if enabled
+        let aiEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true
+        if aiEnabled {
+            let aiLog = logger
+            Task.detached(priority: .background) {
+                do {
+                    try await AIService.shared.initialize()
+                    aiLog.info("AI Service initialized")
+                } catch {
+                    aiLog.warning("AI Service initialization failed: \(error.localizedDescription)")
+                }
             }
+        } else {
+            logger.info("AI Service disabled by user preference, skipping initialization")
         }
     }
     
@@ -256,14 +271,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         let alert = NSAlert()
         alert.messageText = "Permissions Required"
         alert.informativeText = """
-Project Echo needs Screen Recording and Microphone permissions.
+Engram needs Screen Recording and Microphone permissions.
 
 For ad-hoc signed apps, you must manually add them:
 
 1. Open System Settings → Privacy & Security
 2. Go to Screen Recording → Click '+' → Add this app
 3. Go to Microphone → Click '+' → Add this app
-4. Restart Project Echo
+4. Restart Engram
 
 App location: \(appPath)
 """
@@ -331,7 +346,14 @@ App location: \(appPath)
                     )
                     
                     logger.info("Recording saved to database: ID \(recordingId)")
-                    
+
+                    // Notify UI that a new recording was saved
+                    NotificationCenter.default.post(
+                        name: .recordingDidSave,
+                        object: nil,
+                        userInfo: ["recordingId": recordingId]
+                    )
+
                     // Auto-transcribe in background
                     Task { [weak self] in
                         await self?.transcribeRecording(id: recordingId, url: url)
@@ -363,7 +385,7 @@ App location: \(appPath)
             // Fallback: Open via URL scheme (triggers handlesExternalEvents)
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
-            if let url = URL(string: "projectecho://library") {
+            if let url = URL(string: "engram://library") {
                 NSWorkspace.shared.open(url)
             }
         }
@@ -386,7 +408,14 @@ App location: \(appPath)
             }
         }
     }
-    
+
+    func menuBarDidRequestOpenAIChat() {
+        // Use window action to open AI Chat window
+        if let openAIChatAction = WindowActions.openAIChat {
+            openAIChatAction()
+        }
+    }
+
     // MARK: - Helper Methods
     
     private func detectActiveApp() -> String? {
@@ -429,10 +458,22 @@ App location: \(appPath)
 
             logger.info("Transcription completed for recording \(id)")
 
+            // Notify UI that transcript is available
+            NotificationCenter.default.post(
+                name: .recordingContentDidUpdate,
+                object: nil,
+                userInfo: ["recordingId": id, "type": "transcript"]
+            )
+
             // Auto-index if enabled (defaults to true if not set)
             let autoIndex = UserDefaults.standard.object(forKey: "autoIndexTranscripts") as? Bool ?? true
             if autoIndex {
                 await autoIndexTranscript(recordingId: id, transcriptId: transcriptId)
+            }
+
+            // Auto-generate AI content (summary and action items) in background
+            Task { [weak self] in
+                await self?.autoGenerateAIContent(recordingId: id)
             }
         } catch {
             logger.error("Auto-transcription failed: \(error.localizedDescription)")
@@ -457,7 +498,134 @@ App location: \(appPath)
             logger.warning("Auto-indexing failed for recording \(recordingId): \(error.localizedDescription)")
         }
     }
-    
+
+    /// Clean up AI response to remove thinking text, empty arrays, and other artifacts
+    /// Returns nil if the cleaned result is empty or indicates no action items
+    private func cleanActionItemsResponse(_ response: String) -> String? {
+        // First, use ResponseProcessor to strip thinking patterns
+        var cleaned = ResponseProcessor.stripThinkingPatterns(response)
+
+        // Remove <think>...</think> blocks if present (should be handled by ResponseProcessor but just in case)
+        let thinkBlockPattern = #"<think>[\s\S]*?</think>"#
+        if let regex = try? NSRegularExpression(pattern: thinkBlockPattern, options: []) {
+            cleaned = regex.stringByReplacingMatches(
+                in: cleaned,
+                options: [],
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Remove standalone empty arrays "[]"
+        cleaned = cleaned.replacingOccurrences(of: "[]", with: "")
+
+        // Remove "No action items" type responses
+        let noItemsPatterns = [
+            #"(?i)no\s+(clear\s+)?action\s+items"#,
+            #"(?i)no\s+action\s+items?\s+(were\s+)?found"#,
+            #"(?i)there\s+are\s+no\s+(clear\s+)?action\s+items"#,
+            #"(?i)i\s+(could\s+not|couldn't)\s+find\s+any\s+action\s+items"#
+        ]
+        for pattern in noItemsPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+               regex.firstMatch(in: cleaned, options: [], range: NSRange(cleaned.startIndex..., in: cleaned)) != nil {
+                return nil // AI explicitly said no action items
+            }
+        }
+
+        // Trim whitespace and newlines
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Return nil if empty
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    /// Automatically generate AI summary and action items for a recording
+    private func autoGenerateAIContent(recordingId: Int64) async {
+        // Check if AI is enabled
+        let aiEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true
+        guard aiEnabled else { return }
+
+        guard autoGenerateSummary || autoGenerateActionItems else { return }
+
+        do {
+            // Generate summary if enabled
+            if autoGenerateSummary {
+                logger.info("Auto-generating summary for recording \(recordingId)")
+                let summaryStream = await AIService.shared.agentChat(
+                    query: "Provide a comprehensive summary of this meeting including main topics, key decisions, and important points.",
+                    sessionId: "auto-summary-\(recordingId)",
+                    recordingFilter: recordingId
+                )
+                var summary = ""
+                for try await token in summaryStream {
+                    summary += token
+                }
+                if !summary.isEmpty {
+                    try await database.saveSummary(recordingId: recordingId, summary: summary)
+                    logger.info("Auto-generated summary for recording \(recordingId)")
+
+                    // Notify UI that summary is available
+                    NotificationCenter.default.post(
+                        name: .recordingContentDidUpdate,
+                        object: nil,
+                        userInfo: ["recordingId": recordingId, "type": "summary"]
+                    )
+                }
+            }
+
+            // Generate action items if enabled
+            if autoGenerateActionItems {
+                logger.info("Auto-generating action items for recording \(recordingId)")
+                let actionStream = await AIService.shared.agentChat(
+                    query: """
+                    Extract ONLY clear action items from this meeting. Be very strict - only include items you are at least 60% confident are real action items.
+
+                    WHAT IS an action item:
+                    - "I will send you the report by Friday" → Action item: Send report by Friday (Owner: speaker)
+                    - "Can you review the proposal?" → Action item: Review the proposal (Owner: listener)
+                    - "We need to schedule a follow-up meeting" → Action item: Schedule follow-up meeting
+
+                    WHAT IS NOT an action item:
+                    - General discussion or opinions
+                    - Questions without clear tasks
+                    - Past events or completed tasks
+                    - Vague statements like "we should think about..."
+
+                    OUTPUT FORMAT:
+                    - Simple bullet list only
+                    - One action per line
+                    - Include owner if explicitly mentioned
+                    - If NO clear action items exist, output NOTHING (empty response)
+                    - Do NOT add headers, notes, or explanations
+                    """,
+                    sessionId: "auto-actions-\(recordingId)",
+                    recordingFilter: recordingId
+                )
+                var actionItems = ""
+                for try await token in actionStream {
+                    actionItems += token
+                }
+                // Clean up the response to remove thinking text, empty arrays, etc.
+                if let cleanedActionItems = cleanActionItemsResponse(actionItems) {
+                    try await database.saveActionItems(recordingId: recordingId, actionItems: cleanedActionItems)
+                    logger.info("Auto-generated action items for recording \(recordingId)")
+
+                    // Notify UI that action items are available
+                    NotificationCenter.default.post(
+                        name: .recordingContentDidUpdate,
+                        object: nil,
+                        userInfo: ["recordingId": recordingId, "type": "actionItems"]
+                    )
+                } else {
+                    logger.info("No action items found for recording \(recordingId)")
+                }
+            }
+        } catch {
+            logger.warning("Auto AI generation failed for recording \(recordingId): \(error.localizedDescription)")
+        }
+    }
+
     @MainActor
     private func showErrorAlert(message: String) {
         let alert = NSAlert()
@@ -588,7 +756,8 @@ App location: \(appPath)
         currentRecordingApp = appName
 
         // Start video recording (non-blocking, audio continues if video fails)
-        if let bundleID = screenRecordBundleID {
+        // Only record video if the user has enabled it in settings (defaults to OFF)
+        if recordVideoEnabled, let bundleID = screenRecordBundleID {
             // Extract base filename from audio URL to keep timestamps synchronized
             let baseFilename = url.deletingPathExtension().lastPathComponent
             Task {
@@ -696,6 +865,13 @@ App location: \(appPath)
             )
 
             logger.info("Meeting recording saved: ID \(recordingId)")
+
+            // Notify UI that a new recording was saved
+            NotificationCenter.default.post(
+                name: .recordingDidSave,
+                object: nil,
+                userInfo: ["recordingId": recordingId]
+            )
 
             // Auto-transcribe in background
             Task { [weak self] in
@@ -838,12 +1014,76 @@ struct GeneralSettingsView: View {
     @AppStorage("autoRecord") private var autoRecord = true
     @AppStorage("autoTranscribe") private var autoTranscribe = true
     @AppStorage("whisperModel") private var whisperModel = "base.en"
-    @AppStorage("storageLocation") private var storageLocation = "~/Documents/ProjectEcho"
+    @AppStorage("storageLocation") private var storageLocation = "~/Documents/Engram"
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
+    @AppStorage("recordVideoEnabled") private var recordVideoEnabled: Bool = false
+
+    // Login item state
+    @State private var launchAtLogin: Bool = false
+    @State private var loginItemStatus: SMAppService.Status = .notRegistered
+    @State private var isLoadingLoginStatus: Bool = true
+    @State private var loginItemError: String?
+    @State private var showLoginItemError: Bool = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 20) {
+                // Startup Section
+                SettingsSection(title: "Startup", icon: "power") {
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Launch at Login")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+                                Text("Automatically start Engram when you log in")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer()
+
+                            if isLoadingLoginStatus {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                                    .frame(width: 51, height: 31) // Match toggle size
+                            } else {
+                                Toggle("", isOn: $launchAtLogin)
+                                    .toggleStyle(.switch)
+                                    .tint(Theme.Colors.primary)
+                                    .labelsHidden()
+                                    .onChange(of: launchAtLogin) { _, newValue in
+                                        setLoginItemEnabled(newValue)
+                                    }
+                            }
+                        }
+
+                        // Show status if requires approval (using cached status to avoid blocking main thread)
+                        if !isLoadingLoginStatus && loginItemStatus == .requiresApproval {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.system(size: 11))
+                                Text("Open System Settings > General > Login Items to approve")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.orange)
+                            }
+                            .padding(.top, 8)
+                        }
+                    }
+                }
+                .task {
+                    // Load login item status asynchronously to avoid blocking main thread
+                    // SMAppService.mainApp.status is slow (~1-3s) as it queries launch services
+                    await loadLoginItemStatusAsync()
+                }
+                .alert("Login Item Error", isPresented: $showLoginItemError) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(loginItemError ?? "An unknown error occurred")
+                }
+
                 // Recording Section
                 SettingsSection(title: "Recording", icon: "waveform") {
                     VStack(alignment: .leading, spacing: 0) {
@@ -867,6 +1107,14 @@ struct GeneralSettingsView: View {
                             title: "Resume on wake",
                             subtitle: "Check for active meetings when your Mac wakes from sleep",
                             isOn: $autoRecordOnWake
+                        )
+
+                        Divider().padding(.vertical, 8)
+
+                        SettingsToggle(
+                            title: "Record screen video",
+                            subtitle: "Capture meeting window video along with audio (uses more storage)",
+                            isOn: $recordVideoEnabled
                         )
                     }
                 }
@@ -950,6 +1198,70 @@ struct GeneralSettingsView: View {
             storageLocation = url.path
         }
     }
+
+    /// Loads login item status asynchronously to avoid blocking the main thread
+    /// SMAppService.mainApp.status is slow (~1-3s) as it communicates with launch services daemon
+    private func loadLoginItemStatusAsync() async {
+        isLoadingLoginStatus = true
+
+        // Run the slow status check on a background thread
+        let status = await Task.detached(priority: .userInitiated) {
+            SMAppService.mainApp.status
+        }.value
+
+        // Update UI on main thread
+        await MainActor.run {
+            loginItemStatus = status
+            updateLoginItemStateFromCachedStatus()
+            isLoadingLoginStatus = false
+        }
+    }
+
+    /// Updates the toggle state based on the cached SMAppService status (fast, no system calls)
+    private func updateLoginItemStateFromCachedStatus() {
+        switch loginItemStatus {
+        case .enabled:
+            launchAtLogin = true
+        case .notRegistered, .notFound:
+            launchAtLogin = false
+        case .requiresApproval:
+            // User needs to approve in System Settings, but we keep it "on" to show intent
+            launchAtLogin = true
+        @unknown default:
+            launchAtLogin = false
+        }
+    }
+
+    /// Registers or unregisters the app as a login item
+    private func setLoginItemEnabled(_ enabled: Bool) {
+        // Use cached status to avoid blocking main thread with repeated status checks
+        let currentStatus = loginItemStatus
+
+        do {
+            if enabled {
+                // Check if already enabled to avoid unnecessary registration
+                if currentStatus != .enabled {
+                    try SMAppService.mainApp.register()
+                }
+            } else {
+                // Only unregister if currently registered
+                if currentStatus == .enabled || currentStatus == .requiresApproval {
+                    try SMAppService.mainApp.unregister()
+                }
+            }
+            // Refresh status asynchronously after change
+            Task {
+                await loadLoginItemStatusAsync()
+            }
+        } catch {
+            loginItemError = error.localizedDescription
+            showLoginItemError = true
+            // Refresh status asynchronously to revert toggle to actual state
+            Task {
+                await loadLoginItemStatusAsync()
+            }
+        }
+    }
 }
 
 struct PrivacySettingsView: View {
@@ -973,7 +1285,7 @@ struct PrivacySettingsView: View {
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(Theme.Colors.textPrimary)
 
-                        Text("Project Echo processes all audio locally on your device.\nNo data is ever sent to external servers.")
+                        Text("Engram processes all audio locally on your device.\nNo data is ever sent to external servers.")
                             .font(.system(size: 13))
                             .foregroundColor(Theme.Colors.textSecondary)
                             .multilineTextAlignment(.center)
@@ -1152,13 +1464,22 @@ struct AdvancedSettingsView: View {
         UserDefaults.standard.removeObject(forKey: "whisperModel")
         UserDefaults.standard.removeObject(forKey: "storageLocation")
         UserDefaults.standard.removeObject(forKey: "autoRecordOnWake")
+        UserDefaults.standard.removeObject(forKey: "recordVideoEnabled")
         UserDefaults.standard.removeObject(forKey: "sampleRate")
         UserDefaults.standard.removeObject(forKey: "audioQuality")
         UserDefaults.standard.removeObject(forKey: "enabledMeetingApps")
         UserDefaults.standard.removeObject(forKey: "customMeetingApps")
+        UserDefaults.standard.removeObject(forKey: "autoGenerateSummary")
+        UserDefaults.standard.removeObject(forKey: "autoGenerateActionItems")
 
         // Reload custom apps manager to reflect cleared state
         CustomMeetingAppsManager.shared.loadCustomApps()
+
+        // Unregister login item if registered
+        let status = SMAppService.mainApp.status
+        if status == .enabled || status == .requiresApproval {
+            try? SMAppService.mainApp.unregister()
+        }
     }
 }
 
@@ -1167,26 +1488,250 @@ struct AdvancedSettingsView: View {
 @available(macOS 14.0, *)
 struct AISettingsView: View {
     @StateObject private var aiService = AIServiceObservable()
+    @AppStorage("aiEnabled") private var aiEnabled = true
     @AppStorage("autoIndexTranscripts") private var autoIndexTranscripts = true
+    @AppStorage("autoGenerateSummary") private var autoGenerateSummary = true
+    @AppStorage("autoGenerateActionItems") private var autoGenerateActionItems = true
     @State private var isRebuildingIndex = false
+
+    // MARK: - Pending State (unified apply)
+    /// Pending provider selection (nil means no change from current)
+    @State private var pendingProvider: AIService.Provider?
+    /// Pending OpenAI API key
+    @State private var pendingOpenAIKey: String = ""
+    /// Pending OpenAI base URL
+    @State private var pendingOpenAIBaseURL: String = ""
+    /// Pending OpenAI model name
+    @State private var pendingOpenAIModel: String = ""
+    /// Pending OpenAI temperature
+    @State private var pendingOpenAITemperature: Float = 1.0
+    /// Pending MLX model ID (nil means no change from current)
+    @State private var pendingMLXModel: String?
+    /// Whether initial values have been loaded from service
+    @State private var hasLoadedInitial = false
+    /// Whether changes are currently being applied
+    @State private var isApplyingChanges = false
+    /// Error message from last apply attempt
+    @State private var applyError: String?
+    /// Whether to show clear models confirmation dialog
+    @State private var showClearModelsConfirmation = false
+    /// Message shown after clearing models
+    @State private var clearedBytesMessage: String?
 
     private var availableModels: [ModelRegistry.ModelInfo] {
         ModelRegistry.availableModels
     }
 
+    /// The effective selected provider (uses pending if set, otherwise current)
+    private var effectiveSelectedProvider: AIService.Provider {
+        pendingProvider ?? aiService.provider
+    }
+
+    /// The effective selected MLX model (uses pending if set, otherwise current)
+    private var effectiveSelectedMLXModel: String {
+        pendingMLXModel ?? aiService.selectedModelId
+    }
+
+    /// Whether there are any unsaved changes across all settings
+    private var hasUnsavedChanges: Bool {
+        // Provider changed
+        if let pending = pendingProvider, pending != aiService.provider {
+            return true
+        }
+
+        // Check OpenAI config if using OpenAI (current or pending)
+        if effectiveSelectedProvider == .openAICompatible {
+            if pendingOpenAIKey != aiService.openAIKey ||
+               pendingOpenAIBaseURL != aiService.openAIBaseURL ||
+               pendingOpenAIModel != aiService.openAIModel ||
+               pendingOpenAITemperature != aiService.openAITemperature {
+                return true
+            }
+        }
+
+        // Check MLX model if using local MLX (current or pending)
+        if effectiveSelectedProvider == .localMLX {
+            if let pending = pendingMLXModel, pending != aiService.selectedModelId {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /// Description of what's currently active
+    private var currentlyUsingDescription: String {
+        switch aiService.provider {
+        case .localMLX:
+            if case .ready(let name) = aiService.status {
+                return "Local MLX - \(name)"
+            } else if let modelInfo = ModelRegistry.model(for: aiService.selectedModelId) {
+                return "Local MLX - \(modelInfo.displayName) (not loaded)"
+            } else {
+                return "Local MLX - No model configured"
+            }
+        case .openAICompatible:
+            if case .ready = aiService.status {
+                return "OpenAI API - \(aiService.openAIModel)"
+            } else {
+                return "OpenAI API - Not connected"
+            }
+        }
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 20) {
+                // Master AI Toggle
+                SettingsSection(title: "AI Features", icon: "sparkles") {
+                    Toggle(isOn: $aiEnabled) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Enable AI Features")
+                                .font(Theme.Typography.body)
+                            Text("Turn off to disable all AI functionality including chat, summaries, and indexing")
+                                .font(Theme.Typography.caption)
+                                .foregroundColor(Theme.Colors.textSecondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+
+                    if !aiEnabled {
+                        HStack(spacing: Theme.Spacing.sm) {
+                            Image(systemName: "info.circle")
+                                .foregroundColor(Theme.Colors.warning)
+                            Text("AI is disabled. Model is not loaded and no AI features are available.")
+                                .font(Theme.Typography.caption)
+                                .foregroundColor(Theme.Colors.warning)
+                        }
+                        .padding(.top, Theme.Spacing.xs)
+                    }
+                }
+
                 // Status Section - Shows current AI state
                 statusSection
 
                 // AI Provider Section
                 SettingsSection(title: "AI Provider", icon: "cpu") {
                     VStack(alignment: .leading, spacing: 12) {
+                        // Currently using indicator
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(aiService.isReady ? Theme.Colors.success : Theme.Colors.textMuted)
+                                .frame(width: 8, height: 8)
+                            Text("Currently using:")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.Colors.textMuted)
+                            Text(currentlyUsingDescription)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Theme.Colors.textPrimary)
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Theme.Colors.surface)
+                        )
+
+                        // MARK: - Unsaved Changes Banner (Prominent Location)
+                        if hasUnsavedChanges {
+                            VStack(spacing: 10) {
+                                // Unsaved changes banner
+                                HStack(spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(Theme.Colors.warning)
+                                        .font(.system(size: 14))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("You have unsaved changes")
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundColor(Theme.Colors.textPrimary)
+                                        Text(unsavedChangesDescription)
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.Colors.textMuted)
+                                    }
+                                    Spacer()
+                                }
+
+                                // Error display
+                                if let error = applyError {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundColor(Theme.Colors.error)
+                                            .font(.system(size: 14))
+                                        Text(error)
+                                            .font(.system(size: 12))
+                                            .foregroundColor(Theme.Colors.error)
+                                        Spacer()
+                                        Button {
+                                            applyError = nil
+                                        } label: {
+                                            Image(systemName: "xmark")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(Theme.Colors.textMuted)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Theme.Colors.errorMuted)
+                                    )
+                                }
+
+                                // Action buttons
+                                HStack(spacing: 12) {
+                                    Button {
+                                        Task {
+                                            await discardAllChanges()
+                                        }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "arrow.uturn.backward")
+                                                .font(.system(size: 11))
+                                            Text("Discard")
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled(isApplyingChanges)
+
+                                    Spacer()
+
+                                    Button {
+                                        applyAllChanges()
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            if isApplyingChanges {
+                                                ProgressView()
+                                                    .controlSize(.mini)
+                                                    .frame(width: 12, height: 12)
+                                            } else {
+                                                Image(systemName: "checkmark.circle")
+                                                    .font(.system(size: 11))
+                                            }
+                                            Text(isApplyingChanges ? "Applying..." : "Apply Changes")
+                                        }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .disabled(isApplyingChanges)
+                                }
+                            }
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Theme.Colors.warningMuted)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Theme.Colors.warning.opacity(0.5), lineWidth: 1.5)
+                            )
+                        }
+
                         Picker("Provider", selection: Binding(
-                            get: { aiService.provider == .localMLX ? "local-mlx" : "openai" },
+                            get: { effectiveSelectedProvider == .localMLX ? "local-mlx" : "openai" },
                             set: { newValue in
-                                aiService.setProvider(newValue == "local-mlx" ? .localMLX : .openAICompatible)
+                                // Only update pending state - don't apply immediately
+                                pendingProvider = (newValue == "local-mlx") ? .localMLX : .openAICompatible
                             }
                         )) {
                             Text("Local (MLX)").tag("local-mlx")
@@ -1201,7 +1746,7 @@ struct AISettingsView: View {
                 }
 
                 // Model Selection Section (for local provider)
-                if aiService.provider == .localMLX {
+                if effectiveSelectedProvider == .localMLX {
                     // Embedding info section
                     SettingsSection(title: "Embeddings", icon: "text.magnifyingglass") {
                         VStack(alignment: .leading, spacing: 8) {
@@ -1223,11 +1768,31 @@ struct AISettingsView: View {
                     // Chat Model Section
                     SettingsSection(title: "Chat Model", icon: "sparkles") {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Select a model for AI chat. Models are downloaded from Hugging Face on first use.")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.Colors.textMuted)
-                                .padding(.bottom, 4)
+                            // Header with explanation
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "info.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.primary)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Select and activate a model for AI chat")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(Theme.Colors.textSecondary)
+                                    Text("Models are downloaded from Hugging Face. Larger models provide better quality but require more memory.")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Theme.Colors.textMuted)
+                                }
+                            }
+                            .padding(.bottom, 4)
 
+                            // Legend
+                            HStack(spacing: 12) {
+                                legendItem(color: Theme.Colors.success, text: "Active")
+                                legendItem(color: Theme.Colors.secondary, text: "Downloaded")
+                                legendItem(color: Theme.Colors.textMuted, text: "Not Downloaded")
+                            }
+                            .padding(.bottom, 8)
+
+                            // Model list
                             ForEach(availableModels) { model in
                                 modelRow(model)
                             }
@@ -1236,7 +1801,7 @@ struct AISettingsView: View {
                 }
 
                 // OpenAI Configuration Section
-                if aiService.provider == .openAICompatible {
+                if effectiveSelectedProvider == .openAICompatible {
                     SettingsSection(title: "OpenAI Configuration", icon: "key") {
                         VStack(alignment: .leading, spacing: 12) {
                             VStack(alignment: .leading, spacing: 6) {
@@ -1244,7 +1809,7 @@ struct AISettingsView: View {
                                     .font(.system(size: 13))
                                     .foregroundColor(Theme.Colors.textPrimary)
 
-                                SecureField("sk-...", text: $aiService.openAIKey)
+                                SecureField("sk-...", text: $pendingOpenAIKey)
                                     .textFieldStyle(.plain)
                                     .font(.system(size: 12, design: .monospaced))
                                     .padding(8)
@@ -1254,7 +1819,7 @@ struct AISettingsView: View {
                                     )
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Theme.Colors.border, lineWidth: 1)
+                                            .stroke(pendingOpenAIKey != aiService.openAIKey ? Theme.Colors.warning : Theme.Colors.border, lineWidth: 1)
                                     )
                             }
 
@@ -1263,7 +1828,7 @@ struct AISettingsView: View {
                                     .font(.system(size: 13))
                                     .foregroundColor(Theme.Colors.textPrimary)
 
-                                TextField("https://api.openai.com/v1", text: $aiService.openAIBaseURL)
+                                TextField("https://api.openai.com/v1", text: $pendingOpenAIBaseURL)
                                     .textFieldStyle(.plain)
                                     .font(.system(size: 12, design: .monospaced))
                                     .padding(8)
@@ -1273,7 +1838,7 @@ struct AISettingsView: View {
                                     )
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Theme.Colors.border, lineWidth: 1)
+                                            .stroke(pendingOpenAIBaseURL != aiService.openAIBaseURL ? Theme.Colors.warning : Theme.Colors.border, lineWidth: 1)
                                     )
 
                                 Text("Leave empty for default OpenAI endpoint")
@@ -1286,7 +1851,7 @@ struct AISettingsView: View {
                                     .font(.system(size: 13))
                                     .foregroundColor(Theme.Colors.textPrimary)
 
-                                TextField("gpt-4o-mini", text: $aiService.openAIModel)
+                                TextField("gpt-4o-mini", text: $pendingOpenAIModel)
                                     .textFieldStyle(.plain)
                                     .font(.system(size: 12, design: .monospaced))
                                     .padding(8)
@@ -1296,16 +1861,45 @@ struct AISettingsView: View {
                                     )
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Theme.Colors.border, lineWidth: 1)
+                                            .stroke(pendingOpenAIModel != aiService.openAIModel ? Theme.Colors.warning : Theme.Colors.border, lineWidth: 1)
                                     )
                             }
 
-                            Button("Save & Connect") {
-                                aiService.configureOpenAI()
+                            temperatureSlider
+
+                            // Test connection button (tests with pending values)
+                            HStack(spacing: 8) {
+                                Button {
+                                    testConnectionWithPendingValues()
+                                } label: {
+                                    if aiService.isTestingConnection {
+                                        HStack(spacing: 6) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                                .frame(width: 14, height: 14)
+                                            Text("Testing...")
+                                        }
+                                    } else {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                                .font(.system(size: 12))
+                                            Text("Test Connection")
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(pendingOpenAIKey.isEmpty || aiService.isTestingConnection)
+
+                                Text("Tests with your entered values (before applying)")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Theme.Colors.textMuted)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .disabled(aiService.openAIKey.isEmpty)
+
+                            // Connection test result feedback
+                            if let result = aiService.connectionTestResult {
+                                connectionTestResultView(result)
+                            }
                         }
                     }
                 }
@@ -1321,14 +1915,40 @@ struct AISettingsView: View {
 
                         Divider()
 
+                        SettingsToggle(
+                            title: "Auto-generate summary",
+                            subtitle: "Automatically create AI summary when transcript is ready",
+                            isOn: $autoGenerateSummary
+                        )
+
+                        Divider()
+
+                        SettingsToggle(
+                            title: "Auto-generate action items",
+                            subtitle: "Automatically extract action items when transcript is ready",
+                            isOn: $autoGenerateActionItems
+                        )
+
+                        Divider()
+
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Indexed Recordings")
                                     .font(.system(size: 13))
                                     .foregroundColor(Theme.Colors.textPrimary)
-                                Text("\(aiService.indexedCount) recordings indexed for AI search")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(Theme.Colors.textMuted)
+                                if aiService.isIndexingLoading {
+                                    HStack(spacing: 4) {
+                                        ProgressView()
+                                            .controlSize(.mini)
+                                        Text("Loading index...")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.Colors.textMuted)
+                                    }
+                                } else {
+                                    Text("\(aiService.indexedCount) recordings indexed for AI search")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.Colors.textMuted)
+                                }
                             }
 
                             Spacer()
@@ -1352,7 +1972,8 @@ struct AISettingsView: View {
 
                 // Storage Section
                 SettingsSection(title: "Model Storage", icon: "internaldrive") {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        // Storage location
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Storage Location")
@@ -1373,12 +1994,111 @@ struct AISettingsView: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
+
+                        Divider()
+
+                        // Clear models row
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Downloaded Models")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+                                Text(aiService.cachedModelsSizeFormatted)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                showClearModelsConfirmation = true
+                            } label: {
+                                if aiService.isClearingModels {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Text("Clear All")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(Theme.Colors.error)
+                            .disabled(aiService.isClearingModels || aiService.cachedModelsSize == 0)
+                        }
+
+                        // Success message after clearing
+                        if let message = clearedBytesMessage {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(Theme.Colors.success)
+                                    .font(.system(size: 12))
+                                Text(message)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.success)
+                            }
+                        }
                     }
                 }
             }
             .padding(20)
         }
         .background(Theme.Colors.background)
+        .alert("Clear All AI Models?", isPresented: $showClearModelsConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear All", role: .destructive) {
+                clearAllModels()
+            }
+        } message: {
+            Text("This will delete all downloaded AI models (\(aiService.cachedModelsSizeFormatted)) and free up disk space. You can download models again anytime.")
+        }
+        .task {
+            await initializePendingState()
+        }
+        .onChange(of: aiService.openAIKey) { _, newValue in
+            // Keep pending state in sync if not explicitly changed by user
+            if !hasLoadedInitial {
+                pendingOpenAIKey = newValue
+            }
+        }
+        .onChange(of: aiService.openAIBaseURL) { _, newValue in
+            if !hasLoadedInitial {
+                pendingOpenAIBaseURL = newValue
+            }
+        }
+        .onChange(of: aiService.openAIModel) { _, newValue in
+            if !hasLoadedInitial {
+                pendingOpenAIModel = newValue
+            }
+        }
+        .onChange(of: aiService.openAITemperature) { _, newValue in
+            if !hasLoadedInitial {
+                pendingOpenAITemperature = newValue
+            }
+        }
+    }
+
+    // MARK: - Temperature Slider
+
+    @ViewBuilder
+    private var temperatureSlider: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Temperature")
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.Colors.textPrimary)
+                Spacer()
+                Text(String(format: "%.1f", pendingOpenAITemperature))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(pendingOpenAITemperature != aiService.openAITemperature ? Theme.Colors.warning : Theme.Colors.textSecondary)
+            }
+
+            Slider(value: $pendingOpenAITemperature, in: 0.0...2.0, step: 0.1)
+                .tint(pendingOpenAITemperature != aiService.openAITemperature ? Theme.Colors.warning : Theme.Colors.primary)
+
+            Text("Lower = more deterministic, higher = more creative (default: 1.0)")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.Colors.textMuted)
+        }
     }
 
     // MARK: - Status Section
@@ -1430,114 +2150,303 @@ struct AISettingsView: View {
         }
     }
 
+    // MARK: - Legend Item
+
+    private func legendItem(color: Color, text: String) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(text)
+                .font(.system(size: 10))
+                .foregroundColor(Theme.Colors.textMuted)
+        }
+    }
+
+    // MARK: - Tier Badge
+
+    private func tierBadge(_ tier: ModelRegistry.Tier) -> some View {
+        let (color, bgColor): (Color, Color) = {
+            switch tier {
+            case .tiny:
+                return (Theme.Colors.textSecondary, Theme.Colors.surface)
+            case .light:
+                return (Theme.Colors.secondary, Theme.Colors.secondaryMuted)
+            case .standard:
+                return (Theme.Colors.primary, Theme.Colors.primaryMuted)
+            case .pro:
+                return (Theme.Colors.warning, Theme.Colors.warningMuted)
+            }
+        }()
+
+        return Text(tier.rawValue)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundColor(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                Capsule()
+                    .fill(bgColor)
+            )
+    }
+
     // MARK: - Model Row
 
     private func modelRow(_ model: ModelRegistry.ModelInfo) -> some View {
-        let isSelected = aiService.selectedModelId == model.id
+        let isCurrentModel = aiService.selectedModelId == model.id
         let isCached = aiService.isModelCached(model.id)
-        let isActive = isSelected && aiService.isReady
+        let isActive = isCurrentModel && aiService.isReady
+        let isPendingSelection = pendingMLXModel == model.id && model.id != aiService.selectedModelId
+        // Include "pending initial load" state: when service is initializing and this cached model will be auto-loaded
+        // isIndexingLoading is true when service is not initialized or currently initializing
+        let isPendingInitialLoad = isCurrentModel && isCached && aiService.isIndexingLoading && !aiService.isReady
+        let isCurrentlyLoading = isCurrentModel && aiService.isLoading || isPendingInitialLoad
 
-        return HStack {
-            VStack(alignment: .leading, spacing: 2) {
+        return HStack(spacing: 12) {
+            // Radio button style indicator
+            ZStack {
+                Circle()
+                    .stroke(isActive ? Theme.Colors.success :
+                           (isPendingSelection ? Theme.Colors.warning :
+                           (isCached ? Theme.Colors.secondary : Theme.Colors.textMuted)), lineWidth: 2)
+                    .frame(width: 18, height: 18)
+
+                if isActive {
+                    Circle()
+                        .fill(Theme.Colors.success)
+                        .frame(width: 10, height: 10)
+                } else if isPendingSelection {
+                    Circle()
+                        .fill(Theme.Colors.warning)
+                        .frame(width: 10, height: 10)
+                } else if isCurrentlyLoading {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .scaleEffect(0.6)
+                }
+            }
+
+            // Model info
+            VStack(alignment: .leading, spacing: 4) {
+                // First row: Name + badges
                 HStack(spacing: 6) {
                     Text(model.displayName)
-                        .font(.system(size: 13))
-                        .foregroundColor(Theme.Colors.textPrimary)
+                        .font(.system(size: 13, weight: isActive || isPendingSelection ? .semibold : .medium))
+                        .foregroundColor(isActive ? Theme.Colors.success :
+                                        (isPendingSelection ? Theme.Colors.warning : Theme.Colors.textPrimary))
+
+                    tierBadge(model.tier)
 
                     if model.isDefault {
-                        Text("Recommended")
-                            .font(.system(size: 10))
-                            .foregroundColor(Theme.Colors.primary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                Capsule()
-                                    .fill(Theme.Colors.primaryMuted)
-                            )
-                    }
-
-                    if isCached {
-                        Text("Downloaded")
-                            .font(.system(size: 10))
-                            .foregroundColor(Theme.Colors.success)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                Capsule()
-                                    .fill(Theme.Colors.successMuted)
-                            )
+                        HStack(spacing: 2) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 8))
+                            Text("Default")
+                        }
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(Theme.Colors.primary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(Theme.Colors.primaryMuted)
+                        )
                     }
 
                     if isActive {
-                        Text("Active")
-                            .font(.system(size: 10))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                Capsule()
-                                    .fill(Theme.Colors.success)
-                            )
+                        HStack(spacing: 2) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 8))
+                            Text("Active")
+                        }
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(Theme.Colors.success)
+                        )
+                    }
+
+                    if isPendingSelection {
+                        HStack(spacing: 2) {
+                            Image(systemName: "clock.fill")
+                                .font(.system(size: 8))
+                            Text("Pending")
+                        }
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(Theme.Colors.warning)
+                        )
                     }
                 }
 
-                HStack(spacing: 8) {
-                    Text(model.sizeString)
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.Colors.textMuted)
+                // Second row: Description
+                Text(model.description)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.Colors.textMuted)
+                    .lineLimit(1)
 
-                    Text(model.description)
-                        .font(.system(size: 11))
+                // Third row: Size, Memory, Download status
+                HStack(spacing: 12) {
+                    // Size info
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 9))
+                        Text(model.sizeString)
+                    }
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.Colors.textMuted)
+
+                    // Memory requirement
+                    HStack(spacing: 4) {
+                        Image(systemName: "memorychip")
+                            .font(.system(size: 9))
+                        Text(String(format: "%.1f GB RAM", model.memoryGB))
+                    }
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.Colors.textMuted)
+
+                    // Download status indicator
+                    if isCached {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 9))
+                            Text("Downloaded")
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.Colors.secondary)
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "icloud.and.arrow.down")
+                                .font(.system(size: 9))
+                            Text("Not Downloaded")
+                        }
+                        .font(.system(size: 10))
                         .foregroundColor(Theme.Colors.textMuted)
-                        .lineLimit(1)
+                    }
                 }
             }
 
             Spacer()
 
-            // Action button
+            // Action buttons
             if isActive {
-                // Already active - no action needed
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(Theme.Colors.success)
-            } else if aiService.isLoading {
-                // Loading something - disable buttons
-                ProgressView()
-                    .controlSize(.small)
-            } else {
+                // Already active - show status
+                VStack(spacing: 2) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(Theme.Colors.success)
+                    Text("In Use")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.Colors.success)
+                }
+            } else if isPendingSelection {
+                // Pending selection - show undo option
                 Button {
+                    pendingMLXModel = nil
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 12))
+                        Text("Undo")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(Theme.Colors.warning)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .stroke(Theme.Colors.warning, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Cancel selection")
+            } else if isCurrentlyLoading {
+                // Currently loading this model
+                VStack(spacing: 2) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading...")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+            } else if aiService.isLoading {
+                // Loading a different model - disable buttons
+                EmptyView()
+            } else if isCached {
+                // Downloaded but not active - show Select button (sets pending)
+                Button {
+                    pendingMLXModel = model.id
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "circle")
+                            .font(.system(size: 12))
+                        Text("Select")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(Theme.Colors.primary)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Select this model (click Apply Changes to activate)")
+            } else {
+                // Not downloaded - show Download button (downloads immediately, then sets pending)
+                Button {
+                    // For non-cached models, we need to download first
+                    // Set pending and start download
+                    pendingMLXModel = model.id
                     aiService.setupModel(model.id)
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: isCached ? "play.circle" : "arrow.down.circle")
+                        Image(systemName: "arrow.down.circle")
                             .font(.system(size: 12))
-                        Text(isCached ? "Load" : "Download & Load")
-                            .font(.system(size: 12))
+                        Text("Download")
+                            .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundColor(Theme.Colors.primary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .stroke(Theme.Colors.primary, lineWidth: 1)
+                    )
                 }
                 .buttonStyle(.plain)
+                .help("Download and select this model (\(model.sizeString))")
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(isActive ? Theme.Colors.successMuted.opacity(0.3) :
-                      isCached ? Theme.Colors.surface : Theme.Colors.background)
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isActive ? Theme.Colors.success.opacity(0.08) :
+                      (isPendingSelection ? Theme.Colors.warning.opacity(0.08) :
+                      (isCached ? Theme.Colors.secondary.opacity(0.05) : Theme.Colors.background)))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isActive ? Theme.Colors.success.opacity(0.5) :
-                        isCached ? Theme.Colors.success.opacity(0.3) : Theme.Colors.borderSubtle, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isActive ? Theme.Colors.success.opacity(0.4) :
+                        (isPendingSelection ? Theme.Colors.warning.opacity(0.5) :
+                        (isCached ? Theme.Colors.secondary.opacity(0.2) : Theme.Colors.borderSubtle)),
+                        lineWidth: isActive || isPendingSelection ? 2 : 1)
         )
     }
 
     // MARK: - Computed Properties
 
     private var providerDescription: String {
-        switch aiService.provider {
+        switch effectiveSelectedProvider {
         case .localMLX:
             return "Uses Apple's MLX framework for on-device AI. Best for Apple Silicon Macs. Your data stays private."
         case .openAICompatible:
@@ -1551,7 +2460,183 @@ struct AISettingsView: View {
         return home.appendingPathComponent(".cache/huggingface/hub").path
     }
 
+    // MARK: - Views
+
+    @ViewBuilder
+    private func connectionTestResultView(_ result: AIServiceObservable.ConnectionTestResult) -> some View {
+        HStack(spacing: 6) {
+            switch result {
+            case .success(let modelCount):
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                    .font(.system(size: 14))
+                if modelCount > 0 {
+                    Text("Connected! (\(modelCount) models available)")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                } else {
+                    Text("Connected!")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                }
+            case .failure(let message):
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.red)
+                    .font(.system(size: 14))
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundColor(.red)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
     // MARK: - Actions
+
+    /// Initialize pending state from current service values
+    /// Reads directly from AIService.shared.currentConfig to avoid race condition
+    /// with AIServiceObservable's async loadFromService()
+    private func initializePendingState() async {
+        guard !hasLoadedInitial else { return }
+        let config = await AIService.shared.currentConfig
+        pendingOpenAIKey = config.openAIKey
+        pendingOpenAIBaseURL = config.openAIBaseURL
+        pendingOpenAIModel = config.openAIModel
+        pendingOpenAITemperature = config.openAITemperature
+        pendingProvider = nil
+        pendingMLXModel = nil
+        hasLoadedInitial = true
+        logToFile("[Settings] Initialized pending state from service config: key=\(config.openAIKey.isEmpty ? "(empty)" : "(set)"), baseURL=\(config.openAIBaseURL.isEmpty ? "(empty)" : config.openAIBaseURL), model=\(config.openAIModel)")
+    }
+
+    /// Discard all pending changes and reset to current values
+    /// Reads directly from AIService.shared.currentConfig for consistency
+    private func discardAllChanges() async {
+        let config = await AIService.shared.currentConfig
+        pendingProvider = nil
+        pendingMLXModel = nil
+        pendingOpenAIKey = config.openAIKey
+        pendingOpenAIBaseURL = config.openAIBaseURL
+        pendingOpenAIModel = config.openAIModel
+        pendingOpenAITemperature = config.openAITemperature
+        applyError = nil
+        aiService.clearConnectionTestResult()
+        logToFile("[Settings] Discarded all pending changes")
+    }
+
+    /// Description of what changes are pending
+    private var unsavedChangesDescription: String {
+        var changes: [String] = []
+
+        if let pending = pendingProvider, pending != aiService.provider {
+            changes.append("Provider: \(pending == .localMLX ? "Local MLX" : "OpenAI API")")
+        }
+
+        if effectiveSelectedProvider == .openAICompatible {
+            if pendingOpenAIKey != aiService.openAIKey {
+                changes.append("API Key")
+            }
+            if pendingOpenAIBaseURL != aiService.openAIBaseURL {
+                changes.append("Base URL")
+            }
+            if pendingOpenAIModel != aiService.openAIModel {
+                changes.append("Model: \(pendingOpenAIModel)")
+            }
+            if pendingOpenAITemperature != aiService.openAITemperature {
+                changes.append("Temperature: \(String(format: "%.1f", pendingOpenAITemperature))")
+            }
+        }
+
+        if effectiveSelectedProvider == .localMLX {
+            if let pending = pendingMLXModel, pending != aiService.selectedModelId {
+                if let modelInfo = ModelRegistry.model(for: pending) {
+                    changes.append("Model: \(modelInfo.displayName)")
+                } else {
+                    changes.append("Model changed")
+                }
+            }
+        }
+
+        return changes.isEmpty ? "Configuration changes" : changes.joined(separator: ", ")
+    }
+
+    /// Apply all pending changes at once
+    private func applyAllChanges() {
+        logToFile("[Settings] applyAllChanges called")
+        isApplyingChanges = true
+        applyError = nil
+
+        Task {
+            do {
+                let targetProvider = pendingProvider ?? aiService.provider
+
+                // 1. If provider changed, switch provider first
+                if let newProvider = pendingProvider, newProvider != aiService.provider {
+                    logToFile("[Settings] Switching provider to \(newProvider.rawValue)")
+                    try await AIService.shared.setProvider(newProvider)
+                }
+
+                // 2. Configure OpenAI when using OpenAI provider with a key
+                // Always call configureOpenAI() to ensure backend is properly initialized
+                if targetProvider == .openAICompatible && !pendingOpenAIKey.isEmpty {
+                    logToFile("[Settings] Configuring OpenAI with settings (temperature: \(pendingOpenAITemperature))")
+                    try await AIService.shared.configureOpenAI(
+                        apiKey: pendingOpenAIKey,
+                        baseURL: pendingOpenAIBaseURL.isEmpty ? nil : pendingOpenAIBaseURL,
+                        model: pendingOpenAIModel,
+                        temperature: pendingOpenAITemperature
+                    )
+                    // Explicitly ensure provider is set to OpenAI after successful configuration
+                    // This guarantees the provider change is saved even if setProvider() used old config values
+                    logToFile("[Settings] Ensuring provider is set to openAICompatible after configureOpenAI")
+                    try await AIService.shared.setProvider(.openAICompatible)
+                }
+
+                // 3. If MLX model changed (and using local MLX)
+                if targetProvider == .localMLX {
+                    if let newModel = pendingMLXModel, newModel != aiService.selectedModelId {
+                        logToFile("[Settings] Setting up MLX model: \(newModel)")
+                        try await AIService.shared.setupModel(newModel)
+                    }
+                }
+
+                // Success - reset pending state
+                await MainActor.run {
+                    pendingProvider = nil
+                    pendingMLXModel = nil
+                    // Update pending OpenAI values to match what was saved
+                    pendingOpenAIKey = aiService.openAIKey
+                    pendingOpenAIBaseURL = aiService.openAIBaseURL
+                    pendingOpenAIModel = aiService.openAIModel
+                    pendingOpenAITemperature = aiService.openAITemperature
+                    isApplyingChanges = false
+                    aiService.clearConnectionTestResult()
+                    logToFile("[Settings] applyAllChanges completed successfully")
+                }
+            } catch {
+                await MainActor.run {
+                    applyError = error.localizedDescription
+                    isApplyingChanges = false
+                    logToFile("[Settings] applyAllChanges failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Test OpenAI connection with pending values (not saved values)
+    /// This does NOT modify aiService state - it only tests with the provided values
+    private func testConnectionWithPendingValues() {
+        guard !pendingOpenAIKey.isEmpty else {
+            return
+        }
+
+        aiService.clearConnectionTestResult()
+
+        // Test with pending values directly without modifying aiService state
+        // This prevents the service from being left in a broken/polluted state
+        aiService.testOpenAIConnectionWith(apiKey: pendingOpenAIKey, baseURL: pendingOpenAIBaseURL)
+    }
 
     private func rebuildIndex() {
         isRebuildingIndex = true
@@ -1574,7 +2659,7 @@ struct AISettingsView: View {
     private func logToFile(_ message: String) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
-        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_rag.log")
+        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("engram_rag.log")
         if let data = line.data(using: .utf8) {
             if FileManager.default.fileExists(atPath: logURL.path) {
                 if let handle = try? FileHandle(forWritingTo: logURL) {
@@ -1591,6 +2676,28 @@ struct AISettingsView: View {
     private func revealModelStorage() {
         let url = URL(fileURLWithPath: modelStoragePath)
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
+    }
+
+    private func clearAllModels() {
+        clearedBytesMessage = nil
+        Task {
+            do {
+                let bytesCleared = try await aiService.clearAllModels()
+                await MainActor.run {
+                    let formatter = ByteCountFormatter()
+                    formatter.countStyle = .file
+                    clearedBytesMessage = "Cleared \(formatter.string(fromByteCount: bytesCleared))"
+
+                    // Clear message after 5 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        clearedBytesMessage = nil
+                    }
+                }
+                logToFile("[Settings] Cleared \(bytesCleared) bytes of AI models")
+            } catch {
+                logToFile("[Settings] Failed to clear models: \(error.localizedDescription)")
+            }
+        }
     }
 }
 
@@ -1623,7 +2730,7 @@ struct AboutSettingsView: View {
                 .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 10, y: 3)
 
                 VStack(spacing: 4) {
-                    Text("Project Echo")
+                    Text("Engram")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundColor(Theme.Colors.textPrimary)
 
@@ -1636,26 +2743,61 @@ struct AboutSettingsView: View {
             Spacer().frame(height: 20)
 
             // Description
-            Text("Privacy-first meeting recorder with\nlocal AI transcription")
-                .font(.system(size: 13))
-                .foregroundColor(Theme.Colors.textSecondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 6) {
+                Text("Your meetings, remembered.")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(Theme.Colors.textSecondary)
+                    .italic()
+
+                Text("Privacy-first meeting recorder with\nlocal AI transcription")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.Colors.textMuted)
+                    .multilineTextAlignment(.center)
+            }
+            .fixedSize(horizontal: false, vertical: true)
 
             Spacer().frame(height: 24)
 
             // Links
             HStack(spacing: 16) {
-                AboutLink(title: "Website", icon: "globe", urlString: "https://github.com/anthropics/project-echo")
-                AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right", urlString: "https://github.com/anthropics/project-echo")
-                AboutLink(title: "License", icon: "doc.text", urlString: "https://github.com/anthropics/project-echo/blob/main/LICENSE")
+                AboutLink(title: "Website", icon: "globe", urlString: "https://balakumar.dev")
+                AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right", urlString: "https://github.com/nickkumara")
             }
 
             Spacer()
 
+            // Developer attribution - more prominent
+            VStack(spacing: 8) {
+                HStack(spacing: 4) {
+                    Text("Crafted by")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.Colors.textMuted)
+
+                    Text("Bala Kumar")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.Colors.textSecondary)
+                }
+
+                Button(action: {
+                    if let url = URL(string: "https://balakumar.dev") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 10))
+                        Text("balakumar.dev")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(Theme.Colors.primary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 12)
+
             // Footer
-            Text("Made with privacy in mind")
-                .font(.system(size: 11))
+            Text("© 2024-2026 Bala Kumar. All rights reserved.")
+                .font(.system(size: 10))
                 .foregroundColor(Theme.Colors.textMuted)
                 .padding(.bottom, 16)
         }

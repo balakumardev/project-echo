@@ -46,4 +46,64 @@ public enum Formatters {
         formatter.allowedUnits = [.hour, .minute, .second]
         return formatter.string(from: duration) ?? ""
     }
+
+    // MARK: - Relative Date Formatting
+
+    /// Format date as relative string (Today, Yesterday, X days ago, etc.)
+    /// - Parameters:
+    ///   - date: The date to format
+    ///   - expanded: If true, includes time for recent dates (used on hover)
+    /// - Returns: Formatted relative date string
+    public static func formatRelativeDate(_ date: Date, expanded: Bool = false) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+
+        // Time formatter for expanded mode
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "h:mm a"
+        let timeString = timeFormatter.string(from: date)
+
+        // Check if same day (today)
+        if calendar.isDateInToday(date) {
+            return expanded ? "Today at \(timeString)" : "Today"
+        }
+
+        // Check if yesterday
+        if calendar.isDateInYesterday(date) {
+            return expanded ? "Yesterday at \(timeString)" : "Yesterday"
+        }
+
+        // Calculate days difference
+        let startOfToday = calendar.startOfDay(for: now)
+        let startOfDate = calendar.startOfDay(for: date)
+        let components = calendar.dateComponents([.day, .year], from: startOfDate, to: startOfToday)
+        let daysAgo = components.day ?? 0
+
+        // 2-6 days ago
+        if daysAgo >= 2 && daysAgo <= 6 {
+            return "\(daysAgo) days ago"
+        }
+
+        // Last week (7-13 days)
+        if daysAgo >= 7 && daysAgo <= 13 {
+            return "Last week"
+        }
+
+        // Older dates - show month and day
+        let dateFormatter = DateFormatter()
+
+        // Check if different year
+        let dateYear = calendar.component(.year, from: date)
+        let currentYear = calendar.component(.year, from: now)
+
+        if dateYear != currentYear {
+            // Different year - include year
+            dateFormatter.dateFormat = expanded ? "MMM d, yyyy 'at' h:mm a" : "MMM d, yyyy"
+        } else {
+            // Same year - just month and day
+            dateFormatter.dateFormat = expanded ? "MMM d 'at' h:mm a" : "MMM d"
+        }
+
+        return dateFormatter.string(from: date)
+    }
 }

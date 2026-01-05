@@ -64,7 +64,7 @@ public actor TranscriptionEngine {
     
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "Transcription")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "Transcription")
     nonisolated(unsafe) private var whisperKit: WhisperKit?
     private var isModelLoaded = false
 

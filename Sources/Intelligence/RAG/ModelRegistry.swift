@@ -54,49 +54,63 @@ public struct ModelRegistry {
 
     // MARK: - Model Registry
 
-    /// All available models
+    /// All available models (Updated January 2025)
+    /// Focused on small, efficient models suitable for background apps
     /// Order matters - first model is shown first in UI
     public static let availableModels: [ModelInfo] = [
-        // Tiny tier - for low memory systems
+        // Tiny tier - ultra-lightweight for any Mac
         ModelInfo(
-            id: "mlx-community/SmolLM2-360M-Instruct-4bit",
-            displayName: "SmolLM 360M",
-            description: "Ultra-lightweight model. Works on any Mac.",
-            sizeGB: 0.3,
-            memoryGB: 0.5,
+            id: "mlx-community/Qwen3-0.6B-8bit",
+            displayName: "Qwen3 0.6B",
+            description: "Ultra-light. Works on any Mac, very fast.",
+            sizeGB: 0.6,
+            memoryGB: 1.0,
             isDefault: false,
             tier: .tiny
         ),
 
-        // Light tier - good default
+        // Light tier - good balance of quality and speed
+        ModelInfo(
+            id: "mlx-community/Qwen3-1.7B-4bit",
+            displayName: "Qwen3 1.7B",
+            description: "Excellent quality for size. Great for most Macs.",
+            sizeGB: 1.0,
+            memoryGB: 1.5,
+            isDefault: false,
+            tier: .light
+        ),
+        // NOTE: Gemma 3 models removed - MLX has vocabulary size mismatch bug (262208 vs 262144)
+        // See: https://github.com/huggingface/swift-transformers/issues/180
+        // Re-add when MLX fixes Gemma 3 support
+
         ModelInfo(
             id: "mlx-community/gemma-2-2b-it-4bit",
             displayName: "Gemma 2 2B",
-            description: "Google's efficient 2B model. Fast and capable.",
-            sizeGB: 1.6,
+            description: "Google's efficient model. Good quality, fast inference.",
+            sizeGB: 1.5,
             memoryGB: 2.0,
-            isDefault: true,  // DEFAULT MODEL
+            isDefault: false,
             tier: .light
         ),
 
-        // Standard tier
+        // Standard tier - best balance for 8GB+ Macs
         ModelInfo(
-            id: "mlx-community/Llama-3.2-3B-Instruct-4bit",
-            displayName: "Llama 3.2 3B",
-            description: "Meta's latest small model. Good quality.",
-            sizeGB: 2.0,
-            memoryGB: 2.5,
-            isDefault: false,
+            id: "mlx-community/Qwen3-4B-4bit",
+            displayName: "Qwen3 4B",
+            description: "Best quality-to-size ratio. Recommended for most users.",
+            sizeGB: 2.5,
+            memoryGB: 3.0,
+            isDefault: true,  // DEFAULT MODEL
             tier: .standard
         ),
 
-        // Pro tier
+        // Pro tier - for 16GB+ Macs
         ModelInfo(
-            id: "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
-            displayName: "Mistral 7B",
-            description: "Powerful 7B model. Best quality, needs more RAM.",
-            sizeGB: 4.0,
-            memoryGB: 5.0,
+            id: "mlx-community/Qwen3-8B-4bit",
+            displayName: "Qwen3 8B",
+            description: "High quality. Best for 16GB+ Macs.",
+            sizeGB: 4.5,
+            memoryGB: 5.5,
             isDefault: false,
             tier: .pro
         ),
@@ -123,18 +137,18 @@ public struct ModelRegistry {
         // Fall back to pattern matching
         let lower = modelId.lowercased()
 
-        if lower.contains("360m") || lower.contains("500m") {
-            return 0.5
-        } else if lower.contains("1b") || lower.contains("1.7b") {
+        if lower.contains("0.6b") || lower.contains("270m") || lower.contains("360m") || lower.contains("500m") {
             return 1.0
+        } else if lower.contains("1b") || lower.contains("1.7b") {
+            return 1.5
         } else if lower.contains("2b") {
             return 2.0
         } else if lower.contains("3b") {
             return 2.5
         } else if lower.contains("4b") {
-            return 3.0
+            return 3.5
         } else if lower.contains("7b") || lower.contains("8b") {
-            return 5.0
+            return 5.5
         } else if lower.contains("13b") || lower.contains("14b") {
             return 10.0
         }
@@ -149,6 +163,33 @@ public struct ModelRegistry {
             .filter { $0.memoryGB <= availableGB }
             .sorted { $0.memoryGB > $1.memoryGB }
             .first
+    }
+
+    /// Recommend the best model for the user's system RAM
+    /// Uses conservative memory limits since this app runs in the background
+    /// - Parameter systemRAMGB: Total system RAM in GB
+    /// - Returns: Recommended model, or default if RAM unknown
+    public static func recommendedModel(forSystemRAMGB systemRAMGB: Double) -> ModelInfo {
+        // Reserve memory for OS and other apps (this app runs in background)
+        // Be conservative: use at most 30% of RAM for the model
+        let availableForModel = systemRAMGB * 0.3
+
+        // Find the best model that fits
+        if let recommended = availableModels
+            .filter({ $0.memoryGB <= availableForModel })
+            .sorted(by: { $0.memoryGB > $1.memoryGB })  // Prefer larger (better quality)
+            .first {
+            return recommended
+        }
+
+        // Fallback to smallest model if nothing fits
+        return availableModels.min(by: { $0.memoryGB < $1.memoryGB }) ?? defaultModel
+    }
+
+    /// Get total system RAM in GB
+    public static var systemRAMGB: Double {
+        let physicalMemory = ProcessInfo.processInfo.physicalMemory
+        return Double(physicalMemory) / 1_073_741_824  // Convert bytes to GB
     }
 
     /// Models grouped by tier

@@ -25,8 +25,10 @@ Icon
 *.o
 *.dylib
 *.dSYM
+*.app/
+Engram.app/
+engram.app/
 ProjectEcho.app/
-projectecho.app/
 .home/
 
 # HAL Plugin

@@ -357,9 +357,16 @@ public struct ChatView: View {
 
     private var emptyState: some View {
         VStack(spacing: Theme.Spacing.lg) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 48))
-                .foregroundColor(Theme.Colors.textMuted)
+            // Branded icon
+            ZStack {
+                Circle()
+                    .fill(Theme.Colors.primaryMuted)
+                    .frame(width: 80, height: 80)
+
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(Theme.Colors.primary)
+            }
 
             VStack(spacing: Theme.Spacing.sm) {
                 Text("Ask about your meetings")
@@ -372,9 +379,37 @@ public struct ChatView: View {
                     .multilineTextAlignment(.center)
             }
 
+            // Quick actions for recording-specific queries
+            if viewModel.recording != nil {
+                VStack(spacing: Theme.Spacing.md) {
+                    Text("Quick Actions")
+                        .font(Theme.Typography.caption)
+                        .foregroundColor(Theme.Colors.textMuted)
+
+                    HStack(spacing: Theme.Spacing.sm) {
+                        quickActionButton(
+                            title: "Summarize",
+                            icon: "doc.text",
+                            query: "Summarize this meeting"
+                        )
+                        quickActionButton(
+                            title: "Action Items",
+                            icon: "checklist",
+                            query: "What are the action items from this meeting?"
+                        )
+                        quickActionButton(
+                            title: "Topics",
+                            icon: "list.bullet",
+                            query: "What topics were discussed?"
+                        )
+                    }
+                }
+                .padding(.bottom, Theme.Spacing.md)
+            }
+
             // Example questions
             VStack(spacing: Theme.Spacing.sm) {
-                Text("Try asking:")
+                Text("Or try asking:")
                     .font(Theme.Typography.caption)
                     .foregroundColor(Theme.Colors.textMuted)
 
@@ -397,6 +432,29 @@ public struct ChatView: View {
         }
         .padding(.vertical, Theme.Spacing.xxxl)
         .frame(maxWidth: .infinity)
+    }
+
+    /// Quick action button that sends a query immediately
+    private func quickActionButton(title: String, icon: String, query: String) -> some View {
+        Button(action: {
+            viewModel.inputText = query
+            Task {
+                await viewModel.sendMessage()
+            }
+        }) {
+            VStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                Text(title)
+                    .font(Theme.Typography.caption)
+            }
+            .foregroundColor(Theme.Colors.primary)
+            .frame(width: 80, height: 60)
+            .background(Theme.Colors.primaryMuted)
+            .cornerRadius(Theme.Radius.md)
+        }
+        .buttonStyle(.plain)
+        .disabled(!aiService.isReady || viewModel.isGenerating)
     }
 
     private var emptyStateSubtitle: String {

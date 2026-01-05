@@ -10,7 +10,7 @@ private func screenDebugLog(_ message: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] [ScreenRecorder] \(message)\n"
     let logFile = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("ProjectEcho/debug.log")
+        .appendingPathComponent("Engram/debug.log")
 
     if let handle = try? FileHandle(forWritingTo: logFile) {
         handle.seekToEndOfFile()
@@ -28,7 +28,7 @@ private func screenDebugLog(_ message: String) {
 @available(macOS 14.0, *)
 final class VideoWriter: @unchecked Sendable {
     private let lock = NSLock()
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "VideoWriter")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "VideoWriter")
 
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -193,7 +193,7 @@ final class VideoWriter: @unchecked Sendable {
 @available(macOS 14.0, *)
 final class VideoStreamDelegate: NSObject, SCStreamOutput, @unchecked Sendable {
     private let videoWriter: VideoWriter
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "VideoStreamDelegate")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "VideoStreamDelegate")
     private var videoFrameCount = 0
 
     init(videoWriter: VideoWriter) {
@@ -291,7 +291,7 @@ public actor ScreenRecorder {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "ScreenRecorder")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "ScreenRecorder")
 
     private var windowStream: SCStream?
     private var videoWriter: VideoWriter?

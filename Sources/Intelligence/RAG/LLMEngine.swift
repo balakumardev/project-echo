@@ -1,11 +1,17 @@
 import Foundation
 import os.log
 import Metal
+import MLX
 import MLXLLM
 import MLXLMCommon
 
 /// Handles LLM inference for the RAG feature using Apple's MLX framework
 /// Supports MLX local models and OpenAI-compatible APIs
+///
+/// Architecture: Stateless generation (industry standard)
+/// - Each request is independent with no shared KV cache
+/// - Conversation history is managed externally by the database
+/// - This matches how production LLM APIs (OpenAI, Anthropic) work
 ///
 /// Model loading is managed by AIService - this class focuses on generation only
 @available(macOS 14.0, *)
@@ -18,7 +24,7 @@ public actor LLMEngine {
         /// MLX backend for Apple Silicon optimized inference
         case mlx
         /// OpenAI-compatible API backend
-        case openAI(apiKey: String, baseURL: URL?, model: String)
+        case openAI(apiKey: String, baseURL: URL?, model: String, temperature: Float)
     }
 
     /// Errors that can occur during LLM operations
@@ -86,13 +92,11 @@ public actor LLMEngine {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "LLMEngine")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "LLMEngine")
 
     /// The currently loaded MLX model container (set by AIService)
+    /// Used for stateless generation - no session state maintained
     private var modelContainer: ModelContainer?
-
-    /// Chat session for MLX models
-    private var chatSession: ChatSession?
 
     /// The current backend configuration
     private var _currentBackend: Backend?
@@ -103,6 +107,16 @@ public actor LLMEngine {
     /// The current backend, if any
     public var currentBackend: Backend? {
         _currentBackend
+    }
+
+    /// Check if using MLX local backend
+    public var isMLXBackend: Bool {
+        switch _currentBackend {
+        case .mlx:
+            return true
+        case .openAI, .none:
+            return false
+        }
     }
 
     /// URLSession for OpenAI API requests
@@ -124,27 +138,25 @@ public actor LLMEngine {
     public func setMLXBackend(_ container: ModelContainer) {
         unload()
         self.modelContainer = container
-        self.chatSession = ChatSession(container)
         self._currentBackend = .mlx
         self.isModelLoaded = true
-        logger.info("MLX backend configured with pre-loaded model")
+        logger.info("MLX backend configured (stateless mode)")
     }
 
     /// Set OpenAI-compatible API backend
-    public func setOpenAIBackend(apiKey: String, baseURL: URL?, model: String) {
+    public func setOpenAIBackend(apiKey: String, baseURL: URL?, model: String, temperature: Float = 1.0) {
         unload()
         guard !apiKey.isEmpty else {
             logger.error("Cannot configure OpenAI backend: API key is empty")
             return
         }
-        self._currentBackend = .openAI(apiKey: apiKey, baseURL: baseURL, model: model)
+        self._currentBackend = .openAI(apiKey: apiKey, baseURL: baseURL, model: model, temperature: temperature)
         self.isModelLoaded = true
-        logger.info("OpenAI backend configured with model: \(model)")
+        logger.info("OpenAI backend configured with model: \(model), temperature: \(temperature)")
     }
 
     /// Unload the current backend
     public func unload() {
-        chatSession = nil
         modelContainer = nil
         _currentBackend = nil
         isModelLoaded = false
@@ -185,7 +197,14 @@ public actor LLMEngine {
                             continuation: continuation
                         )
 
-                    case .openAI(let apiKey, let baseURL, let model):
+                    case .openAI(let apiKey, let baseURL, let model, let temperature):
+                        // Use configured temperature, overriding default parameters
+                        let openAIParameters = GenerationParameters(
+                            maxTokens: parameters.maxTokens,
+                            temperature: temperature,
+                            topP: parameters.topP,
+                            stopSequences: parameters.stopSequences
+                        )
                         try await generateOpenAIStream(
                             messages: buildOpenAIMessages(
                                 userQuery: prompt,
@@ -196,7 +215,7 @@ public actor LLMEngine {
                             apiKey: apiKey,
                             baseURL: baseURL,
                             model: model,
-                            parameters: parameters,
+                            parameters: openAIParameters,
                             continuation: continuation
                         )
                     }
@@ -239,8 +258,15 @@ public actor LLMEngine {
         return result
     }
 
-    // MARK: - Private: MLX Generation
+    // MARK: - Private: MLX Generation (Stateless)
 
+    /// Stateless MLX generation using the lower-level generate() API
+    ///
+    /// Architecture rationale:
+    /// - Each request gets a fresh KV cache (cache: nil)
+    /// - No session state accumulated between requests
+    /// - Matches industry-standard LLM API patterns
+    /// - Prevents KVCache corruption from dimension mismatches
     private func generateMLXStream(
         prompt: String,
         context: String,
@@ -248,7 +274,7 @@ public actor LLMEngine {
         parameters: GenerationParameters,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
-        guard let chatSession = chatSession else {
+        guard let container = modelContainer else {
             throw LLMError.modelNotLoaded
         }
 
@@ -259,27 +285,59 @@ public actor LLMEngine {
             systemPrompt: systemPrompt
         )
 
-        logger.debug("Starting MLX generation, prompt length: \(fullPrompt.count)")
+        logger.debug("Starting MLX generation (stateless), prompt length: \(fullPrompt.count)")
 
         do {
             var generatedText = ""
 
-            // Use ChatSession's streaming API
-            for try await chunk in try chatSession.streamResponse(to: fullPrompt) {
-                generatedText += chunk
+            // Use ModelContainer.perform for thread-safe access to ModelContext
+            // This is the recommended pattern from mlx-swift-lm
+            try await container.perform { [fullPrompt, parameters] context in
+                // Prepare input using the model's processor
+                let userInput = UserInput(prompt: fullPrompt)
+                let input = try await context.processor.prepare(input: userInput)
 
-                // Check for stop sequences
-                if shouldStop(text: generatedText, stopSequences: parameters.stopSequences) {
-                    break
+                // Convert our parameters to MLX's GenerateParameters
+                let mlxParams = MLXLMCommon.GenerateParameters(
+                    maxTokens: parameters.maxTokens,
+                    temperature: parameters.temperature,
+                    topP: parameters.topP
+                )
+
+                // Use stateless generation with cache: nil
+                // This creates a fresh KV cache for each request - industry standard pattern
+                let stream = try MLXLMCommon.generate(
+                    input: input,
+                    cache: nil,  // Fresh cache each time - stateless!
+                    parameters: mlxParams,
+                    context: context
+                )
+
+                // Process the async stream
+                for await generation in stream {
+                    switch generation {
+                    case .chunk(let chunk):
+                        generatedText += chunk
+
+                        // Check for stop sequences
+                        if self.shouldStop(text: generatedText, stopSequences: parameters.stopSequences) {
+                            break
+                        }
+
+                        continuation.yield(chunk)
+
+                    case .info:
+                        // Generation complete info - we don't need to do anything special
+                        break
+
+                    case .toolCall:
+                        // Tool calls not used in this app
+                        break
+                    }
                 }
 
-                // Check max tokens (approximate by characters / 4)
-                if generatedText.count / 4 >= parameters.maxTokens {
-                    logger.debug("Reached approximate max tokens limit")
-                    break
-                }
-
-                continuation.yield(chunk)
+                // Ensure MLX operations are complete
+                Stream().synchronize()
             }
 
             logger.debug("MLX generation complete, length: \(generatedText.count)")
@@ -312,7 +370,6 @@ public actor LLMEngine {
             "messages": messages,
             "max_tokens": parameters.maxTokens,
             "temperature": parameters.temperature,
-            "top_p": parameters.topP,
             "stream": true
         ]
 
@@ -419,7 +476,7 @@ public actor LLMEngine {
 
     private var defaultSystemPrompt: String {
         """
-        You are a helpful assistant for Project Echo, a meeting transcription application. \
+        You are a helpful assistant for Engram, a meeting transcription application. \
         Your role is to answer questions about meeting content based on the provided context. \
         Be concise, accurate, and helpful. If the context doesn't contain enough information \
         to answer the question, say so honestly. Focus on extracting actionable insights, \
@@ -445,7 +502,7 @@ extension LLMEngine.Backend: CustomStringConvertible {
         switch self {
         case .mlx:
             return "MLX"
-        case .openAI(_, let baseURL, let model):
+        case .openAI(_, let baseURL, let model, _):
             let host = baseURL?.host ?? "api.openai.com"
             return "OpenAI(\(model)@\(host))"
         }

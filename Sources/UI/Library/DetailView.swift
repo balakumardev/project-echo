@@ -27,7 +27,8 @@ struct RecordingDetailView: View {
     let recording: Recording
     @StateObject private var viewModel = RecordingDetailViewModel()
     @State private var showDeleteConfirmation = false
-    @AppStorage("showChatPanel") private var showChatPanel = false
+    @AppStorage("showChatPanel_v2") private var showChatPanel = false
+    @AppStorage("aiEnabled") private var aiEnabled = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -45,12 +46,14 @@ struct RecordingDetailView: View {
         .animation(.easeInOut(duration: 0.2), value: showChatPanel)
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                Button {
-                    showChatPanel.toggle()
-                } label: {
-                    Image(systemName: showChatPanel ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                if aiEnabled {
+                    Button {
+                        showChatPanel.toggle()
+                    } label: {
+                        Image(systemName: showChatPanel ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                    }
+                    .help("Toggle AI Chat")
                 }
-                .help("Toggle AI Chat")
             }
         }
         .task(id: recording.id) {
@@ -140,6 +143,12 @@ struct DetailHeader: View {
 
                 // Actions
                 HStack(spacing: Theme.Spacing.sm) {
+                    // Show in Finder button
+                    IconButton(icon: "folder", size: 36, style: .ghost) {
+                        NSWorkspace.shared.activateFileViewerSelecting([recording.fileURL])
+                    }
+                    .help("Show in Finder")
+
                     IconButton(icon: "square.and.arrow.up", size: 36, style: .ghost) {
                         exportRecording()
                     }

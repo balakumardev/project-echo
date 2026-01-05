@@ -15,12 +15,37 @@ public class AIServiceObservable: ObservableObject {
     @Published public var provider: AIService.Provider = .localMLX
     @Published public var indexedCount: Int = 0
     @Published public var totalIndexable: Int = 0
+    @Published public var isIndexingLoading: Bool = true
+
+    /// Whether the AIService is currently initializing (startup phase)
+    @Published public var isInitializing: Bool = true
+
+    /// Whether the AIService has completed initialization
+    @Published public var isInitialized: Bool = false
 
     // Config bindings
     @Published public var selectedModelId: String
     @Published public var openAIKey: String = ""
     @Published public var openAIBaseURL: String = ""
     @Published public var openAIModel: String = "gpt-4o-mini"
+    @Published public var openAITemperature: Float = 1.0
+
+    // Connection test state
+    @Published public var isTestingConnection: Bool = false
+    @Published public var connectionTestResult: ConnectionTestResult?
+
+    // Model clearing state
+    @Published public var isClearingModels: Bool = false
+    @Published public var cachedModelsSize: Int64 = 0
+
+    /// Result of a connection test
+    public enum ConnectionTestResult: Equatable {
+        case success(modelCount: Int)
+        case failure(message: String)
+    }
+
+    // AI enabled toggle
+    @AppStorage("aiEnabled") var aiEnabled = true
 
     // MARK: - Private
 
@@ -55,6 +80,17 @@ public class AIServiceObservable: ObservableObject {
         self.status = await service.status
         self.provider = await service.provider
         self.indexedCount = await service.indexedRecordingsCount
+        // Update initialization state
+        let initialized = await service.isInitialized
+        let initializing = await service.isInitializing
+        self.isInitialized = initialized
+        self.isInitializing = initializing
+        // Indexing is loading if the service hasn't initialized yet or is currently initializing
+        self.isIndexingLoading = !initialized || initializing
+        // Update cached models size (only if not currently clearing)
+        if !isClearingModels {
+            self.cachedModelsSize = AIService.shared.calculateCachedModelsSizeSync()
+        }
     }
 
     private func loadFromService() {
@@ -67,6 +103,7 @@ public class AIServiceObservable: ObservableObject {
                 self.openAIKey = config.openAIKey
                 self.openAIBaseURL = config.openAIBaseURL
                 self.openAIModel = config.openAIModel
+                self.openAITemperature = config.openAITemperature
                 self.provider = config.provider
             }
 
@@ -87,6 +124,10 @@ public class AIServiceObservable: ObservableObject {
     }
 
     // MARK: - Computed Properties
+
+    var isDisabled: Bool {
+        !aiEnabled
+    }
 
     public var isReady: Bool {
         if case .ready = status { return true }
@@ -132,6 +173,15 @@ public class AIServiceObservable: ObservableObject {
 
     // MARK: - Actions
 
+    func retryInitialization() async {
+        guard aiEnabled else { return }
+        do {
+            try await AIService.shared.initialize()
+        } catch {
+            // Error will be reflected in status
+        }
+    }
+
     /// Setup a model (downloads if needed, then loads)
     public func setupModel(_ modelId: String) {
         print("[AIServiceObservable] setupModel called for: \(modelId)")
@@ -156,7 +206,7 @@ public class AIServiceObservable: ObservableObject {
     private func logToFile(_ message: String) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
-        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_rag.log")
+        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("engram_rag.log")
         if let data = line.data(using: .utf8) {
             if FileManager.default.fileExists(atPath: logURL.path) {
                 if let handle = try? FileHandle(forWritingTo: logURL) {
@@ -183,11 +233,99 @@ public class AIServiceObservable: ObservableObject {
                 try await AIService.shared.configureOpenAI(
                     apiKey: openAIKey,
                     baseURL: openAIBaseURL.isEmpty ? nil : openAIBaseURL,
-                    model: openAIModel
+                    model: openAIModel,
+                    temperature: openAITemperature
                 )
             } catch {
                 // Error is reflected in status
             }
+        }
+    }
+
+    /// Test OpenAI API connection by listing available models (uses stored properties)
+    public func testOpenAIConnection() {
+        testOpenAIConnectionWith(apiKey: openAIKey, baseURL: openAIBaseURL)
+    }
+
+    /// Test OpenAI API connection with specific values (does not modify stored properties)
+    /// Use this method to test connection with pending/unsaved values
+    public func testOpenAIConnectionWith(apiKey: String, baseURL: String) {
+        guard !apiKey.isEmpty else {
+            connectionTestResult = .failure(message: "API key is required")
+            return
+        }
+
+        isTestingConnection = true
+        connectionTestResult = nil
+
+        Task {
+            do {
+                let result = try await performConnectionTest(apiKey: apiKey, baseURL: baseURL)
+                await MainActor.run {
+                    self.connectionTestResult = result
+                    self.isTestingConnection = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.connectionTestResult = .failure(message: error.localizedDescription)
+                    self.isTestingConnection = false
+                }
+            }
+        }
+    }
+
+    /// Clear the connection test result
+    public func clearConnectionTestResult() {
+        connectionTestResult = nil
+    }
+
+    /// Perform the actual connection test with provided credentials
+    private func performConnectionTest(apiKey: String, baseURL: String) async throws -> ConnectionTestResult {
+        let baseURLString = baseURL.isEmpty ? "https://api.openai.com" : baseURL
+        guard let parsedBaseURL = URL(string: baseURLString) else {
+            return .failure(message: "Invalid base URL")
+        }
+
+        let modelsURL = parsedBaseURL.appendingPathComponent("v1/models")
+
+        var request = URLRequest(url: modelsURL)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 15 // 15 second timeout
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return .failure(message: "Invalid response type")
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            // Try to parse models count from response
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let models = json["data"] as? [[String: Any]] {
+                return .success(modelCount: models.count)
+            }
+            return .success(modelCount: 0)
+        case 401:
+            return .failure(message: "Invalid API key (401 Unauthorized)")
+        case 403:
+            return .failure(message: "Access denied (403 Forbidden)")
+        case 404:
+            return .failure(message: "Endpoint not found (404). Check the base URL.")
+        case 429:
+            return .failure(message: "Rate limited (429). Try again later.")
+        case 500...599:
+            return .failure(message: "Server error (\(httpResponse.statusCode))")
+        default:
+            // Try to get error message from response
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = json["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                return .failure(message: message)
+            }
+            return .failure(message: "HTTP \(httpResponse.statusCode)")
         }
     }
 
@@ -207,6 +345,34 @@ public class AIServiceObservable: ObservableObject {
         Task {
             await AIService.shared.unloadModel()
         }
+    }
+
+    /// Clear all downloaded AI models
+    /// Returns the number of bytes cleared
+    public func clearAllModels() async throws -> Int64 {
+        await MainActor.run {
+            isClearingModels = true
+        }
+
+        defer {
+            Task { @MainActor in
+                self.isClearingModels = false
+                // Refresh size after clearing
+                self.cachedModelsSize = AIService.shared.calculateCachedModelsSizeSync()
+            }
+        }
+
+        return try await AIService.shared.clearAllModels()
+    }
+
+    /// Formatted string of cached models size
+    public var cachedModelsSizeFormatted: String {
+        if cachedModelsSize == 0 {
+            return "No models downloaded"
+        }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: cachedModelsSize)
     }
 
     // MARK: - Model Info Helpers

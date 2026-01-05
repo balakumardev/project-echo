@@ -5,7 +5,7 @@ import NaturalLanguage
 import os.log
 import Database
 
-/// Orchestrates the full RAG (Retrieval-Augmented Generation) flow for Project Echo.
+/// Orchestrates the full RAG (Retrieval-Augmented Generation) flow for Engram.
 /// Manages indexing of transcripts into the vector database and handles query processing
 /// to generate context-aware responses about meeting content.
 @available(macOS 14.0, *)
@@ -86,7 +86,7 @@ public actor RAGPipeline {
     /// Debug log file for RAG operations
     private static let debugLogURL: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("projectecho_rag.log")
+        return home.appendingPathComponent("engram_rag.log")
     }()
 
     /// Write to debug log file
@@ -119,7 +119,7 @@ public actor RAGPipeline {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "RAGPipeline")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "RAGPipeline")
 
     /// Database manager for persistence
     private let databaseManager: DatabaseManager
@@ -150,7 +150,7 @@ public actor RAGPipeline {
 
     /// System prompt for RAG-based chat
     private let systemPrompt = """
-        You are an AI assistant helping analyze meeting transcripts from Project Echo.
+        You are an AI assistant helping analyze meeting transcripts from Engram.
         Answer questions based on the meeting context provided below.
         When referencing information, cite the speaker and timestamp.
         If the context doesn't contain relevant information, say so honestly.
@@ -638,13 +638,95 @@ public actor RAGPipeline {
         return result
     }
 
+    /// Agentic chat that intelligently routes queries based on intent
+    /// - Parameters:
+    ///   - query: The user's question
+    ///   - sessionId: Chat session identifier
+    ///   - recordingFilter: Optional recording ID to limit context scope
+    /// - Returns: AsyncThrowingStream of response tokens
+    public func agentChat(
+        query: String,
+        sessionId: String,
+        recordingFilter: Int64? = nil
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    self.debugLog("[AgentChat] Query: '\(query)', Filter: \(String(describing: recordingFilter))")
+
+                    // Save user message first
+                    _ = try await self.databaseManager.saveChatMessage(
+                        sessionId: sessionId,
+                        recordingId: recordingFilter,
+                        role: "user",
+                        content: query,
+                        citations: nil
+                    )
+
+                    // Get conversation history (last 10 messages)
+                    let allHistory = try await self.databaseManager.getChatHistory(sessionId: sessionId)
+                    let recentHistory = allHistory.suffix(10)
+                    let conversationHistory = recentHistory.dropLast().compactMap { msg -> LLMEngine.Message? in
+                        guard let role = LLMEngine.Message.Role(rawValue: msg.role) else { return nil }
+                        return LLMEngine.Message(role: role, content: msg.content)
+                    }
+
+                    self.debugLog("[AgentChat] Creating TranscriptAgent...")
+
+                    // Create agent and process query
+                    let agent = TranscriptAgent(
+                        databaseManager: self.databaseManager,
+                        llmEngine: self.llmEngine
+                    )
+
+                    var fullResponse = ""
+                    self.debugLog("[AgentChat] Calling agent.processQuery...")
+
+                    let stream = await agent.processQuery(
+                        query: query,
+                        recordingId: recordingFilter,
+                        ragPipeline: self,
+                        sessionId: sessionId,
+                        conversationHistory: Array(conversationHistory)
+                    )
+
+                    self.debugLog("[AgentChat] Starting to stream response...")
+
+                    for try await token in stream {
+                        fullResponse += token
+                        continuation.yield(token)
+                    }
+
+                    self.debugLog("[AgentChat] Response complete, length: \(fullResponse.count) chars")
+
+                    // Save assistant response
+                    if !fullResponse.isEmpty {
+                        _ = try await self.databaseManager.saveChatMessage(
+                            sessionId: sessionId,
+                            recordingId: recordingFilter,
+                            role: "assistant",
+                            content: fullResponse,
+                            citations: nil
+                        )
+                    }
+
+                    continuation.finish()
+
+                } catch {
+                    self.logger.error("Agent chat error: \(error.localizedDescription)")
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Private Helpers
 
     /// Returns the path for the vector database storage
     private func getVectorDBPath() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport
-            .appendingPathComponent("ProjectEcho")
+            .appendingPathComponent("Engram")
             .appendingPathComponent("VectorDB")
     }
 

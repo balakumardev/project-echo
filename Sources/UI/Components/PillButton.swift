@@ -15,6 +15,7 @@ public struct PillButton: View {
     let icon: String?
     let style: PillButtonStyle
     let isCompact: Bool
+    let isDisabled: Bool
     let action: () -> Void
 
     @State private var isHovered = false
@@ -25,12 +26,14 @@ public struct PillButton: View {
         icon: String? = nil,
         style: PillButtonStyle = .primary,
         isCompact: Bool = false,
+        isDisabled: Bool = false,
         action: @escaping () -> Void
     ) {
         self.title = title
         self.icon = icon
         self.style = style
         self.isCompact = isCompact
+        self.isDisabled = isDisabled
         self.action = action
     }
 
@@ -47,23 +50,27 @@ public struct PillButton: View {
             }
             .padding(.horizontal, isCompact ? Theme.Spacing.md : Theme.Spacing.lg)
             .padding(.vertical, isCompact ? Theme.Spacing.xs : Theme.Spacing.sm)
-            .foregroundColor(foregroundColor)
-            .background(background)
+            .foregroundColor(isDisabled ? Theme.Colors.textMuted : foregroundColor)
+            .background(disabledAwareBackground)
             .clipShape(Capsule())
             .overlay(
                 Capsule()
-                    .stroke(borderColor, lineWidth: 1)
+                    .stroke(isDisabled ? Theme.Colors.borderSubtle : borderColor, lineWidth: 1)
             )
-            .scaleEffect(isPressed ? 0.96 : 1.0)
+            .scaleEffect(isPressed && !isDisabled ? 0.96 : 1.0)
+            .opacity(isDisabled ? 0.6 : 1.0)
             .animation(Theme.Animation.fast, value: isPressed)
             .animation(Theme.Animation.fast, value: isHovered)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
         .onHover { hovering in
-            isHovered = hovering
+            if !isDisabled {
+                isHovered = hovering
+            }
         }
         .pressEvents {
-            isPressed = true
+            if !isDisabled { isPressed = true }
         } onRelease: {
             isPressed = false
         }
@@ -92,6 +99,24 @@ public struct PillButton: View {
             return AnyShapeStyle(isHovered ? Theme.Colors.surfaceHover : Color.clear)
         case .danger:
             return AnyShapeStyle(isHovered ? Theme.Colors.error.opacity(0.9) : Theme.Colors.error)
+        }
+    }
+
+    private var disabledAwareBackground: AnyShapeStyle {
+        if isDisabled {
+            return AnyShapeStyle(Theme.Colors.surfaceElevated)
+        } else {
+            // background already returns AnyShapeStyle
+            switch style {
+            case .primary:
+                return AnyShapeStyle(isHovered ? Theme.Colors.primaryHover : Theme.Colors.primary)
+            case .secondary:
+                return AnyShapeStyle(isHovered ? Theme.Colors.primaryMuted : Theme.Colors.primaryMuted.opacity(0.5))
+            case .ghost:
+                return AnyShapeStyle(isHovered ? Theme.Colors.surfaceHover : Color.clear)
+            case .danger:
+                return AnyShapeStyle(isHovered ? Theme.Colors.error.opacity(0.9) : Theme.Colors.error)
+            }
         }
     }
 

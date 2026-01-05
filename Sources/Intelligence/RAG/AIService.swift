@@ -102,6 +102,7 @@ public actor AIService {
         public var openAIKey: String = ""
         public var openAIBaseURL: String = ""
         public var openAIModel: String = "gpt-4o-mini"
+        public var openAITemperature: Float = 1.0
         public var autoIndexTranscripts: Bool = true
 
         public init() {}
@@ -111,14 +112,11 @@ public actor AIService {
 
     // MARK: - Components
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "AIService")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "AIService")
     private let fileManager = FileManager.default
 
     /// MLX model container (when using local MLX)
     private var modelContainer: ModelContainer?
-
-    /// Chat session for MLX
-    private var chatSession: ChatSession?
 
     /// LLM engine for generation
     private var llmEngine: LLMEngine?
@@ -136,13 +134,18 @@ public actor AIService {
     private let urlSession: URLSession
 
     /// Whether the service has been initialized
-    private var isInitialized = false
+    public private(set) var isInitialized = false
 
     /// Whether initialization is in progress
-    private var isInitializing = false
+    public private(set) var isInitializing = false
 
     /// Whether a model setup is currently in progress
     private var isSettingUp = false
+
+    /// Check if AI is enabled via user preferences
+    public var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true
+    }
 
     // MARK: - Initialization
 
@@ -165,6 +168,13 @@ public actor AIService {
     /// Initialize the AI service - call on app launch
     /// This sets up components but doesn't load models
     public func initialize() async throws {
+        // Check if AI is disabled by user
+        guard UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true else {
+            status = .notConfigured
+            logger.info("AI Service disabled by user preference")
+            return
+        }
+
         guard !isInitialized else {
             logger.info("AI service already initialized")
             return
@@ -217,19 +227,45 @@ public actor AIService {
         let isCached = isModelCached(modelId)
         logToFile("[AIService] Auto-load check: provider=\(provider.rawValue), modelId=\(modelId), isCached=\(isCached)")
 
-        if provider == .localMLX && isCached {
-            logger.info("Auto-loading cached model: \(modelId)")
-            logToFile("[AIService] Auto-loading cached model: \(modelId)")
-            do {
-                try await setupModel(modelId)
-                logToFile("[AIService] Model auto-loaded successfully")
-            } catch {
-                logger.warning("Failed to auto-load model: \(error.localizedDescription)")
-                logToFile("[AIService] Failed to auto-load model: \(error.localizedDescription)")
-                // Status will remain .notConfigured, user can manually load
+        // Load the appropriate backend based on user's explicit provider choice
+        // NO FALLBACK: If the user chose localMLX, we only try local. If they chose OpenAI, we only try OpenAI.
+        if provider == .localMLX {
+            if isCached {
+                logger.info("Auto-loading cached model: \(modelId)")
+                logToFile("[AIService] Auto-loading cached local MLX model: \(modelId)")
+                do {
+                    try await setupModel(modelId)
+                    logToFile("[AIService] Model auto-loaded successfully")
+                } catch {
+                    logger.warning("Failed to auto-load model: \(error.localizedDescription)")
+                    logToFile("[AIService] Failed to auto-load local model: \(error.localizedDescription)")
+                    // Status will remain .notConfigured or .error - user can manually configure
+                    // DO NOT fall back to OpenAI - respect user's choice
+                }
+            } else {
+                logToFile("[AIService] Local MLX model not cached, status remains notConfigured")
+                // Model not cached - user needs to download it in settings
+                // DO NOT fall back to OpenAI - respect user's choice
             }
-        } else if provider == .localMLX && !isCached {
-            logToFile("[AIService] Model not cached, skipping auto-load")
+        } else if provider == .openAICompatible && !config.openAIKey.isEmpty {
+            // Auto-configure OpenAI on startup if saved provider is openAICompatible
+            logger.info("Auto-configuring OpenAI backend on startup")
+            logToFile("[AIService] Auto-configuring OpenAI backend: model=\(config.openAIModel), temperature=\(config.openAITemperature)")
+            do {
+                try await configureOpenAI(
+                    apiKey: config.openAIKey,
+                    baseURL: config.openAIBaseURL.isEmpty ? nil : config.openAIBaseURL,
+                    model: config.openAIModel,
+                    temperature: config.openAITemperature
+                )
+                logToFile("[AIService] OpenAI backend auto-configured successfully")
+            } catch {
+                logger.warning("Failed to auto-configure OpenAI: \(error.localizedDescription)")
+                logToFile("[AIService] Failed to auto-configure OpenAI: \(error.localizedDescription)")
+                // Status will remain .notConfigured, user can manually configure
+            }
+        } else if provider == .openAICompatible && config.openAIKey.isEmpty {
+            logToFile("[AIService] OpenAI provider selected but no API key configured")
         }
 
         // Update indexing count
@@ -240,6 +276,15 @@ public actor AIService {
     }
 
     // MARK: - Public API: Model Setup
+
+    /// Helper method to update download progress from the progress callback
+    /// This is called from within the actor to safely update status
+    private func updateDownloadProgress(_ progress: Double, modelName: String) {
+        // Only update if we're still in downloading state
+        if case .downloading = status {
+            status = .downloading(progress: progress, modelName: modelName)
+        }
+    }
 
     /// Setup a local MLX model (downloads if needed, then loads)
     /// This is the MAIN method for getting a model ready
@@ -323,13 +368,19 @@ public actor AIService {
             print("[AIService] Calling loadModelContainer for: \(modelId)")
             logger.info("Calling loadModelContainer for: \(modelId)")
 
-            // Update status to show we're working
-            if !cached {
-                // Show indeterminate progress since MLX doesn't give us granular progress
-                status = .downloading(progress: 0.5, modelName: modelInfo.displayName)
-            }
+            // Capture model name for progress callback
+            let displayName = modelInfo.displayName
 
-            let container = try await MLXLMCommon.loadModelContainer(id: modelId)
+            // Use progress handler to update download progress in real-time
+            // Capture self weakly for the callback to update progress
+            let selfActor = self
+            let container = try await MLXLMCommon.loadModelContainer(id: modelId) { progress in
+                // Update status with real download progress
+                let fractionCompleted = progress.fractionCompleted
+                Task {
+                    await selfActor.updateDownloadProgress(fractionCompleted, modelName: displayName)
+                }
+            }
             print("[AIService] loadModelContainer completed successfully")
 
             status = .loading(modelName: modelInfo.displayName)
@@ -338,11 +389,7 @@ public actor AIService {
             self.modelContainer = container
             print("[AIService] Stored model container")
 
-            // Create chat session
-            self.chatSession = ChatSession(container)
-            print("[AIService] Created chat session")
-
-            // Configure LLM engine with MLX backend
+            // Configure LLM engine with MLX backend (stateless mode)
             if let engine = llmEngine {
                 await engine.setMLXBackend(container)
                 print("[AIService] Configured LLM engine")
@@ -372,7 +419,7 @@ public actor AIService {
     }
 
     /// Configure OpenAI-compatible API backend
-    public func configureOpenAI(apiKey: String, baseURL: String?, model: String) async throws {
+    public func configureOpenAI(apiKey: String, baseURL: String?, model: String, temperature: Float = 1.0) async throws {
         logger.info("Configuring OpenAI backend")
 
         // Ensure initialized
@@ -385,23 +432,24 @@ public actor AIService {
         }
 
         // Unload any MLX model
-        unloadMLXModel()
+        await unloadMLXModel()
 
         // Configure OpenAI backend on LLM engine
         let baseURLParsed = baseURL.flatMap { URL(string: $0) }
-        await llmEngine?.setOpenAIBackend(apiKey: apiKey, baseURL: baseURLParsed, model: model)
+        await llmEngine?.setOpenAIBackend(apiKey: apiKey, baseURL: baseURLParsed, model: model, temperature: temperature)
 
         // Save config
         config.provider = .openAICompatible
         config.openAIKey = apiKey
         config.openAIBaseURL = baseURL ?? ""
         config.openAIModel = model
+        config.openAITemperature = temperature
         saveConfig()
 
         provider = .openAICompatible
         status = .ready(modelName: model)
 
-        logger.info("OpenAI backend configured: \(model)")
+        logger.info("OpenAI backend configured: \(model) with temperature: \(temperature)")
     }
 
     /// Switch between providers
@@ -423,7 +471,8 @@ public actor AIService {
                 try await configureOpenAI(
                     apiKey: config.openAIKey,
                     baseURL: config.openAIBaseURL.isEmpty ? nil : config.openAIBaseURL,
-                    model: config.openAIModel
+                    model: config.openAIModel,
+                    temperature: config.openAITemperature
                 )
             } else {
                 status = .notConfigured
@@ -436,10 +485,163 @@ public actor AIService {
     }
 
     /// Unload the current model to free memory
-    public func unloadModel() {
-        unloadMLXModel()
+    public func unloadModel() async {
+        await unloadMLXModel()
         status = .notConfigured
         logger.info("Model unloaded")
+    }
+
+    // MARK: - Public API: Clear Models
+
+    /// Clear all downloaded AI models to free disk space
+    /// This removes models from both the app's local cache and HuggingFace cache
+    /// Returns the total bytes cleared
+    @discardableResult
+    public func clearAllModels() async throws -> Int64 {
+        logger.info("Clearing all downloaded AI models")
+        logToFile("[AIService] clearAllModels called")
+
+        // 1. Unload current model first
+        await unloadModel()
+
+        var totalBytesCleared: Int64 = 0
+
+        // 2. Clear app's local Models directory
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let localModelsPath = appSupport
+                .appendingPathComponent("Engram")
+                .appendingPathComponent("Models")
+                .appendingPathComponent("llm")
+
+            if fileManager.fileExists(atPath: localModelsPath.path) {
+                totalBytesCleared += calculateDirectorySize(localModelsPath)
+                try? fileManager.removeItem(at: localModelsPath)
+                try? fileManager.createDirectory(at: localModelsPath, withIntermediateDirectories: true)
+                logToFile("[AIService] Cleared local models directory: \(localModelsPath.path)")
+            }
+        }
+
+        // 3. Clear HuggingFace cache for MLX models only
+        let hubCacheDir = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub")
+
+        if let contents = try? fileManager.contentsOfDirectory(atPath: hubCacheDir.path) {
+            for item in contents {
+                // Only clear MLX community models (what this app downloads)
+                if item.hasPrefix("models--mlx-community--") {
+                    let itemPath = hubCacheDir.appendingPathComponent(item)
+                    totalBytesCleared += calculateDirectorySize(itemPath)
+                    try? fileManager.removeItem(at: itemPath)
+                    logToFile("[AIService] Cleared HuggingFace cache: \(item)")
+                }
+            }
+        }
+
+        // 4. Reset config to default model
+        config.selectedModelId = ModelRegistry.defaultModel.id
+        saveConfig()
+
+        logger.info("Cleared \(totalBytesCleared) bytes of AI models")
+        logToFile("[AIService] Total bytes cleared: \(totalBytesCleared)")
+
+        return totalBytesCleared
+    }
+
+    /// Calculate total size of a directory recursively
+    private func calculateDirectorySize(_ url: URL) -> Int64 {
+        var totalSize: Int64 = 0
+        let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .totalFileAllocatedSizeKey]
+
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: Array(resourceKeys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        for case let fileURL as URL in enumerator {
+            guard let resourceValues = try? fileURL.resourceValues(forKeys: resourceKeys),
+                  resourceValues.isRegularFile == true else {
+                continue
+            }
+            totalSize += Int64(resourceValues.totalFileAllocatedSize ?? resourceValues.fileSize ?? 0)
+        }
+
+        return totalSize
+    }
+
+    /// Calculate total size of all cached models
+    public func calculateCachedModelsSize() -> Int64 {
+        var totalSize: Int64 = 0
+
+        // Check app's local Models directory
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let localModelsPath = appSupport
+                .appendingPathComponent("Engram")
+                .appendingPathComponent("Models")
+                .appendingPathComponent("llm")
+            totalSize += calculateDirectorySize(localModelsPath)
+        }
+
+        // Check HuggingFace cache for MLX models
+        let hubCacheDir = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub")
+
+        if let contents = try? fileManager.contentsOfDirectory(atPath: hubCacheDir.path) {
+            for item in contents {
+                if item.hasPrefix("models--mlx-community--") {
+                    let itemPath = hubCacheDir.appendingPathComponent(item)
+                    totalSize += calculateDirectorySize(itemPath)
+                }
+            }
+        }
+
+        return totalSize
+    }
+
+    /// Synchronous version for UI (runs on calling thread)
+    public nonisolated func calculateCachedModelsSizeSync() -> Int64 {
+        let fm = FileManager.default
+        var totalSize: Int64 = 0
+        let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .totalFileAllocatedSizeKey]
+
+        func dirSize(_ url: URL) -> Int64 {
+            var size: Int64 = 0
+            guard let enumerator = fm.enumerator(
+                at: url,
+                includingPropertiesForKeys: Array(resourceKeys),
+                options: [.skipsHiddenFiles]
+            ) else { return 0 }
+
+            for case let fileURL as URL in enumerator {
+                guard let values = try? fileURL.resourceValues(forKeys: resourceKeys),
+                      values.isRegularFile == true else { continue }
+                size += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+            }
+            return size
+        }
+
+        // Check app's local Models directory
+        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let localModelsPath = appSupport
+                .appendingPathComponent("Engram")
+                .appendingPathComponent("Models")
+                .appendingPathComponent("llm")
+            totalSize += dirSize(localModelsPath)
+        }
+
+        // Check HuggingFace cache for MLX models
+        let hubCacheDir = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub")
+
+        if let contents = try? fm.contentsOfDirectory(atPath: hubCacheDir.path) {
+            for item in contents where item.hasPrefix("models--mlx-community--") {
+                totalSize += dirSize(hubCacheDir.appendingPathComponent(item))
+            }
+        }
+
+        return totalSize
     }
 
     // MARK: - Public API: Chat
@@ -466,6 +668,44 @@ public actor AIService {
                         query: query,
                         sessionId: sessionId,
                         recordingFilter: recordingId
+                    )
+
+                    for try await token in stream {
+                        continuation.yield(token)
+                    }
+
+                    continuation.finish()
+
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: - Public API: Agentic Chat
+
+    /// Agentic chat that intelligently routes queries based on intent
+    /// Uses intent classification to determine whether to use RAG search or full transcript
+    public func agentChat(
+        query: String,
+        sessionId: String,
+        recordingFilter: Int64? = nil
+    ) -> AsyncThrowingStream<String, Error> {
+        logToFile("[AIService.agentChat] Query: '\(query)', Filter: \(String(describing: recordingFilter))")
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    guard let pipeline = self.ragPipeline else {
+                        self.logToFile("[AIService.agentChat] ERROR: ragPipeline is nil")
+                        throw AIError.notInitialized
+                    }
+
+                    self.logToFile("[AIService.agentChat] Calling pipeline.agentChat...")
+                    let stream = await pipeline.agentChat(
+                        query: query,
+                        sessionId: sessionId,
+                        recordingFilter: recordingFilter
                     )
 
                     for try await token in stream {
@@ -522,7 +762,7 @@ public actor AIService {
     private func logToFile(_ message: String) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
-        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_rag.log")
+        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("engram_rag.log")
         if let data = line.data(using: .utf8) {
             if FileManager.default.fileExists(atPath: logURL.path) {
                 if let handle = try? FileHandle(forWritingTo: logURL) {
@@ -553,11 +793,11 @@ public actor AIService {
     /// Check if a model is cached locally
     /// Checks both HuggingFace cache and app's local Models directory
     public func isModelCached(_ modelId: String) -> Bool {
-        // Check 1: App's local Models directory (~/Library/Application Support/ProjectEcho/Models/llm/)
+        // Check 1: App's local Models directory (~/Library/Application Support/Engram/Models/llm/)
         let modelName = modelId.components(separatedBy: "/").last ?? modelId
         if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let localModelPath = appSupport
-                .appendingPathComponent("ProjectEcho")
+                .appendingPathComponent("Engram")
                 .appendingPathComponent("Models")
                 .appendingPathComponent("llm")
                 .appendingPathComponent(modelName)
@@ -607,7 +847,7 @@ public actor AIService {
         let modelName = modelId.components(separatedBy: "/").last ?? modelId
         if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let localModelPath = appSupport
-                .appendingPathComponent("ProjectEcho")
+                .appendingPathComponent("Engram")
                 .appendingPathComponent("Models")
                 .appendingPathComponent("llm")
                 .appendingPathComponent(modelName)
@@ -679,12 +919,9 @@ public actor AIService {
 
     // MARK: - Private: MLX Helpers
 
-    private func unloadMLXModel() {
-        chatSession = nil
+    private func unloadMLXModel() async {
         modelContainer = nil
-        Task {
-            await llmEngine?.unload()
-        }
+        await llmEngine?.unload()
     }
 
     private func parseMLXError(_ error: Error, modelId: String) -> String {

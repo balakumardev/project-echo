@@ -11,6 +11,8 @@ public struct EmptyDetailView: View {
 
     public var body: some View {
         VStack(spacing: Theme.Spacing.xl) {
+            Spacer()
+
             // Animated waveform icon
             ZStack {
                 Circle()
@@ -33,9 +35,41 @@ public struct EmptyDetailView: View {
                     .foregroundColor(Theme.Colors.textMuted)
                     .multilineTextAlignment(.center)
             }
+
+            Spacer()
+
+            // Subtle branding
+            VStack(spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(Theme.Colors.primary.opacity(0.5))
+
+                    Text("Engram")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(Theme.Colors.textMuted.opacity(0.6))
+                }
+
+                Text("Your meetings, remembered")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(Theme.Colors.textMuted.opacity(0.4))
+                    .italic()
+            }
+            .padding(.bottom, Theme.Spacing.xl)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.Colors.background)
+        // Placeholder toolbar to match RecordingDetailView's toolbar height
+        // This ensures consistent title bar height regardless of selection state
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                // Hidden placeholder button matching the AI chat button size
+                Button {} label: {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                }
+                .hidden()
+            }
+        }
         .onAppear {
             withAnimation(.easeInOut(duration: 2).repeatForever(autoreverses: true)) {
                 animationPhase = .pi
@@ -57,6 +91,8 @@ public struct EmptyStateView: View {
 
     public var body: some View {
         VStack(spacing: Theme.Spacing.lg) {
+            Spacer()
+
             Image(systemName: hasSearch ? "magnifyingglass" : "waveform.path")
                 .font(.system(size: 40, weight: .light))
                 .foregroundColor(Theme.Colors.textMuted)
@@ -71,6 +107,16 @@ public struct EmptyStateView: View {
                 .font(Theme.Typography.callout)
                 .foregroundColor(Theme.Colors.textMuted)
                 .multilineTextAlignment(.center)
+
+            Spacer()
+
+            // Subtle tagline when no recordings
+            if !hasSearch {
+                Text("Capture every insight")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.Colors.textMuted.opacity(0.4))
+                    .padding(.bottom, Theme.Spacing.lg)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

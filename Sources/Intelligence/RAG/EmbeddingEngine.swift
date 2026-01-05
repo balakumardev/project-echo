@@ -30,7 +30,7 @@ public actor EmbeddingEngine {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "EmbeddingEngine")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "EmbeddingEngine")
 
     /// The cached embedder instance from VecturaNLKit
     private var embedder: NLContextualEmbedder?

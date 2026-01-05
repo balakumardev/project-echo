@@ -5,6 +5,7 @@ public enum RecordingFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case today = "Today"
     case thisWeek = "This Week"
+    case custom = "Custom"
     case hasTranscript = "Transcribed"
     case favorites = "Favorites"
 
@@ -15,38 +16,94 @@ public enum RecordingFilter: String, CaseIterable, Identifiable {
         case .all: return "square.grid.2x2"
         case .today: return "calendar"
         case .thisWeek: return "calendar.badge.clock"
+        case .custom: return "calendar.badge.plus"
         case .hasTranscript: return "text.quote"
         case .favorites: return "star"
         }
     }
 }
 
-/// Horizontal scrolling filter chips
+/// Horizontal scrolling filter chips with date range support
 @available(macOS 14.0, *)
 public struct FilterChips: View {
     @Binding var selectedFilter: RecordingFilter
+    @Binding var customStartDate: Date?
+    @Binding var customEndDate: Date?
 
-    public init(selectedFilter: Binding<RecordingFilter>) {
+    @State private var showDatePicker = false
+
+    public init(
+        selectedFilter: Binding<RecordingFilter>,
+        customStartDate: Binding<Date?> = .constant(nil),
+        customEndDate: Binding<Date?> = .constant(nil)
+    ) {
         self._selectedFilter = selectedFilter
+        self._customStartDate = customStartDate
+        self._customEndDate = customEndDate
     }
 
     public var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.Spacing.sm) {
                 ForEach(RecordingFilter.allCases) { filter in
-                    FilterChip(
-                        title: filter.rawValue,
-                        icon: filter.icon,
-                        isSelected: selectedFilter == filter
-                    ) {
-                        withAnimation(Theme.Animation.spring) {
-                            selectedFilter = filter
+                    if filter == .custom {
+                        // Custom filter with popover
+                        customFilterChip
+                    } else {
+                        FilterChip(
+                            title: filter.rawValue,
+                            icon: filter.icon,
+                            isSelected: selectedFilter == filter
+                        ) {
+                            withAnimation(Theme.Animation.spring) {
+                                selectedFilter = filter
+                                // Clear custom date range when selecting other filters
+                                if filter != .custom {
+                                    customStartDate = nil
+                                    customEndDate = nil
+                                }
+                            }
                         }
                     }
                 }
             }
             .padding(.horizontal, Theme.Spacing.md)
         }
+    }
+
+    private var customFilterChip: some View {
+        FilterChip(
+            title: customChipTitle,
+            icon: RecordingFilter.custom.icon,
+            isSelected: selectedFilter == .custom || hasCustomDateRange
+        ) {
+            showDatePicker.toggle()
+        }
+        .popover(isPresented: $showDatePicker, arrowEdge: .bottom) {
+            DateRangePickerPopover(
+                startDate: $customStartDate,
+                endDate: $customEndDate,
+                isPresented: $showDatePicker,
+                onApply: {
+                    withAnimation(Theme.Animation.spring) {
+                        selectedFilter = .custom
+                    }
+                }
+            )
+        }
+    }
+
+    private var hasCustomDateRange: Bool {
+        customStartDate != nil || customEndDate != nil
+    }
+
+    private var customChipTitle: String {
+        if let start = customStartDate, let end = customEndDate {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "MMM d"
+            return "\(formatter.string(from: start)) - \(formatter.string(from: end))"
+        }
+        return "Custom"
     }
 }
 

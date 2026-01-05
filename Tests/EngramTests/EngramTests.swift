@@ -1,10 +1,14 @@
+// Engram - Privacy-first meeting recorder with local AI
+// Copyright © 2024-2026 Bala Kumar. All rights reserved.
+// https://balakumar.dev
+
 import XCTest
 @testable import AudioEngine
 @testable import Intelligence
 @testable import Database
 
 @available(macOS 14.0, *)
-final class ProjectEchoTests: XCTestCase {
+final class EngramTests: XCTestCase {
     
     // MARK: - Audio Engine Tests
     

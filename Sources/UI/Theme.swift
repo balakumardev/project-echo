@@ -2,7 +2,9 @@ import SwiftUI
 
 // MARK: - Design System
 
-/// Project Echo Design System
+/// Engram Design System
+/// Copyright © 2024-2026 Bala Kumar. All rights reserved.
+/// https://balakumar.dev
 /// A modern dark theme with vibrant accents
 @available(macOS 14.0, *)
 public enum Theme {

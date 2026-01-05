@@ -7,7 +7,7 @@ import UI
 // Debug file logging (disabled in release builds)
 #if DEBUG
 func debugLog(_ message: String) {
-    let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projectecho_debug.log")
+    let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("engram_debug.log")
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] \(message)\n"
     if let data = line.data(using: .utf8) {
@@ -140,7 +140,7 @@ public actor MeetingDetector {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "MeetingDetector")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "MeetingDetector")
 
     private var configuration: Configuration
     private var currentState: State = .idle

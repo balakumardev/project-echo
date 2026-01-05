@@ -17,8 +17,10 @@ public actor DatabaseManager {
         public let appName: String?
         public let hasTranscript: Bool
         public let isFavorite: Bool
+        public let summary: String?
+        public let actionItems: String?
 
-        public init(id: Int64, title: String, date: Date, duration: TimeInterval, fileURL: URL, fileSize: Int64, appName: String?, hasTranscript: Bool, isFavorite: Bool = false) {
+        public init(id: Int64, title: String, date: Date, duration: TimeInterval, fileURL: URL, fileSize: Int64, appName: String?, hasTranscript: Bool, isFavorite: Bool = false, summary: String? = nil, actionItems: String? = nil) {
             self.id = id
             self.title = title
             self.date = date
@@ -28,6 +30,8 @@ public actor DatabaseManager {
             self.appName = appName
             self.hasTranscript = hasTranscript
             self.isFavorite = isFavorite
+            self.summary = summary
+            self.actionItems = actionItems
         }
     }
     
@@ -114,7 +118,7 @@ public actor DatabaseManager {
     
     // MARK: - Properties
     
-    private let logger = Logger(subsystem: "com.projectecho.app", category: "Database")
+    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "Database")
     private var db: Connection?
     
     // Table definitions
@@ -135,6 +139,8 @@ public actor DatabaseManager {
     private let appName = Expression<String?>("app_name")
     private let hasTranscript = Expression<Bool>("has_transcript")
     private let isFavorite = Expression<Bool>("is_favorite")
+    private let summaryColumn = Expression<String?>("summary")
+    private let actionItemsColumn = Expression<String?>("action_items")
     
     // Column definitions - Transcripts
     private let recordingId = Expression<Int64>("recording_id")
@@ -169,7 +175,7 @@ public actor DatabaseManager {
     public init(databasePath: String? = nil) async throws {
         let dbPath = databasePath ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ProjectEcho")
+            .appendingPathComponent("Engram")
             .appendingPathComponent("echo.db")
             .path
         
@@ -270,14 +276,24 @@ public actor DatabaseManager {
     private func migrateSchema() throws {
         guard let db = db else { throw DatabaseError.initializationFailed }
 
-        // Check if is_favorite column exists in recordings table
+        // Check which columns exist in recordings table
         let tableInfo = try db.prepare("PRAGMA table_info(recordings)")
         var hasFavoriteColumn = false
+        var hasSummaryColumn = false
+        var hasActionItemsColumn = false
 
         for row in tableInfo {
-            if let columnName = row[1] as? String, columnName == "is_favorite" {
-                hasFavoriteColumn = true
-                break
+            if let columnName = row[1] as? String {
+                switch columnName {
+                case "is_favorite":
+                    hasFavoriteColumn = true
+                case "summary":
+                    hasSummaryColumn = true
+                case "action_items":
+                    hasActionItemsColumn = true
+                default:
+                    break
+                }
             }
         }
 
@@ -285,6 +301,18 @@ public actor DatabaseManager {
         if !hasFavoriteColumn {
             try db.execute("ALTER TABLE recordings ADD COLUMN is_favorite INTEGER DEFAULT 0")
             logger.info("Migration: Added is_favorite column to recordings table")
+        }
+
+        // Add summary column if missing
+        if !hasSummaryColumn {
+            try db.execute("ALTER TABLE recordings ADD COLUMN summary TEXT")
+            logger.info("Migration: Added summary column to recordings table")
+        }
+
+        // Add action_items column if missing
+        if !hasActionItemsColumn {
+            try db.execute("ALTER TABLE recordings ADD COLUMN action_items TEXT")
+            logger.info("Migration: Added action_items column to recordings table")
         }
     }
 
@@ -328,7 +356,9 @@ public actor DatabaseManager {
                 fileSize: row[fileSize],
                 appName: row[appName],
                 hasTranscript: row[hasTranscript],
-                isFavorite: row[isFavorite]
+                isFavorite: row[isFavorite],
+                summary: row[summaryColumn],
+                actionItems: row[actionItemsColumn]
             )
             results.append(recording)
         }
@@ -354,7 +384,9 @@ public actor DatabaseManager {
             fileSize: row[fileSize],
             appName: row[appName],
             hasTranscript: row[hasTranscript],
-            isFavorite: row[isFavorite]
+            isFavorite: row[isFavorite],
+            summary: row[summaryColumn],
+            actionItems: row[actionItemsColumn]
         )
     }
     
@@ -383,6 +415,26 @@ public actor DatabaseManager {
 
         logger.info("Recording \(recordingId) favorite toggled to: \(newValue)")
         return newValue
+    }
+
+    /// Save or update the AI-generated summary for a recording
+    public func saveSummary(recordingId: Int64, summary: String) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = recordings.filter(id == recordingId)
+        try db.run(query.update(summaryColumn <- summary))
+
+        logger.info("Summary saved for recording \(recordingId)")
+    }
+
+    /// Save or update the AI-generated action items for a recording
+    public func saveActionItems(recordingId: Int64, actionItems: String) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = recordings.filter(id == recordingId)
+        try db.run(query.update(actionItemsColumn <- actionItems))
+
+        logger.info("Action items saved for recording \(recordingId)")
     }
 
     // MARK: - Transcript Operations

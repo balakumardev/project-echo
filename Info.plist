@@ -4,65 +4,72 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
-    
+
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
-    
+
     <key>CFBundleIdentifier</key>
-    <string>com.projectecho.app</string>
-    
+    <string>dev.balakumar.engram</string>
+
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
-    
+
     <key>CFBundleName</key>
-    <string>Project Echo</string>
-    
+    <string>Engram</string>
+
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+
     <key>CFBundlePackageType</key>
     <string>APPL</string>
-    
+
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
-    
+
     <key>CFBundleVersion</key>
     <string>1</string>
-    
+
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
-    
+
     <key>LSUIElement</key>
     <true/>
-    
+
     <!-- Privacy Descriptions -->
     <key>NSMicrophoneUsageDescription</key>
-    <string>Project Echo needs microphone access to record your audio during meetings.</string>
-    
+    <string>Engram needs microphone access to record your audio during meetings.</string>
+
     <key>NSScreenCaptureDescription</key>
-    <string>Project Echo needs screen recording permission to capture audio from conferencing apps like Zoom and Teams.</string>
-    
+    <string>Engram needs screen recording permission to capture audio from conferencing apps like Zoom and Teams.</string>
+
     <!-- App Category -->
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
-    
+
     <!-- High Resolution -->
     <key>NSHighResolutionCapable</key>
     <true/>
-    
+
     <!-- Supported -->
     <key>NSSupportsAutomaticTermination</key>
     <true/>
-    
+
     <key>NSSupportsSuddenTermination</key>
     <false/>
+
+    <!-- Human-Readable Copyright -->
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2024-2026 Bala Kumar. All rights reserved. https://balakumar.dev</string>
 
     <!-- URL Scheme Handler -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>com.projectecho.app.url</string>
+            <string>dev.balakumar.engram.url</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>projectecho</string>
+                <string>engram</string>
             </array>
         </dict>
     </array>

@@ -1,13 +1,17 @@
 // swift-tools-version: 6.0
+// Engram - Privacy-first meeting recorder with local AI
+// Copyright © 2024-2026 Bala Kumar. All rights reserved.
+// https://balakumar.dev
+
 import PackageDescription
 
 let package = Package(
-    name: "ProjectEcho",
+    name: "Engram",
     platforms: [
         .macOS(.v14) // Sonoma minimum
     ],
     products: [
-        .executable(name: "ProjectEcho", targets: ["App"])
+        .executable(name: "Engram", targets: ["App"])
     ],
     dependencies: [
         // WhisperKit for local transcription
@@ -73,8 +77,9 @@ let package = Package(
         
         // Tests
         .testTarget(
-            name: "ProjectEchoTests",
-            dependencies: ["AudioEngine", "Intelligence", "Database"]
+            name: "EngramTests",
+            dependencies: ["AudioEngine", "Intelligence", "Database"],
+            path: "Tests/EngramTests"
         )
     ],
     // Use Swift 5 language mode for compatibility with FluidAudio dependency
