@@ -241,6 +241,15 @@ public actor TranscriptAgent {
     ) async throws {
         debugLog("Sending query to LLM with full transcript (\(transcript.count) chars)")
 
+        // Guard against empty transcripts - don't let LLM hallucinate
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTranscript.isEmpty {
+            debugLog("WARNING: Empty transcript - returning early to prevent hallucination")
+            let emptyMessage = "This recording doesn't have a transcript yet. The transcription may still be in progress, or there was no speech detected in the audio."
+            continuation.yield(emptyMessage)
+            return
+        }
+
         // Generic system prompt - let LLM decide what to do
         let systemPrompt = """
             You are an intelligent meeting assistant with access to the complete transcript of a recording.

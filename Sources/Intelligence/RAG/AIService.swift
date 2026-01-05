@@ -19,6 +19,7 @@ public actor AIService {
     /// Current status of the AI service
     public enum Status: Sendable, Equatable {
         case notConfigured
+        case unloadedToSaveMemory(modelName: String)  // NEW: Model was auto-unloaded to free memory
         case downloading(progress: Double, modelName: String)
         case loading(modelName: String)
         case ready(modelName: String)
@@ -28,6 +29,8 @@ public actor AIService {
             switch (lhs, rhs) {
             case (.notConfigured, .notConfigured):
                 return true
+            case (.unloadedToSaveMemory(let m1), .unloadedToSaveMemory(let m2)):
+                return m1 == m2
             case (.downloading(let p1, let m1), .downloading(let p2, let m2)):
                 return p1 == p2 && m1 == m2
             case (.loading(let m1), .loading(let m2)):
@@ -104,6 +107,8 @@ public actor AIService {
         public var openAIModel: String = "gpt-4o-mini"
         public var openAITemperature: Float = 1.0
         public var autoIndexTranscripts: Bool = true
+        public var autoUnloadEnabled: Bool = true   // NEW: Enable auto-unload to save memory
+        public var autoUnloadMinutes: Int = 5       // NEW: Minutes of inactivity before unloading (0 = disabled)
 
         public init() {}
     }
@@ -142,9 +147,30 @@ public actor AIService {
     /// Whether a model setup is currently in progress
     private var isSettingUp = false
 
+    // MARK: - Auto-Unload Properties
+
+    /// Last time AI was used (for inactivity tracking)
+    private var lastActivityTime: Date = Date()
+
+    /// Task that handles auto-unload after inactivity
+    private var autoUnloadTask: Task<Void, Never>?
+
+    /// Whether an AI operation is currently active (prevents unload during use)
+    private var isActivelyProcessing = false
+
     /// Check if AI is enabled via user preferences
     public var isEnabled: Bool {
         UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true
+    }
+
+    /// Whether auto-unload is enabled
+    public var isAutoUnloadEnabled: Bool {
+        config.autoUnloadEnabled && config.autoUnloadMinutes > 0
+    }
+
+    /// Auto-unload timeout in minutes
+    public var autoUnloadMinutes: Int {
+        config.autoUnloadMinutes
     }
 
     // MARK: - Initialization
@@ -407,6 +433,11 @@ public actor AIService {
             print("[AIService] Model ready: \(modelId)")
             logger.info("Model ready: \(modelId)")
 
+            // Start auto-unload timer if enabled
+            if isAutoUnloadEnabled {
+                resetInactivityTimer()
+            }
+
         } catch {
             print("[AIService] ERROR in setupModel: \(error)")
             print("[AIService] Error type: \(type(of: error))")
@@ -486,6 +517,7 @@ public actor AIService {
 
     /// Unload the current model to free memory
     public func unloadModel() async {
+        cancelAutoUnloadTimer()
         await unloadMLXModel()
         status = .notConfigured
         logger.info("Model unloaded")
@@ -655,12 +687,25 @@ public actor AIService {
         AsyncThrowingStream { continuation in
             Task {
                 do {
+                    // Reset inactivity timer
+                    self.resetInactivityTimer()
+
+                    // Reload model if it was auto-unloaded
+                    try await self.reloadModelIfNeeded()
+
                     guard case .ready = self.status else {
                         throw AIError.notInitialized
                     }
 
                     guard let pipeline = self.ragPipeline else {
                         throw AIError.notInitialized
+                    }
+
+                    // Mark as actively processing to prevent auto-unload
+                    self.isActivelyProcessing = true
+                    defer {
+                        self.isActivelyProcessing = false
+                        self.resetInactivityTimer()
                     }
 
                     // Use RAG pipeline for chat
@@ -677,6 +722,7 @@ public actor AIService {
                     continuation.finish()
 
                 } catch {
+                    self.isActivelyProcessing = false
                     continuation.finish(throwing: error)
                 }
             }
@@ -696,9 +742,22 @@ public actor AIService {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
+                    // Reset inactivity timer
+                    self.resetInactivityTimer()
+
+                    // Reload model if it was auto-unloaded
+                    try await self.reloadModelIfNeeded()
+
                     guard let pipeline = self.ragPipeline else {
                         self.logToFile("[AIService.agentChat] ERROR: ragPipeline is nil")
                         throw AIError.notInitialized
+                    }
+
+                    // Mark as actively processing to prevent auto-unload
+                    self.isActivelyProcessing = true
+                    defer {
+                        self.isActivelyProcessing = false
+                        self.resetInactivityTimer()
                     }
 
                     self.logToFile("[AIService.agentChat] Calling pipeline.agentChat...")
@@ -715,6 +774,7 @@ public actor AIService {
                     continuation.finish()
 
                 } catch {
+                    self.isActivelyProcessing = false
                     continuation.finish(throwing: error)
                 }
             }
@@ -920,8 +980,140 @@ public actor AIService {
     // MARK: - Private: MLX Helpers
 
     private func unloadMLXModel() async {
+        logToFile("[AIService] unloadMLXModel: Setting modelContainer to nil...")
         modelContainer = nil
+        logToFile("[AIService] unloadMLXModel: Calling llmEngine?.unload()...")
         await llmEngine?.unload()
+        logToFile("[AIService] unloadMLXModel: Complete")
+    }
+
+    // MARK: - Auto-Unload Timer Management
+
+    /// Reset the inactivity timer - call this whenever AI is used
+    private func resetInactivityTimer() {
+        lastActivityTime = Date()
+
+        // Only start timer for local MLX models when auto-unload is enabled
+        guard provider == .localMLX, isAutoUnloadEnabled else {
+            autoUnloadTask?.cancel()
+            autoUnloadTask = nil
+            return
+        }
+
+        startAutoUnloadTimer()
+    }
+
+    /// Start/restart the auto-unload timer
+    private func startAutoUnloadTimer() {
+        // Cancel existing timer
+        autoUnloadTask?.cancel()
+
+        let minutes = config.autoUnloadMinutes
+        guard minutes > 0 else { return }
+
+        logToFile("[AIService] Auto-unload timer started (\(minutes) minutes)")
+
+        autoUnloadTask = Task { [weak self] in
+            let nanoseconds = UInt64(minutes) * 60 * 1_000_000_000
+            try? await Task.sleep(nanoseconds: nanoseconds)
+
+            guard !Task.isCancelled else { return }
+            await self?.autoUnloadIfIdle()
+        }
+    }
+
+    /// Cancel the auto-unload timer
+    private func cancelAutoUnloadTimer() {
+        autoUnloadTask?.cancel()
+        autoUnloadTask = nil
+    }
+
+    /// Auto-unload the model if idle for the configured time
+    private func autoUnloadIfIdle() async {
+        // Don't unload if actively processing
+        guard !isActivelyProcessing else {
+            logToFile("[AIService] Auto-unload skipped - actively processing")
+            // Restart timer since we're still being used
+            startAutoUnloadTimer()
+            return
+        }
+
+        // Don't unload if not using local MLX
+        guard provider == .localMLX else {
+            logToFile("[AIService] Auto-unload skipped - not using local MLX")
+            return
+        }
+
+        // Check if model is even loaded
+        guard modelContainer != nil else {
+            logToFile("[AIService] Auto-unload skipped - model not loaded")
+            return
+        }
+
+        let idleTime = Date().timeIntervalSince(lastActivityTime)
+        let thresholdSeconds = Double(config.autoUnloadMinutes * 60)
+
+        guard idleTime >= thresholdSeconds else {
+            // Not idle long enough, restart timer for remaining time
+            let remaining = thresholdSeconds - idleTime
+            logToFile("[AIService] Auto-unload timer reset - only \(Int(idleTime)) seconds idle, need \(Int(thresholdSeconds))")
+            autoUnloadTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(remaining) * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.autoUnloadIfIdle()
+            }
+            return
+        }
+
+        // Get model name for status
+        let modelName = ModelRegistry.model(for: config.selectedModelId)?.displayName ?? config.selectedModelId
+
+        logToFile("[AIService] Auto-unloading model after \(Int(idleTime / 60)) minutes of inactivity")
+        logger.info("Auto-unloading model to save memory after \(Int(idleTime / 60)) minutes of inactivity")
+
+        logToFile("[AIService] Step 1: Calling unloadMLXModel...")
+        await unloadMLXModel()
+        logToFile("[AIService] Step 2: unloadMLXModel complete, setting status...")
+        status = .unloadedToSaveMemory(modelName: modelName)
+        logToFile("[AIService] Step 3: Auto-unload complete, status set to unloadedToSaveMemory")
+    }
+
+    /// Configure auto-unload settings
+    public func setAutoUnload(enabled: Bool, minutes: Int) async {
+        config.autoUnloadEnabled = enabled
+        config.autoUnloadMinutes = max(0, minutes)
+        saveConfig()
+
+        logToFile("[AIService] Auto-unload configured: enabled=\(enabled), minutes=\(minutes)")
+
+        if enabled && minutes > 0 && provider == .localMLX {
+            if case .ready = status {
+                // Model is loaded, start the timer
+                resetInactivityTimer()
+            }
+        } else {
+            // Disable: cancel any existing timer
+            cancelAutoUnloadTimer()
+        }
+    }
+
+    /// Reload model if it was auto-unloaded
+    private func reloadModelIfNeeded() async throws {
+        // Only reload for local MLX provider when model was unloaded to save memory
+        guard provider == .localMLX else { return }
+
+        if case .unloadedToSaveMemory = status {
+            logToFile("[AIService] Model was auto-unloaded, reloading for user query...")
+            logger.info("Reloading model that was auto-unloaded")
+            try await setupModel(config.selectedModelId)
+            logToFile("[AIService] Model reloaded successfully")
+        } else if modelContainer == nil {
+            // Check if status is notConfigured and we have a cached model - try to load it
+            if case .notConfigured = status, isModelCached(config.selectedModelId) {
+                logToFile("[AIService] Model not loaded, loading cached model for user query...")
+                try await setupModel(config.selectedModelId)
+            }
+        }
     }
 
     private func parseMLXError(_ error: Error, modelId: String) -> String {

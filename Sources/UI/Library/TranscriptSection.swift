@@ -19,6 +19,11 @@ struct TranscriptSection: View {
         aiService.isReady
     }
 
+    /// Whether AI can be used (ready or sleeping - sleeping will auto-reload)
+    private var canUseAI: Bool {
+        aiService.canUseAI
+    }
+
     /// Whether AI is currently loading or downloading
     private var isAILoading: Bool {
         aiService.isLoading
@@ -29,6 +34,8 @@ struct TranscriptSection: View {
         switch aiService.status {
         case .notConfigured:
             return "AI model not configured. Go to Settings to set up an AI model."
+        case .unloadedToSaveMemory(let name):
+            return "\(name) is sleeping to save memory. It will reload when you use AI features."
         case .downloading(let progress, let name):
             return "Downloading \(name)... \(Int(progress * 100))%. Please wait."
         case .loading(let name):
@@ -94,11 +101,11 @@ struct TranscriptSection: View {
                                 icon: "sparkles",
                                 style: .secondary,
                                 isCompact: true,
-                                isDisabled: !isAIReady
+                                isDisabled: !canUseAI
                             ) {
                                 viewModel.generateSummary(for: recording)
                             }
-                            .help(isAIReady ? "Generate AI summary" : aiStatusHelpText)
+                            .help(canUseAI ? "Generate AI summary" : aiStatusHelpText)
                         }
 
                         // Action Items button - prominent style to encourage use
@@ -116,11 +123,11 @@ struct TranscriptSection: View {
                                 icon: "checklist",
                                 style: .secondary,
                                 isCompact: true,
-                                isDisabled: !isAIReady
+                                isDisabled: !canUseAI
                             ) {
                                 viewModel.generateActionItems(for: recording)
                             }
-                            .help(isAIReady ? "Extract action items" : aiStatusHelpText)
+                            .help(canUseAI ? "Extract action items" : aiStatusHelpText)
                         }
                     }
 

@@ -293,6 +293,23 @@ public struct AIStatusIndicator: View {
                     }
                 }
 
+                if case .unloadedToSaveMemory(let modelName) = aiService.status {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Model:")
+                                .foregroundColor(Theme.Colors.textSecondary)
+                            Spacer()
+                            Text(modelName)
+                                .foregroundColor(Theme.Colors.textPrimary)
+                                .lineLimit(1)
+                        }
+                        Text("Unloaded to save ~3GB of memory. Will reload automatically when you use AI features.")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.Colors.textMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 if case .downloading(let progress, _) = aiService.status {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Downloading...")
@@ -348,6 +365,8 @@ public struct AIStatusIndicator: View {
         switch aiService.status {
         case .notConfigured:
             return Image(systemName: "sparkle.magnifyingglass")
+        case .unloadedToSaveMemory:
+            return Image(systemName: "moon.zzz")
         case .downloading:
             return Image(systemName: "arrow.down.circle")
         case .loading:
@@ -372,6 +391,8 @@ public struct AIStatusIndicator: View {
         switch aiService.status {
         case .notConfigured:
             return Theme.Colors.textMuted
+        case .unloadedToSaveMemory:
+            return Theme.Colors.primary.opacity(0.7)
         case .downloading, .loading:
             return Theme.Colors.warning
         case .ready:
@@ -394,6 +415,8 @@ public struct AIStatusIndicator: View {
         switch aiService.status {
         case .notConfigured:
             return "Not Configured"
+        case .unloadedToSaveMemory(let modelName):
+            return "Sleeping: \(modelName)"
         case .downloading(_, let modelName):
             return "Downloading \(modelName)..."
         case .loading(let modelName):
@@ -418,6 +441,8 @@ public struct AIStatusIndicator: View {
         switch aiService.status {
         case .notConfigured:
             return "Not Set Up"
+        case .unloadedToSaveMemory:
+            return "Sleeping"
         case .downloading:
             return "Downloading..."
         case .loading:
@@ -442,6 +467,8 @@ public struct AIStatusIndicator: View {
         switch aiService.status {
         case .notConfigured:
             return "AI not configured. Click to set up."
+        case .unloadedToSaveMemory(let modelName):
+            return "\(modelName) unloaded to save memory. Will reload when needed."
         case .downloading(let progress, let modelName):
             return "Downloading \(modelName): \(Int(progress * 100))%"
         case .loading(let modelName):

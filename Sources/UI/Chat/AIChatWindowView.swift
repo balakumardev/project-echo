@@ -102,6 +102,8 @@ public struct AIChatWindowView: View {
         switch aiService.status {
         case .ready:
             return "Ready"
+        case .unloadedToSaveMemory:
+            return "Sleeping"
         case .loading, .downloading:
             return "Loading..."
         case .error:

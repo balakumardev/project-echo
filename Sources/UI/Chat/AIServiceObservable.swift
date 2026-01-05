@@ -38,6 +38,10 @@ public class AIServiceObservable: ObservableObject {
     @Published public var isClearingModels: Bool = false
     @Published public var cachedModelsSize: Int64 = 0
 
+    // Auto-unload settings
+    @Published public var autoUnloadEnabled: Bool = true
+    @Published public var autoUnloadMinutes: Int = 5
+
     /// Result of a connection test
     public enum ConnectionTestResult: Equatable {
         case success(modelCount: Int)
@@ -105,6 +109,8 @@ public class AIServiceObservable: ObservableObject {
                 self.openAIModel = config.openAIModel
                 self.openAITemperature = config.openAITemperature
                 self.provider = config.provider
+                self.autoUnloadEnabled = config.autoUnloadEnabled
+                self.autoUnloadMinutes = config.autoUnloadMinutes
             }
 
             // Auto-trigger model setup if model is cached but not loaded
@@ -147,6 +153,8 @@ public class AIServiceObservable: ObservableObject {
         switch status {
         case .notConfigured:
             return "Not configured"
+        case .unloadedToSaveMemory(let name):
+            return "Sleeping: \(name)"
         case .downloading(let progress, let name):
             return "Downloading \(name)... \(Int(progress * 100))%"
         case .loading(let name):
@@ -162,6 +170,8 @@ public class AIServiceObservable: ObservableObject {
         switch status {
         case .ready:
             return .green
+        case .unloadedToSaveMemory:
+            return .blue.opacity(0.7)
         case .downloading, .loading:
             return .orange
         case .error:
@@ -345,6 +355,26 @@ public class AIServiceObservable: ObservableObject {
         Task {
             await AIService.shared.unloadModel()
         }
+    }
+
+    /// Configure auto-unload settings
+    public func setAutoUnload(enabled: Bool, minutes: Int) {
+        self.autoUnloadEnabled = enabled
+        self.autoUnloadMinutes = minutes
+        Task {
+            await AIService.shared.setAutoUnload(enabled: enabled, minutes: minutes)
+        }
+    }
+
+    /// Whether the model is currently unloaded to save memory
+    public var isUnloadedToSaveMemory: Bool {
+        if case .unloadedToSaveMemory = status { return true }
+        return false
+    }
+
+    /// Whether AI can be used (ready or sleeping - sleeping will auto-reload)
+    public var canUseAI: Bool {
+        isReady || isUnloadedToSaveMemory
     }
 
     /// Clear all downloaded AI models

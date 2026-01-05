@@ -34,15 +34,19 @@ public struct ChatView: View {
             } else if case .notConfigured = aiService.status {
                 // Model is cached but still loading - show loading indicator
                 loadingModelView
+            } else if case .unloadedToSaveMemory = aiService.status {
+                // Model was unloaded to save memory - show sleeping state
+                modelSleepingView
             }
 
             // Messages area
             messagesScrollView
 
             // Input area
+            // Allow input when ready OR when model is sleeping (will auto-reload)
             ChatInputField(
                 text: $viewModel.inputText,
-                isEnabled: aiService.isReady && !viewModel.isGenerating,
+                isEnabled: aiService.canUseAI && !viewModel.isGenerating,
                 isGenerating: viewModel.isGenerating,
                 onSend: {
                     Task {
@@ -122,6 +126,36 @@ public struct ChatView: View {
         }
         .padding(Theme.Spacing.lg)
         .background(Theme.Colors.surface)
+        .overlay(
+            Rectangle()
+                .fill(Theme.Colors.borderSubtle)
+                .frame(height: 1),
+            alignment: .bottom
+        )
+    }
+
+    // MARK: - Model Sleeping View (Auto-unloaded to save memory)
+
+    private var modelSleepingView: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            Image(systemName: "moon.zzz.fill")
+                .font(.system(size: 24))
+                .foregroundColor(Theme.Colors.primary)
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                Text("AI Model Sleeping")
+                    .font(Theme.Typography.headline)
+                    .foregroundColor(Theme.Colors.textPrimary)
+
+                Text("The model was unloaded to save memory. It will reload automatically when you send a message.")
+                    .font(Theme.Typography.caption)
+                    .foregroundColor(Theme.Colors.textSecondary)
+            }
+
+            Spacer()
+        }
+        .padding(Theme.Spacing.lg)
+        .background(Theme.Colors.primaryMuted.opacity(0.3))
         .overlay(
             Rectangle()
                 .fill(Theme.Colors.borderSubtle)
@@ -289,6 +323,8 @@ public struct ChatView: View {
         switch aiService.status {
         case .notConfigured:
             return "No model configured - Select a model below"
+        case .unloadedToSaveMemory(let name):
+            return "\(name) sleeping - Will reload when you chat"
         case .downloading(let progress, let name):
             return "Downloading \(name)... \(Int(progress * 100))%"
         case .loading(let name):
@@ -426,7 +462,7 @@ public struct ChatView: View {
                             .cornerRadius(Theme.Radius.md)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!aiService.isReady)
+                    .disabled(!aiService.canUseAI)
                 }
             }
         }
@@ -454,7 +490,7 @@ public struct ChatView: View {
             .cornerRadius(Theme.Radius.md)
         }
         .buttonStyle(.plain)
-        .disabled(!aiService.isReady || viewModel.isGenerating)
+        .disabled(!aiService.canUseAI || viewModel.isGenerating)
     }
 
     private var emptyStateSubtitle: String {

@@ -549,6 +549,18 @@ App location: \(appPath)
         guard autoGenerateSummary || autoGenerateActionItems else { return }
 
         do {
+            // Verify transcript exists and has content before generating AI content
+            if let transcript = try? await database.getTranscript(forRecording: recordingId) {
+                let hasContent = !transcript.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if !hasContent {
+                    logger.warning("Skipping auto-generation for recording \(recordingId) - transcript is empty")
+                    return
+                }
+            } else {
+                logger.warning("Skipping auto-generation for recording \(recordingId) - no transcript found")
+                return
+            }
+
             // Generate summary if enabled
             if autoGenerateSummary {
                 logger.info("Auto-generating summary for recording \(recordingId)")
@@ -1970,6 +1982,11 @@ struct AISettingsView: View {
                     }
                 }
 
+                // Memory Management Section (only for local MLX)
+                if effectiveSelectedProvider == .localMLX {
+                    memoryManagementSection
+                }
+
                 // Storage Section
                 SettingsSection(title: "Model Storage", icon: "internaldrive") {
                     VStack(alignment: .leading, spacing: 12) {
@@ -2101,6 +2118,97 @@ struct AISettingsView: View {
         }
     }
 
+    // MARK: - Memory Management Section
+
+    @ViewBuilder
+    private var memoryManagementSection: some View {
+        SettingsSection(title: "Memory Management", icon: "memorychip") {
+            VStack(alignment: .leading, spacing: 12) {
+                // Auto-unload toggle
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-unload Model When Idle")
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.Colors.textPrimary)
+                        Text("Free ~3GB of memory when AI isn't being used")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.Colors.textMuted)
+                    }
+
+                    Spacer()
+
+                    Toggle("", isOn: Binding(
+                        get: { aiService.autoUnloadEnabled },
+                        set: { newValue in
+                            aiService.setAutoUnload(enabled: newValue, minutes: aiService.autoUnloadMinutes)
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .tint(Theme.Colors.primary)
+                    .labelsHidden()
+                }
+
+                // Timeout picker (only shown when auto-unload is enabled)
+                if aiService.autoUnloadEnabled {
+                    Divider()
+
+                    HStack {
+                        Text("Unload After")
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.Colors.textPrimary)
+
+                        Spacer()
+
+                        Picker("", selection: Binding(
+                            get: { aiService.autoUnloadMinutes },
+                            set: { newValue in
+                                aiService.setAutoUnload(enabled: aiService.autoUnloadEnabled, minutes: newValue)
+                            }
+                        )) {
+                            Text("2 minutes").tag(2)
+                            Text("5 minutes").tag(5)
+                            Text("10 minutes").tag(10)
+                            Text("30 minutes").tag(30)
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 130)
+                    }
+
+                    Text("The model will reload automatically when you use AI features.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+
+                // Current status indicator
+                if case .unloadedToSaveMemory(let modelName) = aiService.status {
+                    Divider()
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "moon.zzz.fill")
+                            .foregroundColor(Theme.Colors.primary)
+                            .font(.system(size: 14))
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Model is sleeping")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(Theme.Colors.textPrimary)
+                            Text("\(modelName) was unloaded to save memory")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.Colors.textMuted)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Theme.Colors.primaryMuted)
+                    )
+                }
+            }
+        }
+    }
+
     // MARK: - Status Section
 
     @ViewBuilder
@@ -2139,6 +2247,8 @@ struct AISettingsView: View {
         switch aiService.status {
         case .notConfigured:
             return "Not Configured"
+        case .unloadedToSaveMemory:
+            return "Sleeping"
         case .downloading:
             return "Downloading"
         case .loading:
