@@ -87,9 +87,27 @@ cat > Engram.app/Contents/Info.plist << 'EOF'
     <string>Engram needs screen recording permission to capture audio from conferencing apps like Zoom and Teams.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2024-2026 Bala Kumar. All rights reserved. https://balakumar.dev</string>
+
+    <!-- URL Scheme Handler -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>dev.balakumar.engram.url</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>engram</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF
+
+# Register app with Launch Services so macOS knows this app handles engram:// URLs
+# This is critical for URL scheme to work after system restart
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(pwd)/Engram.app"
+echo "Registered app with Launch Services for URL scheme handling"
 
 # Sign with stable certificate (preserves TCC permissions across rebuilds)
 SIGNING_IDENTITY=""
@@ -103,12 +121,29 @@ if [ -n "$SIGNING_IDENTITY" ]; then
         --options runtime \
         --entitlements Engram.entitlements \
         Engram.app
-    echo "Signed with '$SIGNING_IDENTITY' certificate"
+    echo "Signed with '$SIGNING_IDENTITY' certificate (TCC permissions will persist)"
 else
-    echo "WARNING: No 'Engram Development' certificate found"
-    echo "Run: ./scripts/create_signing_cert.sh"
-    echo "Using ad-hoc signing (permissions will reset each build)"
+    echo ""
+    echo "=============================================="
+    echo "WARNING: No 'Engram Development' certificate"
+    echo "=============================================="
+    echo ""
+    echo "Using ad-hoc signing. This means:"
+    echo "  - TCC permissions will reset after each rebuild"
+    echo "  - Users will need to re-grant permissions after restart"
+    echo ""
+    echo "To fix this (one-time setup):"
+    echo "  1. Run: ./scripts/create_signing_cert.sh"
+    echo "  2. Open Keychain Access"
+    echo "  3. Find 'Engram Development' in My Certificates"
+    echo "  4. Double-click > Trust > Code Signing: Always Trust"
+    echo "  5. Rebuild this app"
+    echo ""
     codesign --force --deep --sign - --entitlements Engram.entitlements Engram.app 2>/dev/null || true
 fi
 
+echo ""
 echo "Build complete: Engram.app"
+echo ""
+echo "To run: open Engram.app"
+echo "To distribute: ./scripts/package_for_distribution.sh"

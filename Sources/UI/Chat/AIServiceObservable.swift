@@ -84,6 +84,20 @@ public class AIServiceObservable: ObservableObject {
         self.status = await service.status
         self.provider = await service.provider
         self.indexedCount = await service.indexedRecordingsCount
+
+        // Update model selection from service config (important for Apply Changes to work correctly)
+        let config = await service.currentConfig
+        if self.selectedModelId != config.selectedModelId {
+            self.selectedModelId = config.selectedModelId
+        }
+        // Also sync OpenAI settings
+        if self.openAIKey != config.openAIKey {
+            self.openAIKey = config.openAIKey
+        }
+        if self.openAIModel != config.openAIModel {
+            self.openAIModel = config.openAIModel
+        }
+
         // Update initialization state
         let initialized = await service.isInitialized
         let initializing = await service.isInitializing

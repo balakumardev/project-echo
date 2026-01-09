@@ -4,7 +4,35 @@ import os.log
 
 /// Database manager for meeting recordings and transcripts using SQLite with FTS5
 public actor DatabaseManager {
-    
+
+    // MARK: - Singleton
+
+    /// Shared database manager instance. Use this instead of creating new instances
+    /// to prevent concurrent access issues with SQLite.
+    private static var _shared: DatabaseManager?
+    private static let initLock = NSLock()
+
+    /// Get the shared DatabaseManager instance, initializing if needed
+    public static func shared() async throws -> DatabaseManager {
+        // Fast path: already initialized
+        if let existing = _shared {
+            return existing
+        }
+
+        // Thread-safe initialization
+        initLock.lock()
+        defer { initLock.unlock() }
+
+        // Double-check after acquiring lock
+        if let existing = _shared {
+            return existing
+        }
+
+        let manager = try await DatabaseManager()
+        _shared = manager
+        return manager
+    }
+
     // MARK: - Types
     
     public struct Recording: Identifiable, Hashable, Sendable {
@@ -365,7 +393,97 @@ public actor DatabaseManager {
 
         return results
     }
-    
+
+    /// Get recordings that need transcription (have audio file but no transcript)
+    /// Results are ordered by date ascending (oldest first) for FIFO processing
+    public func getRecordingsNeedingTranscription() async throws -> [Recording] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        var results: [Recording] = []
+
+        // Find recordings where hasTranscript == false, ordered by date (oldest first)
+        let query = recordings
+            .filter(hasTranscript == false)
+            .order(date.asc)
+
+        for row in try db.prepare(query) {
+            let fileURLValue = URL(fileURLWithPath: row[fileURL])
+
+            // Skip if audio file no longer exists
+            guard FileManager.default.fileExists(atPath: fileURLValue.path) else {
+                logger.warning("Skipping recording \(row[self.id]) - audio file missing: \(fileURLValue.path)")
+                continue
+            }
+
+            let recording = Recording(
+                id: row[id],
+                title: row[title],
+                date: row[date],
+                duration: row[duration],
+                fileURL: fileURLValue,
+                fileSize: row[fileSize],
+                appName: row[appName],
+                hasTranscript: row[hasTranscript],
+                isFavorite: row[isFavorite],
+                summary: row[summaryColumn],
+                actionItems: row[actionItemsColumn]
+            )
+            results.append(recording)
+        }
+
+        return results
+    }
+
+    /// Get recordings that need AI generation (have transcript but missing summary and/or action items)
+    /// - Parameters:
+    ///   - needsSummary: If true, include recordings missing summaries
+    ///   - needsActionItems: If true, include recordings missing action items
+    /// - Returns: Recordings needing AI processing, ordered by date ascending (oldest first)
+    public func getRecordingsNeedingAIGeneration(
+        needsSummary: Bool,
+        needsActionItems: Bool
+    ) async throws -> [Recording] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+        guard needsSummary || needsActionItems else { return [] }
+
+        var results: [Recording] = []
+
+        // Fetch recordings with transcripts, then filter in Swift for NULL summary/actionItems
+        let query = recordings
+            .filter(hasTranscript == true)
+            .order(date.asc)
+
+        for row in try db.prepare(query) {
+            let summaryValue = row[summaryColumn]
+            let actionItemsValue = row[actionItemsColumn]
+
+            // Check if this recording needs processing based on what's requested
+            let needsThisSummary = needsSummary && summaryValue == nil
+            let needsTheseActionItems = needsActionItems && actionItemsValue == nil
+
+            guard needsThisSummary || needsTheseActionItems else {
+                continue
+            }
+
+            let recording = Recording(
+                id: row[id],
+                title: row[title],
+                date: row[date],
+                duration: row[duration],
+                fileURL: URL(fileURLWithPath: row[fileURL]),
+                fileSize: row[fileSize],
+                appName: row[appName],
+                hasTranscript: row[hasTranscript],
+                isFavorite: row[isFavorite],
+                summary: summaryValue,
+                actionItems: actionItemsValue
+            )
+            results.append(recording)
+        }
+
+        return results
+    }
+
     public func getRecording(id recordingId: Int64) async throws -> Recording {
         guard let db = db else { throw DatabaseError.initializationFailed }
 
@@ -523,6 +641,45 @@ public actor DatabaseManager {
         }
 
         return results
+    }
+
+    /// Get segments with pagination support for large transcripts
+    /// - Parameters:
+    ///   - transcriptId: The transcript ID to get segments for
+    ///   - limit: Maximum number of segments to return
+    ///   - offset: Number of segments to skip (for pagination)
+    /// - Returns: Array of transcript segments
+    public func getSegmentsPaginated(forTranscriptId transcriptId: Int64, limit: Int, offset: Int) async throws -> [TranscriptSegment] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = segments
+            .filter(self.transcriptId == transcriptId)
+            .order(startTime.asc)
+            .limit(limit, offset: offset)
+
+        var results: [TranscriptSegment] = []
+        for row in try db.prepare(query) {
+            let segment = TranscriptSegment(
+                id: row[id],
+                transcriptId: row[self.transcriptId],
+                startTime: row[startTime],
+                endTime: row[endTime],
+                text: row[text],
+                speaker: row[speaker],
+                confidence: Float(row[confidence])
+            )
+            results.append(segment)
+        }
+
+        return results
+    }
+
+    /// Get total count of segments for a transcript (for pagination)
+    public func getSegmentCount(forTranscriptId transcriptId: Int64) async throws -> Int {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = segments.filter(self.transcriptId == transcriptId)
+        return try db.scalar(query.count)
     }
     
     public func searchTranscripts(query: String) async throws -> [Recording] {

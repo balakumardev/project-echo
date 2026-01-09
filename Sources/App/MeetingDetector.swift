@@ -62,15 +62,20 @@ public actor MeetingDetector {
         public var browserApps: Set<String> = ["Google Chrome", "Safari", "Microsoft Edge", "Firefox", "Arc"]
         public var checkOnWake: Bool = true
         public var microphonePollingInterval: TimeInterval = 1.0
+        /// Grace period (in seconds) before ending recording when mic is deactivated.
+        /// Apps like Zoom may briefly release/reacquire the mic during normal operation.
+        public var micDeactivationGracePeriod: TimeInterval = 8.0
 
         public init(
             enabledApps: Set<String> = ["zoom", "teams", "meet", "slack", "discord"],
             checkOnWake: Bool = true,
-            microphonePollingInterval: TimeInterval = 1.0
+            microphonePollingInterval: TimeInterval = 1.0,
+            micDeactivationGracePeriod: TimeInterval = 8.0
         ) {
             self.enabledApps = enabledApps
             self.checkOnWake = checkOnWake
             self.microphonePollingInterval = microphonePollingInterval
+            self.micDeactivationGracePeriod = micDeactivationGracePeriod
         }
     }
 
@@ -162,6 +167,10 @@ public actor MeetingDetector {
     private var startRecordingCallback: (@MainActor (MeetingDetector, String) async throws -> URL)?
     private var stopRecordingCallback: (@MainActor (MeetingDetector) async throws -> Void)?
     private var errorCallback: (@MainActor (MeetingDetector, Error) -> Void)?
+
+    // Grace period handling for mic deactivation
+    private var micDeactivationGraceTask: Task<Void, Never>?
+    private var pendingDeactivationApp: String?
 
     // MARK: - Initialization
 
@@ -263,9 +272,61 @@ public actor MeetingDetector {
     }
 
     /// Force stop recording (manual override)
+    /// After stopping, returns to monitoring state if meeting apps are still running
+    /// Note: This calls the delegate to stop recording
     public func forceStopRecording() async throws {
         guard isRunning else { return }
+
+        debugLog("forceStopRecording called (manual stop)")
+
+        // Cancel any pending grace period
+        cancelMicDeactivationGracePeriod()
+
+        // Only stop if we're actually recording
+        guard case .recording = currentState else {
+            debugLog("forceStopRecording: not in recording state, ignoring")
+            return
+        }
+
+        // Stop the recording (this calls the delegate callback)
         try await requestStopRecording()
+
+        // Reset state and return to monitoring
+        await resetToMonitoringState()
+    }
+
+    /// Reset recording state without stopping (used when recording was already stopped externally)
+    /// Call this after manually stopping recording to allow auto-detection to restart
+    public func resetRecordingState() async {
+        guard isRunning else { return }
+
+        debugLog("resetRecordingState called")
+
+        // Cancel any pending grace period
+        cancelMicDeactivationGracePeriod()
+
+        // Clear recording URL (it's already stopped externally)
+        currentRecordingURL = nil
+
+        // Reset state and return to monitoring
+        await resetToMonitoringState()
+    }
+
+    /// Internal helper to reset state back to monitoring mode
+    private func resetToMonitoringState() async {
+        currentRecordingBundleID = nil
+
+        if !runningMeetingApps.isEmpty {
+            let appList = runningMeetingApps.sorted().joined(separator: ", ")
+            debugLog("Returning to monitoring state for: \(appList)")
+            await updateState(.monitoring(app: appList))
+            // Note: We don't restart mic monitoring here - it should still be running
+            // The next mic activation event will trigger a new recording
+        } else {
+            debugLog("No meeting apps running, going to idle")
+            await stopMicrophoneMonitoring()
+            await updateState(.idle)
+        }
     }
 
     /// Update configuration
@@ -603,6 +664,9 @@ public actor MeetingDetector {
         debugLog("MEETING APP/BROWSER using microphone: \(appDescription), recordingBundleID=\(recordingBundleID)")
         logger.info("Meeting-related app using microphone: \(appDescription)")
 
+        // Cancel any pending grace period - mic is back!
+        cancelMicDeactivationGracePeriod()
+
         switch currentState {
         case .idle:
             break
@@ -611,7 +675,13 @@ public actor MeetingDetector {
             debugLog("Triggering recording for: \(recordingBundleID)")
             await triggerMeetingDetection(app: usage.appName ?? recordingBundleID, bundleID: recordingBundleID)
 
-        case .meetingDetected, .recording, .endingMeeting:
+        case .meetingDetected, .recording:
+            // Mic reactivated while recording - all good, continue recording
+            debugLog("Mic reactivated while in state \(currentState) - continuing")
+
+        case .endingMeeting:
+            // This shouldn't happen since we cancel grace period above,
+            // but just in case, stay in current state
             break
         }
     }
@@ -635,11 +705,56 @@ public actor MeetingDetector {
 
         switch currentState {
         case .recording(let app):
-            debugLog("Mic deactivated, ending meeting for: \(app)")
-            await updateState(.endingMeeting(app: app))
-            await handleMeetingEnded()
+            // Start grace period instead of immediately ending
+            // This handles brief mic releases (mute toggle, audio device switch, etc.)
+            debugLog("Mic deactivated for \(app), starting \(configuration.micDeactivationGracePeriod)s grace period")
+            await startMicDeactivationGracePeriod(for: app)
         default:
             break
+        }
+    }
+
+    /// Start a grace period before ending the meeting.
+    /// If the mic is reactivated within this period, recording continues uninterrupted.
+    private func startMicDeactivationGracePeriod(for app: String) async {
+        // Cancel any existing grace period
+        micDeactivationGraceTask?.cancel()
+        pendingDeactivationApp = app
+
+        let gracePeriod = configuration.micDeactivationGracePeriod
+
+        micDeactivationGraceTask = Task {
+            debugLog("Grace period started: waiting \(gracePeriod)s before ending meeting")
+
+            do {
+                // Wait for the grace period
+                try await Task.sleep(nanoseconds: UInt64(gracePeriod * 1_000_000_000))
+
+                // If we get here, grace period expired without mic reactivation
+                guard !Task.isCancelled else {
+                    debugLog("Grace period was cancelled (mic reactivated)")
+                    return
+                }
+
+                debugLog("Grace period expired, ending meeting for: \(app)")
+                await updateState(.endingMeeting(app: app))
+                await handleMeetingEnded()
+            } catch {
+                // Task was cancelled (mic was reactivated)
+                debugLog("Grace period interrupted: \(error)")
+            }
+
+            pendingDeactivationApp = nil
+        }
+    }
+
+    /// Cancel the grace period (called when mic is reactivated)
+    private func cancelMicDeactivationGracePeriod() {
+        if micDeactivationGraceTask != nil {
+            debugLog("Cancelling mic deactivation grace period - mic reactivated")
+            micDeactivationGraceTask?.cancel()
+            micDeactivationGraceTask = nil
+            pendingDeactivationApp = nil
         }
     }
 

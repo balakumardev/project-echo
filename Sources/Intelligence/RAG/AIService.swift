@@ -109,6 +109,9 @@ public actor AIService {
         public var autoIndexTranscripts: Bool = true
         public var autoUnloadEnabled: Bool = true   // NEW: Enable auto-unload to save memory
         public var autoUnloadMinutes: Int = 5       // NEW: Minutes of inactivity before unloading (0 = disabled)
+        /// Low power mode - reduces CPU/GPU usage by throttling inference speed
+        /// Useful to prevent fan noise during long summarizations
+        public var lowPowerMode: Bool = true        // Default ON to prevent fan noise
 
         public init() {}
     }
@@ -173,6 +176,20 @@ public actor AIService {
         config.autoUnloadMinutes
     }
 
+    /// Whether low power mode is enabled (throttles inference to reduce CPU/GPU load)
+    public var isLowPowerMode: Bool {
+        config.lowPowerMode
+    }
+
+    /// Configure low power mode
+    public func setLowPowerMode(_ enabled: Bool) async {
+        config.lowPowerMode = enabled
+        saveConfig()
+        // Update LLM engine with new setting
+        await llmEngine?.setLowPowerMode(enabled)
+        logToFile("[AIService] Low power mode set to: \(enabled)")
+    }
+
     // MARK: - Initialization
 
     private init() {
@@ -186,6 +203,9 @@ public actor AIService {
            let decoded = try? JSONDecoder().decode(Config.self, from: data) {
             self.config = decoded
             self.provider = decoded.provider
+            print("[AIService] Loaded saved config - model: \(decoded.selectedModelId), provider: \(decoded.provider.rawValue)")
+        } else {
+            print("[AIService] No saved config found, using defaults - model: \(config.selectedModelId)")
         }
     }
 
@@ -225,8 +245,8 @@ public actor AIService {
 
         logger.info("Initializing AI service...")
 
-        // Initialize database manager
-        databaseManager = try await DatabaseManager()
+        // Initialize database manager (use shared instance to prevent concurrent access issues)
+        databaseManager = try await DatabaseManager.shared()
 
         // Initialize embedding engine (uses Apple's NLContextualEmbedder - no download needed)
         embeddingEngine = EmbeddingEngine()
@@ -418,7 +438,9 @@ public actor AIService {
             // Configure LLM engine with MLX backend (stateless mode)
             if let engine = llmEngine {
                 await engine.setMLXBackend(container)
-                print("[AIService] Configured LLM engine")
+                // Apply low power mode setting
+                await engine.setLowPowerMode(config.lowPowerMode)
+                print("[AIService] Configured LLM engine (lowPowerMode: \(config.lowPowerMode))")
             } else {
                 print("[AIService] WARNING: llmEngine is nil")
             }
@@ -1149,17 +1171,15 @@ public actor AIService {
 
     // MARK: - Private: Config Persistence
 
-    private func loadConfig() {
-        if let data = UserDefaults.standard.data(forKey: "AIService.config"),
-           let decoded = try? JSONDecoder().decode(Config.self, from: data) {
-            config = decoded
-            provider = decoded.provider
-        }
-    }
-
     private func saveConfig() {
-        if let data = try? JSONEncoder().encode(config) {
+        do {
+            let data = try JSONEncoder().encode(config)
             UserDefaults.standard.set(data, forKey: "AIService.config")
+            UserDefaults.standard.synchronize() // Force immediate write
+            logToFile("[AIService] Config saved - model: \(config.selectedModelId), provider: \(config.provider.rawValue)")
+        } catch {
+            logToFile("[AIService] ERROR: Failed to save config: \(error.localizedDescription)")
+            logger.error("Failed to save AI config: \(error.localizedDescription)")
         }
     }
 }

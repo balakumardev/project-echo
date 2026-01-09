@@ -172,7 +172,7 @@ public struct AIChatWindowView: View {
         defer { isLoadingRecordings = false }
 
         do {
-            let db = try await DatabaseManager()
+            let db = try await DatabaseManager.shared()
             let allRecordings = try await db.getAllRecordings()
             // Only show recordings with transcripts
             recordings = allRecordings.filter { $0.hasTranscript }

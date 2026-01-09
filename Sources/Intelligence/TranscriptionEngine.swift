@@ -72,11 +72,34 @@ public actor TranscriptionEngine {
     private var diarizationEngine: SpeakerDiarizationEngine?
     private var trackExtractor: AudioTrackExtractor?
 
-    // Configuration
-    private let modelVariant: String = "base.en" // Can be: tiny, base, small, medium, large
-    
+    // Configuration - using small.en for better accuracy (medium is even better but slower)
+    // Available variants: tiny, base, small, medium, large (larger = more accurate but slower)
+    // .en suffix = English-only (faster), without suffix = multilingual
+    private var modelVariant: String {
+        // User can override via settings, default to small.en for good balance
+        UserDefaults.standard.string(forKey: "whisperModel") ?? "small.en"
+    }
+
+    // Decoding options for better accuracy
+    private var decodingOptions: DecodingOptions {
+        var options = DecodingOptions()
+        // Enable word timestamps for better segmentation
+        options.wordTimestamps = true
+        // Use suppression tokens to reduce hallucination
+        options.suppressBlank = true
+        // Temperature 0 for most deterministic output
+        options.temperature = 0.0
+        // Beam search for better accuracy (1 = greedy, higher = slower but more accurate)
+        options.sampleLength = 224
+        // Suppress common hallucination patterns
+        options.noSpeechThreshold = 0.6
+        // Use VAD (Voice Activity Detection) to skip silence
+        options.usePrefillPrompt = true
+        return options
+    }
+
     // MARK: - Initialization
-    
+
     public init() {}
        
     // MARK: - Model Management
@@ -101,11 +124,31 @@ public actor TranscriptionEngine {
         isModelLoaded = false
         logger.info("Whisper model unloaded")
     }
+
+    /// Reload the model with current settings (call when user changes model in settings)
+    public func reloadModel() async throws {
+        logger.info("Reloading Whisper model...")
+        unloadModel()
+        try await loadModel()
+    }
+
+    /// Get the currently configured model variant
+    public var currentModelVariant: String {
+        modelVariant
+    }
     
     // MARK: - Transcription
-    
+
     /// Transcribe an audio file with speaker diarization
-    public func transcribe(audioURL: URL, enableDiarization: Bool = true) async throws -> TranscriptionResult {
+    /// - Parameters:
+    ///   - audioURL: URL to the audio file to transcribe
+    ///   - enableDiarization: Whether to run speaker diarization (default: true)
+    ///   - diarizationOptions: Options for speaker diarization (default: .meetings for optimal accuracy)
+    public func transcribe(
+        audioURL: URL,
+        enableDiarization: Bool = true,
+        diarizationOptions: SpeakerDiarizationEngine.DiarizationOptions = .meetings
+    ) async throws -> TranscriptionResult {
         guard isModelLoaded, let kit = whisperKit else {
             throw TranscriptionError.modelNotLoaded
         }
@@ -113,14 +156,48 @@ public actor TranscriptionEngine {
         logger.info("Starting transcription: \(audioURL.lastPathComponent)")
         let startTime = Date()
 
-        // Step 1: Run diarization if enabled (extract tracks, identify speakers)
+        // Step 1: Extract and mix audio tracks (mic + system audio)
+        // This ensures we transcribe BOTH the user's voice AND remote participants
         var diarizationResult: SpeakerDiarizationEngine.DiarizationResult?
+        var extractedTracks: AudioTrackExtractor.ExtractedTracks?
+        var audioPathForTranscription = audioURL.path
+
         if enableDiarization {
-            diarizationResult = await runDiarization(for: audioURL)
+            // Extract tracks and get mixed audio + diarization with optimized options
+            let (tracks, diarization) = await extractTracksAndRunDiarization(
+                for: audioURL,
+                options: diarizationOptions
+            )
+            extractedTracks = tracks
+            diarizationResult = diarization
+
+            // Use mixed audio for transcription (contains both mic + system audio)
+            if let mixedURL = tracks?.mixedURL {
+                audioPathForTranscription = mixedURL.path
+                logger.info("Using mixed audio for transcription: \(mixedURL.lastPathComponent)")
+            }
         }
 
-        // Step 2: Transcribe with WhisperKit
-        let results = try await kit.transcribe(audioPath: audioURL.path)
+        // Cleanup tracks after transcription
+        defer {
+            if let tracks = extractedTracks {
+                Task {
+                    if trackExtractor == nil {
+                        trackExtractor = AudioTrackExtractor()
+                    }
+                    await trackExtractor?.cleanup(tracks: tracks)
+                }
+            }
+        }
+
+        // Step 2: Transcribe with WhisperKit using mixed audio and optimized decoding options
+        let options = self.decodingOptions
+        let model = self.modelVariant
+        logger.info("Transcribing with model: \(model), options: wordTimestamps=\(options.wordTimestamps)")
+        let results = try await kit.transcribe(
+            audioPath: audioPathForTranscription,
+            decodeOptions: options
+        )
 
         guard let firstResult = results.first else {
             throw TranscriptionError.transcriptionFailed
@@ -206,9 +283,15 @@ public actor TranscriptionEngine {
         return Data()
     }
     
-    /// Run speaker diarization on the audio file
-    /// Extracts dual tracks (mic + system audio) and identifies speakers
-    private func runDiarization(for audioURL: URL) async -> SpeakerDiarizationEngine.DiarizationResult? {
+    /// Extract audio tracks and run speaker diarization with optimized configuration
+    /// Returns both the extracted tracks (for mixed audio transcription) and diarization result
+    /// - Parameters:
+    ///   - audioURL: URL to the audio file
+    ///   - options: Diarization options for speaker detection accuracy
+    private func extractTracksAndRunDiarization(
+        for audioURL: URL,
+        options: SpeakerDiarizationEngine.DiarizationOptions = .meetings
+    ) async -> (AudioTrackExtractor.ExtractedTracks?, SpeakerDiarizationEngine.DiarizationResult?) {
         // Initialize components lazily
         if trackExtractor == nil {
             trackExtractor = AudioTrackExtractor()
@@ -218,35 +301,41 @@ public actor TranscriptionEngine {
         }
 
         guard let extractor = trackExtractor, let diarizer = diarizationEngine else {
-            return nil
+            return (nil, nil)
         }
 
         do {
-            // Extract separate audio tracks from the recording
-            logger.info("Extracting audio tracks for diarization...")
+            // Load diarization models with optimized configuration
+            try await diarizer.loadModels(options: options)
+
+            // Extract separate audio tracks from the recording (includes mixed audio)
+            logger.info("Extracting audio tracks for diarization and transcription...")
             let tracks = try await extractor.extractTracks(from: audioURL)
 
-            defer {
-                // Cleanup temp files after diarization
-                Task {
-                    await extractor.cleanup(tracks: tracks)
-                }
-            }
-
             // Run diarization on both tracks
-            logger.info("Running speaker diarization...")
+            logger.info("Running speaker diarization with optimized config (threshold: \(options.clusteringThreshold))...")
             let result = try await diarizer.processDualTrack(
                 microphoneURL: tracks.microphoneURL,
                 systemAudioURL: tracks.systemAudioURL
             )
 
             logger.info("Diarization complete: \(result.segments.count) segments, \(result.remoteSpeakerCount) remote speakers")
-            return result
+
+            // Return tracks (for cleanup later) and diarization result
+            // Note: cleanup is handled by the caller (transcribe method)
+            return (tracks, result)
 
         } catch {
-            logger.warning("Diarization failed, falling back to unknown speakers: \(error.localizedDescription)")
-            return nil
+            logger.warning("Track extraction/diarization failed: \(error.localizedDescription)")
+            return (nil, nil)
         }
+    }
+
+    /// Run speaker diarization on the audio file (legacy method for compatibility)
+    /// Extracts dual tracks (mic + system audio) and identifies speakers
+    private func runDiarization(for audioURL: URL) async -> SpeakerDiarizationEngine.DiarizationResult? {
+        let (_, result) = await extractTracksAndRunDiarization(for: audioURL)
+        return result
     }
 
     /// Match a transcription segment to the best diarization segment by time overlap

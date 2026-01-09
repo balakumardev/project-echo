@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import ScreenCaptureKit
 @preconcurrency import AVFoundation
 import CoreMedia
+import VideoToolbox
 import os.log
 
 // Debug logging to file for ScreenRecorder (disabled in release builds)
@@ -38,23 +39,35 @@ final class VideoWriter: @unchecked Sendable {
     private var frameCount = 0
     private var videoStartTime: CMTime?
 
-    func configure(outputURL: URL, width: Int, height: Int, frameRate: Double, bitrate: Int) throws {
+    func configure(outputURL: URL, width: Int, height: Int, frameRate: Double, bitrate: Int, useHEVC: Bool = true) throws {
         lock.lock()
         defer { lock.unlock() }
 
         assetWriter = try AVAssetWriter(url: outputURL, fileType: .mov)
 
-        // Video track settings - using H.264 High Profile for better quality
+        // Choose codec: HEVC (H.265) for ~40% smaller files, or H.264 for compatibility
+        // Both are hardware accelerated on Apple Silicon
+        let codec: AVVideoCodecType = useHEVC ? .hevc : .h264
+
+        // Build compression properties based on codec
+        var compressionProperties: [String: Any] = [
+            AVVideoAverageBitRateKey: bitrate,
+            AVVideoExpectedSourceFrameRateKey: frameRate,
+            AVVideoMaxKeyFrameIntervalKey: frameRate * 2  // Keyframe every 2 seconds for better seeking
+        ]
+
+        // Add profile level (codec-specific)
+        if useHEVC {
+            compressionProperties[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main_AutoLevel
+        } else {
+            compressionProperties[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+        }
+
         let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: bitrate,
-                AVVideoExpectedSourceFrameRateKey: frameRate,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                AVVideoMaxKeyFrameIntervalKey: frameRate * 2  // Keyframe every 2 seconds for better seeking
-            ]
+            AVVideoCompressionPropertiesKey: compressionProperties
         ]
 
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
@@ -75,7 +88,8 @@ final class VideoWriter: @unchecked Sendable {
             assetWriter?.add(input)
         }
 
-        logger.info("Video writer configured: \(width)x\(height) @ \(frameRate)fps, \(bitrate/1000)kbps (video-only)")
+        let codecName = useHEVC ? "HEVC" : "H.264"
+        logger.info("Video writer configured: \(width)x\(height) @ \(frameRate)fps, \(bitrate/1000)kbps, \(codecName) (video-only)")
     }
 
     func startWriting() -> Bool {
@@ -256,17 +270,20 @@ public actor ScreenRecorder {
         public var height: Int
         public var frameRate: Double
         public var bitrate: Int
+        public var useHEVC: Bool  // Use H.265/HEVC for ~40% smaller files (hardware accelerated)
 
         public init(
             width: Int = 1920,
             height: Int = 1080,
             frameRate: Double = 30.0,
-            bitrate: Int = 8_000_000  // 8 Mbps for high quality 1080p
+            bitrate: Int = 5_000_000,  // 5 Mbps - plenty for screen/meeting content
+            useHEVC: Bool = true       // HEVC is hardware accelerated on Apple Silicon
         ) {
             self.width = width
             self.height = height
             self.frameRate = frameRate
             self.bitrate = bitrate
+            self.useHEVC = useHEVC
         }
     }
 
@@ -548,7 +565,8 @@ public actor ScreenRecorder {
             width: configuration.width,
             height: configuration.height,
             frameRate: configuration.frameRate,
-            bitrate: configuration.bitrate
+            bitrate: configuration.bitrate,
+            useHEVC: configuration.useHEVC
         )
         videoWriter = writer
 

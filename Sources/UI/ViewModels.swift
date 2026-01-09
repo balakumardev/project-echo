@@ -20,6 +20,37 @@ public extension Notification.Name {
     /// Posted when recording content is updated (transcript, summary, action items)
     /// userInfo: ["recordingId": Int64, "type": String] where type is "transcript", "summary", or "actionItems"
     static let recordingContentDidUpdate = Notification.Name("Engram.recordingContentDidUpdate")
+
+    /// Posted when background processing starts
+    /// userInfo: ["recordingId": Int64, "type": String] where type is "transcription", "summary", or "actionItems"
+    static let processingDidStart = Notification.Name("Engram.processingDidStart")
+
+    /// Posted when background processing completes
+    /// userInfo: ["recordingId": Int64, "type": String]
+    static let processingDidComplete = Notification.Name("Engram.processingDidComplete")
+
+    /// Posted when the processing queue status changes
+    /// userInfo: ["transcriptionQueue": Int, "aiGenerationQueue": Int]
+    static let processingQueueDidChange = Notification.Name("Engram.processingQueueDidChange")
+}
+
+// MARK: - Processing Status Types
+
+/// Types of background processing that can occur
+public enum ProcessingType: String {
+    case transcription = "transcription"
+    case summary = "summary"
+    case actionItems = "actionItems"
+    case indexing = "indexing"
+
+    public var displayName: String {
+        switch self {
+        case .transcription: return "Transcribing"
+        case .summary: return "Summarizing"
+        case .actionItems: return "Extracting actions"
+        case .indexing: return "Indexing"
+        }
+    }
 }
 
 // MARK: - Library View Model
@@ -75,7 +106,7 @@ class LibraryViewModel: ObservableObject {
         if let db = database {
             return db
         }
-        let db = try await DatabaseManager()
+        let db = try await DatabaseManager.shared()
         database = db
         return db
     }
@@ -160,6 +191,17 @@ class RecordingDetailViewModel: ObservableObject {
     @Published var actionItems: String?
     @Published var isLoadingActionItems = false
     @Published var actionItemsError: String?
+
+    // Pagination state for segments
+    @Published var totalSegmentCount: Int = 0
+    @Published var isLoadingMoreSegments = false
+    private var currentSegmentOffset: Int = 0
+    static let segmentPageSize: Int = 50
+
+    /// Whether there are more segments to load
+    var hasMoreSegments: Bool {
+        currentSegmentOffset < totalSegmentCount
+    }
 
     private var database: DatabaseManager?
     private let transcriptionEngine: TranscriptionEngine
@@ -246,7 +288,7 @@ class RecordingDetailViewModel: ObservableObject {
         if let db = database {
             return db
         }
-        let db = try await DatabaseManager()
+        let db = try await DatabaseManager.shared()
         database = db
         return db
     }
@@ -301,6 +343,11 @@ class RecordingDetailViewModel: ObservableObject {
         audioPlayer = nil
         transcript = nil
         segments = []
+
+        // Reset pagination state
+        currentSegmentOffset = 0
+        totalSegmentCount = 0
+        isLoadingMoreSegments = false
 
         // Reset summary state
         summaryTask?.cancel()
@@ -377,8 +424,15 @@ class RecordingDetailViewModel: ObservableObject {
                 )
                 transcript = loadedTranscript
 
-                // Load segments
-                let loadedSegments = try await db.getSegments(forTranscriptId: loadedTranscript.id)
+                // Get total segment count for pagination
+                totalSegmentCount = try await db.getSegmentCount(forTranscriptId: loadedTranscript.id)
+
+                // Load first batch of segments (paginated)
+                let loadedSegments = try await db.getSegmentsPaginated(
+                    forTranscriptId: loadedTranscript.id,
+                    limit: Self.segmentPageSize,
+                    offset: 0
+                )
                 // Clean segment text as well
                 segments = loadedSegments.map { segment in
                     TranscriptSegment(
@@ -391,9 +445,48 @@ class RecordingDetailViewModel: ObservableObject {
                         confidence: segment.confidence
                     )
                 }.filter { !$0.text.isEmpty }
+                currentSegmentOffset = segments.count
             }
         } catch {
             print("Failed to load transcript: \(error)")
+        }
+    }
+
+    /// Load more segments for pagination
+    func loadMoreSegments() async {
+        guard let transcript = transcript,
+              hasMoreSegments,
+              !isLoadingMoreSegments else {
+            return
+        }
+
+        isLoadingMoreSegments = true
+        defer { isLoadingMoreSegments = false }
+
+        do {
+            let db = try await getDatabase()
+            let loadedSegments = try await db.getSegmentsPaginated(
+                forTranscriptId: transcript.id,
+                limit: Self.segmentPageSize,
+                offset: currentSegmentOffset
+            )
+
+            let cleanedSegments = loadedSegments.map { segment in
+                TranscriptSegment(
+                    id: segment.id,
+                    transcriptId: segment.transcriptId,
+                    startTime: segment.startTime,
+                    endTime: segment.endTime,
+                    text: cleanWhisperTokens(segment.text),
+                    speaker: segment.speaker,
+                    confidence: segment.confidence
+                )
+            }.filter { !$0.text.isEmpty }
+
+            segments.append(contentsOf: cleanedSegments)
+            currentSegmentOffset += cleanedSegments.count
+        } catch {
+            print("Failed to load more segments: \(error)")
         }
     }
 

@@ -22,6 +22,14 @@ public typealias Citation = UI.Citation
 
 // Note: debugLog is defined in MeetingDetector.swift and is available here
 
+// MARK: - Window Action Notifications
+// Notifications for opening windows from AppDelegate before SwiftUI windows are available
+extension Notification.Name {
+    static let openLibraryWindow = Notification.Name("dev.balakumar.engram.openLibraryWindow")
+    static let openSettingsWindow = Notification.Name("dev.balakumar.engram.openSettingsWindow")
+    static let openAIChatWindow = Notification.Name("dev.balakumar.engram.openAIChatWindow")
+}
+
 // MARK: - Window Action Holder
 // Allows AppDelegate to trigger SwiftUI window actions
 @MainActor
@@ -47,6 +55,53 @@ struct EngramApp: App {
 
         // Open the library window via SwiftUI
         openWindow(id: "library")
+    }
+
+    init() {
+        // Set up notification observers for opening windows
+        // This allows AppDelegate to trigger window opens before SwiftUI windows exist
+        setupNotificationObservers()
+    }
+
+    private func setupNotificationObservers() {
+        // Observe library window request
+        NotificationCenter.default.addObserver(
+            forName: .openLibraryWindow,
+            object: nil,
+            queue: .main
+        ) { [self] _ in
+            Task { @MainActor in
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "library")
+            }
+        }
+
+        // Observe settings window request
+        NotificationCenter.default.addObserver(
+            forName: .openSettingsWindow,
+            object: nil,
+            queue: .main
+        ) { [self] _ in
+            Task { @MainActor in
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                openSettings()
+            }
+        }
+
+        // Observe AI chat window request
+        NotificationCenter.default.addObserver(
+            forName: .openAIChatWindow,
+            object: nil,
+            queue: .main
+        ) { [self] _ in
+            Task { @MainActor in
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "ai-chat")
+            }
+        }
     }
 
     var body: some Scene {
@@ -125,7 +180,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
 
     private let logger = Logger(subsystem: "dev.balakumar.engram", category: "App")
 
-    // Core engines
+    // Core engines - initialized in applicationDidFinishLaunching before any use
+    // Using implicitly unwrapped optionals since these are always set before use
     private var audioEngine: AudioCaptureEngine!
     private var screenRecorder: ScreenRecorder!
     private var mediaMuxer: MediaMuxer!
@@ -135,7 +191,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     // UI
     private var menuBarController: MenuBarController!
 
-    // Meeting Detection (new)
+    // Meeting Detection
     private var meetingDetector: MeetingDetector!
     private var systemEventHandler: SystemEventHandler!
     private var systemEventTask: Task<Void, Never>?
@@ -168,6 +224,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         // Setup output directory
         setupOutputDirectory()
 
+        // Setup processing queue handlers
+        setupProcessingQueue()
+
         // Initialize components
         Task {
             await initializeComponents()
@@ -181,6 +240,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         setupMeetingDetection()
 
         logger.info("Engram ready")
+    }
+
+    private func setupProcessingQueue() {
+        // Configure the processing queue with handlers that call our methods
+        // This ensures transcription and AI generation tasks run serially
+
+        Task {
+            // Transcription handler
+            await ProcessingQueue.shared.setTranscriptionHandler { [weak self] recordingId, audioURL in
+                await self?.transcribeRecording(id: recordingId, url: audioURL)
+            }
+
+            // AI generation handler (summary + action items)
+            await ProcessingQueue.shared.setAIGenerationHandler { [weak self] recordingId in
+                await self?.autoGenerateAIContent(recordingId: recordingId)
+            }
+
+            logger.info("Processing queue handlers configured")
+        }
+    }
+
+    /// Resume incomplete processing tasks from a previous session.
+    /// Called after database is initialized to query for recordings that need work.
+    private func resumeIncompleteProcessing() async {
+        guard let db = database else {
+            logger.warning("Cannot resume incomplete processing - database not initialized")
+            return
+        }
+
+        // Read user preferences
+        let autoTranscribeEnabled = UserDefaults.standard.object(forKey: "autoTranscribe") as? Bool ?? true
+        let autoSummaryEnabled = autoGenerateSummary
+        let autoActionItemsEnabled = autoGenerateActionItems
+
+        logger.info("Checking for incomplete work (transcribe: \(autoTranscribeEnabled), summary: \(autoSummaryEnabled), actions: \(autoActionItemsEnabled))")
+
+        // Queue any incomplete work
+        await ProcessingQueue.shared.resumeIncompleteWork(
+            database: db,
+            autoTranscribe: autoTranscribeEnabled,
+            autoGenerateSummary: autoSummaryEnabled,
+            autoGenerateActionItems: autoActionItemsEnabled
+        )
     }
 
     // MARK: - URL Scheme Handling
@@ -199,7 +301,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     private func setupOutputDirectory() {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         outputDirectory = documentsURL.appendingPathComponent("Engram/Recordings")
-        
+
         try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         logger.info("Output directory: \(self.outputDirectory.path)")
     }
@@ -239,10 +341,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
             }
         }
 
-        // Database
+        // Database (use shared instance to prevent concurrent access issues)
         do {
-            database = try await DatabaseManager()
+            database = try await DatabaseManager.shared()
             logger.info("Database initialized")
+
+            // Resume any incomplete work from previous session
+            // This runs after database is ready so we can query for incomplete recordings
+            await resumeIncompleteProcessing()
         } catch {
             logger.error("Database initialization failed: \(error.localizedDescription)")
         }
@@ -302,7 +408,7 @@ App location: \(appPath)
             do {
                 // First check/request permissions
                 try await audioEngine.requestPermissions()
-                
+
                 currentRecordingURL = try await audioEngine.startRecording(outputDirectory: outputDirectory)
                 logger.info("Recording started: \(self.currentRecordingURL?.lastPathComponent ?? "unknown")")
             } catch AudioCaptureEngine.CaptureError.permissionDenied {
@@ -332,7 +438,23 @@ App location: \(appPath)
             do {
                 let metadata = try await audioEngine.stopRecording()
                 logger.info("Recording stopped: \(metadata.duration)s")
-                
+
+                // Stop video recording if active and mux with audio
+                if let videoURL = currentVideoRecordingURL, let audioURL = currentRecordingURL {
+                    do {
+                        let videoMetadata = try await screenRecorder.stopRecording()
+                        logger.info("Video recording stopped: \(videoMetadata.duration)s, \(videoMetadata.frameCount) frames")
+
+                        // Mux video + audio into the video file
+                        logger.info("Muxing video + audio...")
+                        let muxResult = try await mediaMuxer.muxInPlace(videoURL: videoURL, audioURL: audioURL)
+                        logger.info("Mux completed: \(muxResult.outputURL.lastPathComponent), \(muxResult.duration)s, \(muxResult.fileSize) bytes")
+                    } catch {
+                        logger.warning("Failed to stop/mux video recording: \(error.localizedDescription)")
+                    }
+                    currentVideoRecordingURL = nil
+                }
+
                 // Save to database
                 if let url = currentRecordingURL {
                     let title = url.deletingPathExtension().lastPathComponent
@@ -342,9 +464,9 @@ App location: \(appPath)
                         duration: metadata.duration,
                         fileURL: url,
                         fileSize: metadata.fileSize,
-                        appName: detectActiveApp()
+                        appName: currentRecordingApp ?? detectActiveApp()
                     )
-                    
+
                     logger.info("Recording saved to database: ID \(recordingId)")
 
                     // Notify UI that a new recording was saved
@@ -354,13 +476,18 @@ App location: \(appPath)
                         userInfo: ["recordingId": recordingId]
                     )
 
-                    // Auto-transcribe in background
-                    Task { [weak self] in
-                        await self?.transcribeRecording(id: recordingId, url: url)
-                    }
+                    // Queue transcription (processed serially to avoid resource conflicts)
+                    await ProcessingQueue.shared.queueTranscription(recordingId: recordingId, audioURL: url)
                 }
-                
+
                 currentRecordingURL = nil
+                currentRecordingApp = nil
+
+                // IMPORTANT: Notify the MeetingDetector to go back to monitoring state
+                // This allows auto-recording to restart if a meeting is still in progress
+                // We use resetRecordingState() since recording is already stopped
+                await meetingDetector.resetRecordingState()
+
             } catch {
                 logger.error("Failed to stop recording: \(error.localizedDescription)")
                 await showErrorAlert(message: "Failed to stop recording: \(error.localizedDescription)")
@@ -382,12 +509,10 @@ App location: \(appPath)
             // Use SwiftUI's openWindow if available
             action()
         } else {
-            // Fallback: Open via URL scheme (triggers handlesExternalEvents)
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-            if let url = URL(string: "engram://library") {
-                NSWorkspace.shared.open(url)
-            }
+            // Fallback: Post notification to open library window
+            // This works even before any SwiftUI window has appeared
+            logger.info("Using notification fallback to open library window")
+            NotificationCenter.default.post(name: .openLibraryWindow, object: nil)
         }
     }
 
@@ -396,23 +521,20 @@ App location: \(appPath)
             // Use SwiftUI's openSettings if available
             action()
         } else {
-            // Fallback: Use NSApp selector for settings
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-            // Try the macOS 14+ settings action
-            if NSApp.responds(to: Selector(("showSettingsWindow:"))) {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            } else {
-                // Fallback for older versions
-                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-            }
+            // Fallback: Post notification to open settings window
+            logger.info("Using notification fallback to open settings window")
+            NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
         }
     }
 
     func menuBarDidRequestOpenAIChat() {
-        // Use window action to open AI Chat window
-        if let openAIChatAction = WindowActions.openAIChat {
-            openAIChatAction()
+        if let action = WindowActions.openAIChat {
+            // Use SwiftUI's openWindow if available
+            action()
+        } else {
+            // Fallback: Post notification to open AI chat window
+            logger.info("Using notification fallback to open AI chat window")
+            NotificationCenter.default.post(name: .openAIChatWindow, object: nil)
         }
     }
 
@@ -429,9 +551,29 @@ App location: \(appPath)
         
         return conferencingApps.contains(appName) ? appName : nil
     }
-    
+
+    /// Reload the Whisper model when user changes settings
+    func reloadWhisperModel() async {
+        logger.info("Reloading Whisper model due to settings change...")
+        do {
+            try await transcriptionEngine.reloadModel()
+            let modelName = await transcriptionEngine.currentModelVariant
+            logger.info("Whisper model reloaded: \(modelName)")
+        } catch {
+            logger.error("Failed to reload Whisper model: \(error.localizedDescription)")
+            logError("Failed to reload Whisper model", error: error)
+        }
+    }
+
     private func transcribeRecording(id: Int64, url: URL) async {
         logger.info("Starting auto-transcription for recording \(id)")
+
+        // Notify UI that transcription started
+        NotificationCenter.default.post(
+            name: .processingDidStart,
+            object: nil,
+            userInfo: ["recordingId": id, "type": ProcessingType.transcription.rawValue]
+        )
 
         do {
             let result = try await transcriptionEngine.transcribe(audioURL: url)
@@ -458,6 +600,13 @@ App location: \(appPath)
 
             logger.info("Transcription completed for recording \(id)")
 
+            // Notify UI that transcription completed
+            NotificationCenter.default.post(
+                name: .processingDidComplete,
+                object: nil,
+                userInfo: ["recordingId": id, "type": ProcessingType.transcription.rawValue]
+            )
+
             // Notify UI that transcript is available
             NotificationCenter.default.post(
                 name: .recordingContentDidUpdate,
@@ -471,12 +620,16 @@ App location: \(appPath)
                 await autoIndexTranscript(recordingId: id, transcriptId: transcriptId)
             }
 
-            // Auto-generate AI content (summary and action items) in background
-            Task { [weak self] in
-                await self?.autoGenerateAIContent(recordingId: id)
-            }
+            // Queue AI generation (processed serially to avoid LLM resource conflicts)
+            await ProcessingQueue.shared.queueAIGeneration(recordingId: id)
         } catch {
             logger.error("Auto-transcription failed: \(error.localizedDescription)")
+            // Notify UI that transcription completed (even on error)
+            NotificationCenter.default.post(
+                name: .processingDidComplete,
+                object: nil,
+                userInfo: ["recordingId": id, "type": ProcessingType.transcription.rawValue]
+            )
         }
     }
 
@@ -564,6 +717,14 @@ App location: \(appPath)
             // Generate summary if enabled
             if autoGenerateSummary {
                 logger.info("Auto-generating summary for recording \(recordingId)")
+
+                // Notify UI that summary generation started
+                NotificationCenter.default.post(
+                    name: .processingDidStart,
+                    object: nil,
+                    userInfo: ["recordingId": recordingId, "type": ProcessingType.summary.rawValue]
+                )
+
                 let summaryStream = await AIService.shared.agentChat(
                     query: "Provide a comprehensive summary of this meeting including main topics, key decisions, and important points.",
                     sessionId: "auto-summary-\(recordingId)",
@@ -573,6 +734,14 @@ App location: \(appPath)
                 for try await token in summaryStream {
                     summary += token
                 }
+
+                // Notify UI that summary generation completed
+                NotificationCenter.default.post(
+                    name: .processingDidComplete,
+                    object: nil,
+                    userInfo: ["recordingId": recordingId, "type": ProcessingType.summary.rawValue]
+                )
+
                 if !summary.isEmpty {
                     try await database.saveSummary(recordingId: recordingId, summary: summary)
                     logger.info("Auto-generated summary for recording \(recordingId)")
@@ -583,12 +752,24 @@ App location: \(appPath)
                         object: nil,
                         userInfo: ["recordingId": recordingId, "type": "summary"]
                     )
+                } else {
+                    // Save marker to prevent re-processing on restart
+                    try await database.saveSummary(recordingId: recordingId, summary: "[No summary generated]")
+                    logger.info("No summary generated for recording \(recordingId) - marked as processed")
                 }
             }
 
             // Generate action items if enabled
             if autoGenerateActionItems {
                 logger.info("Auto-generating action items for recording \(recordingId)")
+
+                // Notify UI that action items extraction started
+                NotificationCenter.default.post(
+                    name: .processingDidStart,
+                    object: nil,
+                    userInfo: ["recordingId": recordingId, "type": ProcessingType.actionItems.rawValue]
+                )
+
                 let actionStream = await AIService.shared.agentChat(
                     query: """
                     Extract ONLY clear action items from this meeting. Be very strict - only include items you are at least 60% confident are real action items.
@@ -618,6 +799,14 @@ App location: \(appPath)
                 for try await token in actionStream {
                     actionItems += token
                 }
+
+                // Notify UI that action items extraction completed
+                NotificationCenter.default.post(
+                    name: .processingDidComplete,
+                    object: nil,
+                    userInfo: ["recordingId": recordingId, "type": ProcessingType.actionItems.rawValue]
+                )
+
                 // Clean up the response to remove thinking text, empty arrays, etc.
                 if let cleanedActionItems = cleanActionItemsResponse(actionItems) {
                     try await database.saveActionItems(recordingId: recordingId, actionItems: cleanedActionItems)
@@ -630,7 +819,9 @@ App location: \(appPath)
                         userInfo: ["recordingId": recordingId, "type": "actionItems"]
                     )
                 } else {
-                    logger.info("No action items found for recording \(recordingId)")
+                    // Save marker to prevent re-processing on restart
+                    try await database.saveActionItems(recordingId: recordingId, actionItems: "[No action items]")
+                    logger.info("No action items found for recording \(recordingId) - marked as processed")
                 }
             }
         } catch {
@@ -885,10 +1076,8 @@ App location: \(appPath)
                 userInfo: ["recordingId": recordingId]
             )
 
-            // Auto-transcribe in background
-            Task { [weak self] in
-                await self?.transcribeRecording(id: recordingId, url: url)
-            }
+            // Queue transcription (processed serially to avoid resource conflicts)
+            await ProcessingQueue.shared.queueTranscription(recordingId: recordingId, audioURL: url)
         }
 
         currentRecordingURL = nil
@@ -1025,7 +1214,7 @@ struct SettingsTabButton: View {
 struct GeneralSettingsView: View {
     @AppStorage("autoRecord") private var autoRecord = true
     @AppStorage("autoTranscribe") private var autoTranscribe = true
-    @AppStorage("whisperModel") private var whisperModel = "base.en"
+    @AppStorage("whisperModel") private var whisperModel = "small.en"
     @AppStorage("storageLocation") private var storageLocation = "~/Documents/Engram"
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
     @AppStorage("recordVideoEnabled") private var recordVideoEnabled: Bool = false
@@ -1154,13 +1343,21 @@ struct GeneralSettingsView: View {
                         Picker("", selection: $whisperModel) {
                             Text("Tiny").tag("tiny.en")
                             Text("Base").tag("base.en")
-                            Text("Small").tag("small.en")
+                            Text("Small (Recommended)").tag("small.en")
                             Text("Medium").tag("medium.en")
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
+                        .onChange(of: whisperModel) { oldValue, newValue in
+                            // Reload Whisper model when user changes selection
+                            Task {
+                                if let appDelegate = NSApp.delegate as? AppDelegate {
+                                    await appDelegate.reloadWhisperModel()
+                                }
+                            }
+                        }
 
-                        Text("Larger models are more accurate but use more resources")
+                        Text("Larger models are more accurate but use more resources. Changes take effect immediately.")
                             .font(.system(size: 11))
                             .foregroundColor(Theme.Colors.textMuted)
                     }
@@ -2490,14 +2687,16 @@ struct AISettingsView: View {
                 // Loading a different model - disable buttons
                 EmptyView()
             } else if isCached {
-                // Downloaded but not active - show Select button (sets pending)
+                // Downloaded but not active - show Select button (activates immediately)
                 Button {
+                    // Activate the cached model immediately for better UX
                     pendingMLXModel = model.id
+                    aiService.setupModel(model.id)
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "circle")
+                        Image(systemName: "checkmark.circle")
                             .font(.system(size: 12))
-                        Text("Select")
+                        Text("Activate")
                             .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundColor(.white)
@@ -2509,7 +2708,7 @@ struct AISettingsView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .help("Select this model (click Apply Changes to activate)")
+                .help("Activate this model")
             } else {
                 // Not downloaded - show Download button (downloads immediately, then sets pending)
                 Button {

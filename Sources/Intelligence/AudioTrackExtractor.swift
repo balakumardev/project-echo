@@ -11,6 +11,7 @@ public actor AudioTrackExtractor {
     public struct ExtractedTracks: Sendable {
         public let microphoneURL: URL       // Track 1: User's microphone (mono)
         public let systemAudioURL: URL      // Track 2: Remote participants (stereo->mono)
+        public let mixedURL: URL?           // Combined audio for transcription (optional)
         public let duration: TimeInterval
         public let tempDirectory: URL       // For cleanup
     }
@@ -76,6 +77,7 @@ public actor AudioTrackExtractor {
 
         let microphoneURL = tempDir.appendingPathComponent("microphone.wav")
         let systemAudioURL = tempDir.appendingPathComponent("system_audio.wav")
+        let mixedURL = tempDir.appendingPathComponent("mixed.wav")
 
         // Extract tracks in parallel
         // Track order in AVAsset: first added = index 0
@@ -90,11 +92,16 @@ public actor AudioTrackExtractor {
             try await group.waitForAll()
         }
 
-        logger.info("Audio tracks extracted successfully")
+        // Mix both tracks into a single file for transcription
+        logger.info("Mixing audio tracks for transcription...")
+        try mixAudioFiles(micURL: microphoneURL, systemURL: systemAudioURL, outputURL: mixedURL)
+
+        logger.info("Audio tracks extracted and mixed successfully")
 
         return ExtractedTracks(
             microphoneURL: microphoneURL,
             systemAudioURL: systemAudioURL,
+            mixedURL: mixedURL,
             duration: duration,
             tempDirectory: tempDir
         )
@@ -173,6 +180,62 @@ public actor AudioTrackExtractor {
 
         let fileSize = try FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64 ?? 0
         logger.info("Exported \(label): \(fileSize) bytes")
+    }
+
+    /// Mix two mono WAV files into a single mono WAV file
+    /// Both inputs are expected to be 16kHz 16-bit mono WAV files
+    private func mixAudioFiles(micURL: URL, systemURL: URL, outputURL: URL) throws {
+        logger.info("Mixing mic and system audio files...")
+
+        // Read WAV files (skip 44-byte header)
+        let micData = try Data(contentsOf: micURL)
+        let systemData = try Data(contentsOf: systemURL)
+
+        // Skip WAV header (44 bytes)
+        let headerSize = 44
+        guard micData.count > headerSize, systemData.count > headerSize else {
+            throw ExtractionError.exportFailed("WAV files too small to mix")
+        }
+
+        let micPCM = micData.dropFirst(headerSize)
+        let systemPCM = systemData.dropFirst(headerSize)
+
+        // Determine output length (use longer of the two)
+        let maxSamples = max(micPCM.count, systemPCM.count) / 2  // 16-bit = 2 bytes per sample
+        var mixedSamples = [Int16](repeating: 0, count: maxSamples)
+
+        // Mix samples (add with clipping protection)
+        micPCM.withUnsafeBytes { micBuffer in
+            systemPCM.withUnsafeBytes { systemBuffer in
+                let micSamples = micBuffer.bindMemory(to: Int16.self)
+                let systemSamples = systemBuffer.bindMemory(to: Int16.self)
+
+                for i in 0..<maxSamples {
+                    let micSample: Int32 = i < micSamples.count ? Int32(micSamples[i]) : 0
+                    let systemSample: Int32 = i < systemSamples.count ? Int32(systemSamples[i]) : 0
+
+                    // Mix with equal weighting (simple average to prevent clipping)
+                    // Boost system audio slightly since it's often quieter
+                    let mixed = (micSample + (systemSample * 12 / 10)) / 2
+
+                    // Clip to Int16 range
+                    mixedSamples[i] = Int16(clamping: max(Int32(Int16.min), min(Int32(Int16.max), mixed)))
+                }
+            }
+        }
+
+        // Convert to Data
+        var mixedData = Data()
+        for sample in mixedSamples {
+            withUnsafeBytes(of: sample.littleEndian) { mixedData.append(contentsOf: $0) }
+        }
+
+        // Create WAV file
+        let wavData = createWavFile(from: mixedData, sampleRate: Int(targetSampleRate), channels: 1, bitsPerSample: 16)
+        try wavData.write(to: outputURL)
+
+        let fileSize = try FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64 ?? 0
+        logger.info("Mixed audio created: \(fileSize) bytes, \(maxSamples) samples")
     }
 
     /// Create a WAV file with proper header from raw PCM data

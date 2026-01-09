@@ -122,6 +122,14 @@ public actor LLMEngine {
     /// URLSession for OpenAI API requests
     private let urlSession: URLSession
 
+    /// Low power mode - throttles inference to reduce CPU/GPU usage
+    /// When enabled, adds small delays between token generations to prevent sustained high load
+    private var lowPowerMode: Bool = true  // Default ON to prevent fan noise
+
+    /// Delay between tokens in low power mode (in nanoseconds)
+    /// 30ms = moderate throttling, good reduction in fan noise while still reasonable speed
+    private let lowPowerDelayNanoseconds: UInt64 = 30_000_000
+
     // MARK: - Initialization
 
     public init() {
@@ -129,6 +137,12 @@ public actor LLMEngine {
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 300
         self.urlSession = URLSession(configuration: config)
+    }
+
+    /// Enable or disable low power mode
+    public func setLowPowerMode(_ enabled: Bool) {
+        lowPowerMode = enabled
+        logger.info("Low power mode: \(enabled ? "enabled" : "disabled")")
     }
 
     // MARK: - Backend Configuration (Called by AIService)
@@ -314,6 +328,10 @@ public actor LLMEngine {
                 )
 
                 // Process the async stream
+                // Note: We need to capture lowPowerMode before entering the perform block
+                let isLowPower = self.lowPowerMode
+                let delayNs = self.lowPowerDelayNanoseconds
+
                 for await generation in stream {
                     switch generation {
                     case .chunk(let chunk):
@@ -325,6 +343,12 @@ public actor LLMEngine {
                         }
 
                         continuation.yield(chunk)
+
+                        // Low power mode: add small delay between tokens to reduce sustained CPU/GPU load
+                        // This prevents the fans from spinning up during long generations
+                        if isLowPower {
+                            try? await Task.sleep(nanoseconds: delayNs)
+                        }
 
                     case .info:
                         // Generation complete info - we don't need to do anything special

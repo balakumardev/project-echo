@@ -15,6 +15,11 @@ public class MenuBarController: NSObject {
     private var recordingStartTime: Date?
     private var recordingTimer: Timer?
 
+    // Processing status tracking
+    private var activeProcessing: Set<String> = []  // e.g., "transcription", "summary", "actionItems"
+    private var queuedTranscriptions: Int = 0
+    private var queuedAIGenerations: Int = 0
+
     public weak var delegate: MenuBarDelegate?
 
     // MARK: - Initialization
@@ -22,6 +27,58 @@ public class MenuBarController: NSObject {
     public override init() {
         super.init()
         setupMenuBar()
+        setupProcessingObservers()
+    }
+
+    private func setupProcessingObservers() {
+        // Listen for processing start notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleProcessingDidStart(_:)),
+            name: .processingDidStart,
+            object: nil
+        )
+
+        // Listen for processing complete notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleProcessingDidComplete(_:)),
+            name: .processingDidComplete,
+            object: nil
+        )
+
+        // Listen for queue status changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleQueueDidChange(_:)),
+            name: .processingQueueDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func handleQueueDidChange(_ notification: Notification) {
+        if let transcriptionCount = notification.userInfo?["transcriptionQueue"] as? Int {
+            queuedTranscriptions = transcriptionCount
+        }
+        if let aiCount = notification.userInfo?["aiGenerationQueue"] as? Int {
+            queuedAIGenerations = aiCount
+        }
+        constructMenu()
+        updateStatusBarIcon()
+    }
+
+    @objc private func handleProcessingDidStart(_ notification: Notification) {
+        guard let type = notification.userInfo?["type"] as? String else { return }
+        activeProcessing.insert(type)
+        constructMenu()
+        updateStatusBarIcon()
+    }
+
+    @objc private func handleProcessingDidComplete(_ notification: Notification) {
+        guard let type = notification.userInfo?["type"] as? String else { return }
+        activeProcessing.remove(type)
+        constructMenu()
+        updateStatusBarIcon()
     }
 
     // MARK: - Setup
@@ -143,13 +200,17 @@ public class MenuBarController: NSObject {
     }
 
     private func createHeaderView() -> NSView {
-        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 44))
+        // Expand height if we have processing status to show
+        let hasProcessing = !activeProcessing.isEmpty
+        let viewHeight: CGFloat = hasProcessing ? 62 : 44
+
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: viewHeight))
 
         // App name label
         let titleLabel = NSTextField(labelWithString: "Engram")
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
-        titleLabel.frame = NSRect(x: 14, y: 22, width: 120, height: 18)
+        titleLabel.frame = NSRect(x: 14, y: viewHeight - 22, width: 120, height: 18)
 
         // Status label with contextual text
         let statusText: String
@@ -172,7 +233,7 @@ public class MenuBarController: NSObject {
         let statusLabel = NSTextField(labelWithString: statusText)
         statusLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = statusColor
-        statusLabel.frame = NSRect(x: 14, y: 6, width: 160, height: 14)
+        statusLabel.frame = NSRect(x: 14, y: viewHeight - 38, width: 160, height: 14)
 
         // Duration label (when recording)
         if isRecording, let startTime = recordingStartTime {
@@ -180,7 +241,7 @@ public class MenuBarController: NSObject {
             let durationLabel = NSTextField(labelWithString: formatDuration(duration))
             durationLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             durationLabel.textColor = .systemRed
-            durationLabel.frame = NSRect(x: 180, y: 14, width: 50, height: 16)
+            durationLabel.frame = NSRect(x: 180, y: viewHeight - 30, width: 50, height: 16)
             durationLabel.alignment = .right
             containerView.addSubview(durationLabel)
         }
@@ -188,7 +249,52 @@ public class MenuBarController: NSObject {
         containerView.addSubview(titleLabel)
         containerView.addSubview(statusLabel)
 
+        // Processing status (if any active)
+        if hasProcessing {
+            let processingText = formatProcessingStatus()
+            let processingLabel = NSTextField(labelWithString: processingText)
+            processingLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+            processingLabel.textColor = .systemBlue
+            processingLabel.frame = NSRect(x: 14, y: 6, width: 220, height: 14)
+
+            // Add a small spinner/activity indicator icon
+            let spinnerIcon = NSTextField(labelWithString: "⟳")
+            spinnerIcon.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+            spinnerIcon.textColor = .systemBlue
+            spinnerIcon.frame = NSRect(x: 14, y: 6, width: 14, height: 14)
+
+            processingLabel.frame = NSRect(x: 26, y: 6, width: 208, height: 14)
+
+            containerView.addSubview(spinnerIcon)
+            containerView.addSubview(processingLabel)
+        }
+
         return containerView
+    }
+
+    private func formatProcessingStatus() -> String {
+        var parts: [String] = []
+
+        if activeProcessing.contains(ProcessingType.transcription.rawValue) {
+            parts.append("Transcribing")
+        }
+        if activeProcessing.contains(ProcessingType.summary.rawValue) {
+            parts.append("Summarizing")
+        }
+        if activeProcessing.contains(ProcessingType.actionItems.rawValue) {
+            parts.append("Extracting actions")
+        }
+        if activeProcessing.contains(ProcessingType.indexing.rawValue) {
+            parts.append("Indexing")
+        }
+
+        if parts.isEmpty {
+            return ""
+        } else if parts.count == 1 {
+            return "\(parts[0])..."
+        } else {
+            return parts.joined(separator: ", ") + "..."
+        }
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
@@ -281,10 +387,15 @@ public class MenuBarController: NSObject {
 
         let iconName: String
         let iconColor: NSColor?
+        let hasProcessing = !activeProcessing.isEmpty
 
         if isRecording {
             iconName = "waveform.circle.fill"
             iconColor = .systemRed
+        } else if hasProcessing {
+            // Show processing indicator (gear icon with activity)
+            iconName = "gearshape.circle.fill"
+            iconColor = .systemBlue
         } else if isMonitoring {
             iconName = "waveform.badge.magnifyingglass"
             iconColor = .systemOrange

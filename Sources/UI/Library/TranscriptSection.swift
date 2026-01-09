@@ -158,6 +158,14 @@ struct TranscriptSection: View {
                     onSeek: { time in
                         viewModel.audioPlayer?.currentTime = time
                         viewModel.audioPlayer?.play()
+                    },
+                    totalCount: viewModel.totalSegmentCount,
+                    hasMore: viewModel.hasMoreSegments,
+                    isLoadingMore: viewModel.isLoadingMoreSegments,
+                    onLoadMore: {
+                        Task {
+                            await viewModel.loadMoreSegments()
+                        }
                     }
                 )
             } else {
@@ -466,6 +474,28 @@ struct TranscriptContent: View {
     let transcript: Transcript
     let segments: [TranscriptSegment]
     let onSeek: (TimeInterval) -> Void
+    let totalCount: Int
+    let hasMore: Bool
+    let isLoadingMore: Bool
+    let onLoadMore: () -> Void
+
+    init(
+        transcript: Transcript,
+        segments: [TranscriptSegment],
+        onSeek: @escaping (TimeInterval) -> Void,
+        totalCount: Int = 0,
+        hasMore: Bool = false,
+        isLoadingMore: Bool = false,
+        onLoadMore: @escaping () -> Void = {}
+    ) {
+        self.transcript = transcript
+        self.segments = segments
+        self.onSeek = onSeek
+        self.totalCount = totalCount
+        self.hasMore = hasMore
+        self.isLoadingMore = isLoadingMore
+        self.onLoadMore = onLoadMore
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -475,7 +505,17 @@ struct TranscriptContent: View {
                     .padding(.bottom, Theme.Spacing.sm)
             }
 
-            // Segments or full text
+            // Pagination info
+            if totalCount > 0 {
+                HStack {
+                    Text("Showing \(segments.count) of \(totalCount) segments")
+                        .font(Theme.Typography.caption)
+                        .foregroundColor(Theme.Colors.textMuted)
+                    Spacer()
+                }
+            }
+
+            // Segments or full text - using LazyVStack for efficient rendering
             if segments.isEmpty {
                 Text(transcript.fullText)
                     .font(Theme.Typography.body)
@@ -485,8 +525,47 @@ struct TranscriptContent: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .surfaceBackground()
             } else {
-                ForEach(segments, id: \.id) { segment in
-                    TranscriptSegmentRow(segment: segment, onSeek: onSeek)
+                LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    ForEach(segments, id: \.id) { segment in
+                        TranscriptSegmentRow(segment: segment, onSeek: onSeek)
+                            .onAppear {
+                                // Load more when approaching the end
+                                if segment.id == segments.last?.id && hasMore {
+                                    onLoadMore()
+                                }
+                            }
+                    }
+
+                    // Load more indicator/button
+                    if hasMore {
+                        if isLoadingMore {
+                            HStack {
+                                Spacer()
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Loading more segments...")
+                                    .font(Theme.Typography.caption)
+                                    .foregroundColor(Theme.Colors.textMuted)
+                                Spacer()
+                            }
+                            .padding(Theme.Spacing.md)
+                        } else {
+                            Button {
+                                onLoadMore()
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    Label("Load More Segments", systemImage: "arrow.down.circle")
+                                        .font(Theme.Typography.callout)
+                                    Spacer()
+                                }
+                                .padding(Theme.Spacing.md)
+                                .background(Theme.Colors.surface)
+                                .cornerRadius(Theme.Radius.md)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
             }
         }
