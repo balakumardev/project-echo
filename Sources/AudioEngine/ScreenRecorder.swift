@@ -321,6 +321,8 @@ public actor ScreenRecorder {
         "sign in", "sign up", "login", "home -", "welcome",
         // System
         "notification", "alert",
+        // Permission dialogs (browser/app permission requests)
+        "is asking", "wants to", "requesting", "allow access", "grant permission",
     ]
 
     // MARK: - Initialization
@@ -680,13 +682,18 @@ public actor ScreenRecorder {
         screenDebugLog("After filtering skip patterns: \(candidateWindows.count) candidate windows")
 
         // Priority 1: Look for windows with meeting-related keywords in title
-        for window in candidateWindows {
-            guard let title = window.title?.lowercased() else { continue }
-            if meetingKeywords.contains(where: { title.contains($0) }) {
-                logger.info("Found meeting window (keyword match): \(window.title ?? "untitled")")
-                screenDebugLog("Selected window (keyword match): '\(window.title ?? "untitled")'")
-                return window
-            }
+        // If multiple windows match, pick the largest one (avoid small popups/dialogs)
+        let meetingWindows = candidateWindows.filter { window in
+            guard let title = window.title?.lowercased() else { return false }
+            return meetingKeywords.contains(where: { title.contains($0) })
+        }
+
+        if let bestMeetingWindow = meetingWindows.max(by: {
+            ($0.frame.width * $0.frame.height) < ($1.frame.width * $1.frame.height)
+        }) {
+            logger.info("Found meeting window (keyword match): \(bestMeetingWindow.title ?? "untitled") (\(Int(bestMeetingWindow.frame.width))x\(Int(bestMeetingWindow.frame.height)))")
+            screenDebugLog("Selected window (keyword match, largest of \(meetingWindows.count)): '\(bestMeetingWindow.title ?? "untitled")' (\(Int(bestMeetingWindow.frame.width))x\(Int(bestMeetingWindow.frame.height)))")
+            return bestMeetingWindow
         }
 
         // Priority 2: Pick the largest window (likely the main content window)
