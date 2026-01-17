@@ -746,6 +746,9 @@ App location: \(appPath)
                     try await database.saveSummary(recordingId: recordingId, summary: summary)
                     logger.info("Auto-generated summary for recording \(recordingId)")
 
+                    // Generate a meaningful title from the summary if current title is generic
+                    await generateTitleFromSummary(recordingId: recordingId, summary: summary)
+
                     // Notify UI that summary is available
                     NotificationCenter.default.post(
                         name: .recordingContentDidUpdate,
@@ -826,6 +829,88 @@ App location: \(appPath)
             }
         } catch {
             logger.warning("Auto AI generation failed for recording \(recordingId): \(error.localizedDescription)")
+        }
+    }
+
+    /// Generate a meaningful title from the meeting summary using LLM
+    /// Only updates if the current title appears to be a generic/auto-generated one
+    private func generateTitleFromSummary(recordingId: Int64, summary: String) async {
+        do {
+            // Get the current recording to check its title
+            let recordings = try await database.getAllRecordings()
+            guard let recording = recordings.first(where: { $0.id == recordingId }) else {
+                logger.warning("Could not find recording \(recordingId) to update title")
+                return
+            }
+
+            // Check if the title looks generic (auto-generated from app name)
+            let genericPatterns = [
+                "Zoom_Meeting", "Zoom Meeting", "zoom_meeting",
+                "Google_Meet", "Google Meet", "Meet_",
+                "Microsoft_Teams", "Teams_Meeting", "teams_meeting",
+                "Slack_Call", "slack_call",
+                "Discord_Call", "discord_call",
+                "FaceTime_", "facetime_",
+                "Webex_", "webex_",
+                "Skype_", "skype_"
+            ]
+
+            let currentTitle = recording.title
+            let isGenericTitle = genericPatterns.contains { currentTitle.lowercased().contains($0.lowercased()) }
+
+            guard isGenericTitle else {
+                logger.info("Recording \(recordingId) has a custom title, skipping auto-generation")
+                return
+            }
+
+            logger.info("Generating title for recording \(recordingId) from summary...")
+
+            // Generate a concise title from the summary
+            let titlePrompt = """
+                Based on this meeting summary, generate a concise, descriptive title (5-8 words max).
+                The title should capture the main topic or purpose of the meeting.
+                Return ONLY the title, nothing else. No quotes, no explanation.
+
+                Summary:
+                \(summary.prefix(1500))
+                """
+
+            let titleStream = await AIService.shared.agentChat(
+                query: titlePrompt,
+                sessionId: "title-gen-\(recordingId)",
+                recordingFilter: nil  // Don't use RAG, just process the prompt
+            )
+
+            var generatedTitle = ""
+            for try await token in titleStream {
+                generatedTitle += token
+            }
+
+            // Clean up the generated title
+            generatedTitle = generatedTitle
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\"", with: "")
+                .replacingOccurrences(of: "\n", with: " ")
+
+            // Validate the title
+            guard !generatedTitle.isEmpty, generatedTitle.count >= 3, generatedTitle.count <= 100 else {
+                logger.warning("Generated title is invalid: '\(generatedTitle)'")
+                return
+            }
+
+            // Update the database with the new title
+            try await database.updateTitle(recordingId: recordingId, newTitle: generatedTitle)
+            logger.info("Updated recording \(recordingId) title to: \(generatedTitle)")
+
+            // Notify UI that recording info has been updated
+            NotificationCenter.default.post(
+                name: .recordingContentDidUpdate,
+                object: nil,
+                userInfo: ["recordingId": recordingId, "type": "title"]
+            )
+
+        } catch {
+            logger.warning("Failed to generate title for recording \(recordingId): \(error.localizedDescription)")
         }
     }
 

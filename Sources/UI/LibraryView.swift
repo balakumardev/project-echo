@@ -40,6 +40,7 @@ public struct LibraryView: View {
     @State private var selectedSort: RecordingSort = .dateDesc
     @State private var customStartDate: Date? = nil
     @State private var customEndDate: Date? = nil
+    @State private var pendingSeekTimestamp: TimeInterval? = nil
 
     public init() {}
 
@@ -63,7 +64,7 @@ public struct LibraryView: View {
                 .frame(width: 1)
 
             // Detail view
-            DetailView(recording: selectedRecording)
+            DetailView(recording: selectedRecording, seekToTimestamp: $pendingSeekTimestamp)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Theme.Colors.background)
@@ -76,6 +77,20 @@ public struct LibraryView: View {
             if let selected = selectedRecording,
                let updated = newRecordings.first(where: { $0.id == selected.id }) {
                 selectedRecording = updated
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openRecordingAtTimestamp)) { notification in
+            guard let userInfo = notification.userInfo,
+                  let recordingId = userInfo["recordingId"] as? Int64,
+                  let timestamp = userInfo["timestamp"] as? TimeInterval else { return }
+
+            // Find and select the recording
+            if let recording = viewModel.recordings.first(where: { $0.id == recordingId }) {
+                selectedRecording = recording
+                pendingSeekTimestamp = timestamp
+
+                // Bring library window to front
+                NSApp.activate(ignoringOtherApps: true)
             }
         }
         .frame(minWidth: 900, minHeight: 600)

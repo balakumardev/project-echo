@@ -32,6 +32,10 @@ public extension Notification.Name {
     /// Posted when the processing queue status changes
     /// userInfo: ["transcriptionQueue": Int, "aiGenerationQueue": Int]
     static let processingQueueDidChange = Notification.Name("Engram.processingQueueDidChange")
+
+    /// Posted to request opening a recording at a specific timestamp (e.g., from citation tap)
+    /// userInfo: ["recordingId": Int64, "timestamp": TimeInterval]
+    static let openRecordingAtTimestamp = Notification.Name("Engram.openRecordingAtTimestamp")
 }
 
 // MARK: - Processing Status Types

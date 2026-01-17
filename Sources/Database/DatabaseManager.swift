@@ -555,6 +555,16 @@ public actor DatabaseManager {
         logger.info("Action items saved for recording \(recordingId)")
     }
 
+    /// Update the title of a recording (e.g., with AI-generated title)
+    public func updateTitle(recordingId: Int64, newTitle: String) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let query = recordings.filter(id == recordingId)
+        try db.run(query.update(title <- newTitle))
+
+        logger.info("Title updated for recording \(recordingId): \(newTitle)")
+    }
+
     // MARK: - Transcript Operations
     
     public func saveTranscript(recordingId: Int64, fullText: String, language: String?, processingTime: TimeInterval, segments: [TranscriptSegment]) async throws -> Int64 {

@@ -238,6 +238,19 @@ public actor AudioCaptureEngine {
         }
     }
 
+    /// A marker/bookmark within a recording
+    public struct Marker: Codable, Sendable {
+        public let timestamp: TimeInterval
+        public let label: String
+        public let createdAt: Date
+
+        public init(timestamp: TimeInterval, label: String, createdAt: Date = Date()) {
+            self.timestamp = timestamp
+            self.label = label
+            self.createdAt = createdAt
+        }
+    }
+
     // MARK: - Properties
 
     private let logger = Logger(subsystem: "dev.balakumar.engram", category: "AudioEngine")
@@ -255,6 +268,7 @@ public actor AudioCaptureEngine {
     private var isRecording = false
     private var recordingStartTime: Date?
     private var outputURL: URL?
+    private var markers: [Marker] = []
 
     private let targetSampleRate: Double = 48000.0 // Standard for video/audio work
     private let targetChannels: Int = 2 // Stereo
@@ -447,7 +461,10 @@ public actor AudioCaptureEngine {
             debugLog("[AudioEngine] Already recording!")
             throw CaptureError.recordingAlreadyActive
         }
-        
+
+        // Reset markers for new recording
+        markers = []
+
         debugLog("[AudioEngine] Starting recording session...")
         logger.info("Starting recording session...")
 
@@ -523,7 +540,10 @@ public actor AudioCaptureEngine {
             fileSize: fileSize,
             format: "QuickTime/AAC"
         )
-        
+
+        // Save markers if any were created during recording
+        saveMarkers()
+
         // Cleanup
         screenStream = nil
         screenDelegate = nil
@@ -533,7 +553,8 @@ public actor AudioCaptureEngine {
         audioWriter.reset()
         isRecording = false
         recordingStartTime = nil
-        
+        markers = []
+
         logger.info("Recording stopped. Duration: \(duration)s, Size: \(fileSize) bytes")
         return metadata
     }
@@ -542,8 +563,46 @@ public actor AudioCaptureEngine {
     public func insertMarker(label: String) async {
         guard isRecording else { return }
         let timestamp = Date().timeIntervalSince(recordingStartTime ?? Date())
-        logger.info("Marker inserted: '\(label)' at \(timestamp)s")
-        // TODO: Store marker in metadata track or separate JSON file
+        let marker = Marker(timestamp: timestamp, label: label)
+        markers.append(marker)
+        logger.info("Marker inserted: '\(label)' at \(timestamp)s (total: \(self.markers.count))")
+    }
+
+    /// Get the markers file URL for a given recording URL
+    public static func markersURL(for recordingURL: URL) -> URL {
+        let baseName = recordingURL.deletingPathExtension().lastPathComponent
+        return recordingURL.deletingLastPathComponent().appendingPathComponent("\(baseName)_markers.json")
+    }
+
+    /// Load markers for a recording
+    public static func loadMarkers(for recordingURL: URL) -> [Marker] {
+        let markersFile = markersURL(for: recordingURL)
+        guard FileManager.default.fileExists(atPath: markersFile.path) else {
+            return []
+        }
+        do {
+            let data = try Data(contentsOf: markersFile)
+            let markers = try JSONDecoder().decode([Marker].self, from: data)
+            return markers
+        } catch {
+            return []
+        }
+    }
+
+    /// Save markers to a JSON file alongside the recording
+    private func saveMarkers() {
+        guard let outputURL = outputURL, !markers.isEmpty else { return }
+        let markersFile = Self.markersURL(for: outputURL)
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = .prettyPrinted
+            let data = try encoder.encode(markers)
+            try data.write(to: markersFile)
+            logger.info("Saved \(self.markers.count) marker(s) to \(markersFile.lastPathComponent)")
+        } catch {
+            logger.warning("Failed to save markers: \(error.localizedDescription)")
+        }
     }
     
     // MARK: - Private Setup Methods

@@ -299,6 +299,7 @@ struct MessageBubble_Previews: PreviewProvider {
                     citations: [
                         Citation(
                             segmentId: 1,
+                            recordingId: 1,
                             recordingTitle: "Team Standup - Nov 15",
                             speaker: "John",
                             timestamp: 125.5,
@@ -306,6 +307,7 @@ struct MessageBubble_Previews: PreviewProvider {
                         ),
                         Citation(
                             segmentId: 2,
+                            recordingId: 1,
                             recordingTitle: "Team Standup - Nov 15",
                             speaker: "Sarah",
                             timestamp: 180.2,

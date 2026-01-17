@@ -182,8 +182,15 @@ public struct AIChatWindowView: View {
     }
 
     private func handleCitationTap(_ citation: Citation) {
-        // TODO: Open the recording at the citation timestamp
-        print("Citation tapped: \(citation.recordingTitle) at \(citation.timestamp)")
+        // Post notification to open the library with this recording at the specific timestamp
+        NotificationCenter.default.post(
+            name: .openRecordingAtTimestamp,
+            object: nil,
+            userInfo: [
+                "recordingId": citation.recordingId,
+                "timestamp": citation.timestamp
+            ]
+        )
     }
 }
 

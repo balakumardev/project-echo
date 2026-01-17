@@ -9,10 +9,16 @@ import Intelligence
 @available(macOS 14.0, *)
 struct DetailView: View {
     let recording: Recording?
+    @Binding var seekToTimestamp: TimeInterval?
+
+    init(recording: Recording?, seekToTimestamp: Binding<TimeInterval?> = .constant(nil)) {
+        self.recording = recording
+        self._seekToTimestamp = seekToTimestamp
+    }
 
     var body: some View {
         if let recording = recording {
-            RecordingDetailView(recording: recording)
+            RecordingDetailView(recording: recording, seekToTimestamp: $seekToTimestamp)
                 .id(recording.id)
         } else {
             EmptyDetailView()
@@ -25,10 +31,16 @@ struct DetailView: View {
 @available(macOS 14.0, *)
 struct RecordingDetailView: View {
     let recording: Recording
+    @Binding var seekToTimestamp: TimeInterval?
     @StateObject private var viewModel = RecordingDetailViewModel()
     @State private var showDeleteConfirmation = false
     @AppStorage("showChatPanel_v2") private var showChatPanel = false
     @AppStorage("aiEnabled") private var aiEnabled = true
+
+    init(recording: Recording, seekToTimestamp: Binding<TimeInterval?> = .constant(nil)) {
+        self.recording = recording
+        self._seekToTimestamp = seekToTimestamp
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -58,6 +70,14 @@ struct RecordingDetailView: View {
         }
         .task(id: recording.id) {
             await viewModel.loadRecording(recording)
+        }
+        .onChange(of: viewModel.audioPlayer) { _, player in
+            // Seek to pending timestamp when player becomes available
+            if let player = player, let timestamp = seekToTimestamp {
+                player.currentTime = min(timestamp, player.duration)
+                player.play()
+                seekToTimestamp = nil
+            }
         }
         .confirmationDialog("Delete Recording?", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) {

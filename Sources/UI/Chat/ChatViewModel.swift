@@ -32,6 +32,7 @@ public struct DisplayMessage: Identifiable, Sendable {
 public struct Citation: Identifiable, Sendable {
     public let id: String
     public let segmentId: Int64
+    public let recordingId: Int64
     public let recordingTitle: String
     public let speaker: String
     public let timestamp: TimeInterval
@@ -39,6 +40,7 @@ public struct Citation: Identifiable, Sendable {
 
     public init(
         segmentId: Int64,
+        recordingId: Int64,
         recordingTitle: String,
         speaker: String,
         timestamp: TimeInterval,
@@ -46,6 +48,7 @@ public struct Citation: Identifiable, Sendable {
     ) {
         self.id = UUID().uuidString
         self.segmentId = segmentId
+        self.recordingId = recordingId
         self.recordingTitle = recordingTitle
         self.speaker = speaker
         self.timestamp = timestamp
