@@ -4,28 +4,6 @@ import AudioEngine
 import os.log
 import UI
 
-// Debug file logging (disabled in release builds)
-#if DEBUG
-func debugLog(_ message: String) {
-    let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("engram_debug.log")
-    let timestamp = ISO8601DateFormatter().string(from: Date())
-    let line = "[\(timestamp)] \(message)\n"
-    if let data = line.data(using: .utf8) {
-        if FileManager.default.fileExists(atPath: logFile.path) {
-            if let handle = try? FileHandle(forWritingTo: logFile) {
-                handle.seekToEndOfFile()
-                handle.write(data)
-                handle.closeFile()
-            }
-        } else {
-            try? data.write(to: logFile)
-        }
-    }
-}
-#else
-@inline(__always) func debugLog(_ message: String) {}
-#endif
-
 /// Delegate protocol for meeting detection events
 @available(macOS 14.0, *)
 @MainActor
@@ -196,28 +174,28 @@ public actor MeetingDetector {
     /// Start the detector
     public func start() async {
         guard !isRunning else {
-            debugLog("MeetingDetector already running")
+            FileLogger.shared.debug("MeetingDetector already running")
             return
         }
 
-        debugLog("Starting MeetingDetector with config: enabledApps=\(configuration.enabledApps)")
+        FileLogger.shared.debug("Starting MeetingDetector with config: enabledApps=\(configuration.enabledApps)")
         isRunning = true
 
         // Setup microphone usage monitor
         mediaDeviceMonitor = MediaDeviceMonitor(configuration: MediaDeviceMonitor.Configuration(
             pollingInterval: configuration.microphonePollingInterval
         ))
-        debugLog("Microphone usage monitor initialized")
+        FileLogger.shared.debug("Microphone usage monitor initialized")
 
         // Setup app activation observers
         await setupAppObservers()
-        debugLog("App observers set up")
+        FileLogger.shared.debug("App observers set up")
 
         // Start periodic check for running meeting apps
         startAppCheckLoop()
-        debugLog("App check loop started")
+        FileLogger.shared.debug("App check loop started")
 
-        debugLog("MeetingDetector started successfully")
+        FileLogger.shared.debug("MeetingDetector started successfully")
     }
 
     /// Stop the detector
@@ -277,14 +255,14 @@ public actor MeetingDetector {
     public func forceStopRecording() async throws {
         guard isRunning else { return }
 
-        debugLog("forceStopRecording called (manual stop)")
+        FileLogger.shared.debug("forceStopRecording called (manual stop)")
 
         // Cancel any pending grace period
         cancelMicDeactivationGracePeriod()
 
         // Only stop if we're actually recording
         guard case .recording = currentState else {
-            debugLog("forceStopRecording: not in recording state, ignoring")
+            FileLogger.shared.debug("forceStopRecording: not in recording state, ignoring")
             return
         }
 
@@ -300,7 +278,7 @@ public actor MeetingDetector {
     public func resetRecordingState() async {
         guard isRunning else { return }
 
-        debugLog("resetRecordingState called")
+        FileLogger.shared.debug("resetRecordingState called")
 
         // Cancel any pending grace period
         cancelMicDeactivationGracePeriod()
@@ -318,12 +296,12 @@ public actor MeetingDetector {
 
         if !runningMeetingApps.isEmpty {
             let appList = runningMeetingApps.sorted().joined(separator: ", ")
-            debugLog("Returning to monitoring state for: \(appList)")
+            FileLogger.shared.debug("Returning to monitoring state for: \(appList)")
             await updateState(.monitoring(app: appList))
             // Note: We don't restart mic monitoring here - it should still be running
             // The next mic activation event will trigger a new recording
         } else {
-            debugLog("No meeting apps running, going to idle")
+            FileLogger.shared.debug("No meeting apps running, going to idle")
             await stopMicrophoneMonitoring()
             await updateState(.idle)
         }
@@ -394,14 +372,14 @@ public actor MeetingDetector {
 
     private func handleAppActivation(appName: String, bundleId: String?) async {
         if isMonitoredApp(appName: appName, bundleId: bundleId) {
-            debugLog("Monitored app activated: \(appName)")
+            FileLogger.shared.debug("Monitored app activated: \(appName)")
             await checkForActiveMeetingApps()
         }
     }
 
     private func handleAppTermination(appName: String, bundleId: String?) async {
         if isMonitoredApp(appName: appName, bundleId: bundleId) {
-            debugLog("Monitored app terminated: \(appName)")
+            FileLogger.shared.debug("Monitored app terminated: \(appName)")
             await checkForActiveMeetingApps()
         }
     }
@@ -452,18 +430,18 @@ public actor MeetingDetector {
         let previousApps = runningMeetingApps
         runningMeetingApps = foundApps
 
-        debugLog("checkForActiveMeetingApps: found \(foundApps.count) meeting apps: \(foundApps), previous: \(previousApps)")
+        FileLogger.shared.debug("checkForActiveMeetingApps: found \(foundApps.count) meeting apps: \(foundApps), previous: \(previousApps)")
 
         // If we found meeting apps and weren't monitoring before, start monitoring
         if !foundApps.isEmpty, case .idle = currentState {
             let appList = foundApps.sorted().joined(separator: ", ")
-            debugLog("Starting to monitor apps: \(appList)")
+            FileLogger.shared.debug("Starting to monitor apps: \(appList)")
             await startMonitoring(for: appList)
         }
 
         // If all meeting apps closed while we were monitoring/recording
         if foundApps.isEmpty && !previousApps.isEmpty {
-            debugLog("All meeting apps closed")
+            FileLogger.shared.debug("All meeting apps closed")
             if case .recording = currentState {
                 try? await requestStopRecording()
             }
@@ -545,11 +523,11 @@ public actor MeetingDetector {
 
     private func startMonitoring(for appNames: String) async {
         guard case .idle = currentState else {
-            debugLog("startMonitoring: not idle, skipping")
+            FileLogger.shared.debug("startMonitoring: not idle, skipping")
             return
         }
 
-        debugLog("Starting monitoring for: \(appNames)")
+        FileLogger.shared.debug("Starting monitoring for: \(appNames)")
         await updateState(.monitoring(app: appNames))
 
         // Start microphone usage monitoring
@@ -561,7 +539,7 @@ public actor MeetingDetector {
     private func startMicrophoneMonitoring() async {
         guard let monitor = mediaDeviceMonitor else { return }
 
-        debugLog("Starting microphone usage monitoring...")
+        FileLogger.shared.debug("Starting microphone usage monitoring...")
         logger.info("Starting microphone usage monitoring")
 
         // IMPORTANT: Set up event listener BEFORE starting monitoring
@@ -581,7 +559,7 @@ public actor MeetingDetector {
         guard let monitor = mediaDeviceMonitor else { return }
         
         let existingUsers = await monitor.getProcessesUsingMicrophone()
-        debugLog("Checking existing mic users: \(existingUsers.count) found")
+        FileLogger.shared.debug("Checking existing mic users: \(existingUsers.count) found")
         
         for usage in existingUsers {
             guard let bundleID = usage.bundleID else { continue }
@@ -594,12 +572,12 @@ public actor MeetingDetector {
             }
             
             if isMeetingApp || isBrowser || isCustomApp {
-                debugLog("Found existing mic user that is a meeting app: \(bundleID) (\(usage.appName ?? "unknown"))")
+                FileLogger.shared.debug("Found existing mic user that is a meeting app: \(bundleID) (\(usage.appName ?? "unknown"))")
                 
                 // Check if we're in monitoring state and should start recording
                 if case .monitoring = currentState {
                     let recordingBundleID = isBrowser ? Self.getMainBrowserBundleID(bundleID) : bundleID
-                    debugLog("Triggering recording for existing mic user: \(recordingBundleID)")
+                    FileLogger.shared.debug("Triggering recording for existing mic user: \(recordingBundleID)")
                     await triggerMeetingDetection(app: usage.appName ?? recordingBundleID, bundleID: recordingBundleID)
                     return // Only trigger for the first matching app
                 }
@@ -639,11 +617,11 @@ public actor MeetingDetector {
 
     private func handleMicrophoneActivated(_ usage: MediaDeviceMonitor.MicrophoneUsage) async {
         guard let bundleID = usage.bundleID else {
-            debugLog("Mic activated but no bundle ID available")
+            FileLogger.shared.debug("Mic activated but no bundle ID available")
             return
         }
 
-        debugLog("handleMicrophoneActivated: bundleID=\(bundleID), app=\(usage.appName ?? "unknown")")
+        FileLogger.shared.debug("handleMicrophoneActivated: bundleID=\(bundleID), app=\(usage.appName ?? "unknown")")
 
         let isMeetingApp = Self.meetingAppBundleIDs.contains(bundleID)
         let isBrowser = Self.isBrowserBundleID(bundleID)
@@ -655,13 +633,13 @@ public actor MeetingDetector {
         }
 
         guard isMeetingApp || isBrowser || isCustomApp else {
-            debugLog("Ignoring mic activation from non-meeting app: \(bundleID)")
+            FileLogger.shared.debug("Ignoring mic activation from non-meeting app: \(bundleID)")
             return
         }
 
         let recordingBundleID = isBrowser ? Self.getMainBrowserBundleID(bundleID) : bundleID
         let appDescription = isBrowser ? "browser (\(usage.appName ?? bundleID))" : (usage.appName ?? bundleID)
-        debugLog("MEETING APP/BROWSER using microphone: \(appDescription), recordingBundleID=\(recordingBundleID)")
+        FileLogger.shared.debug("MEETING APP/BROWSER using microphone: \(appDescription), recordingBundleID=\(recordingBundleID)")
         logger.info("Meeting-related app using microphone: \(appDescription)")
 
         // Cancel any pending grace period - mic is back!
@@ -672,12 +650,12 @@ public actor MeetingDetector {
             break
 
         case .monitoring:
-            debugLog("Triggering recording for: \(recordingBundleID)")
+            FileLogger.shared.debug("Triggering recording for: \(recordingBundleID)")
             await triggerMeetingDetection(app: usage.appName ?? recordingBundleID, bundleID: recordingBundleID)
 
         case .meetingDetected, .recording:
             // Mic reactivated while recording - all good, continue recording
-            debugLog("Mic reactivated while in state \(currentState) - continuing")
+            FileLogger.shared.debug("Mic reactivated while in state \(currentState) - continuing")
 
         case .endingMeeting:
             // This shouldn't happen since we cancel grace period above,
@@ -689,7 +667,7 @@ public actor MeetingDetector {
     private func handleMicrophoneDeactivated(_ usage: MediaDeviceMonitor.MicrophoneUsage) async {
         guard let bundleID = usage.bundleID else { return }
 
-        debugLog("handleMicrophoneDeactivated: bundleID=\(bundleID)")
+        FileLogger.shared.debug("handleMicrophoneDeactivated: bundleID=\(bundleID)")
 
         let isMeetingApp = Self.meetingAppBundleIDs.contains(bundleID)
         let isBrowser = Self.isBrowserBundleID(bundleID)
@@ -707,7 +685,7 @@ public actor MeetingDetector {
         case .recording(let app):
             // Start grace period instead of immediately ending
             // This handles brief mic releases (mute toggle, audio device switch, etc.)
-            debugLog("Mic deactivated for \(app), starting \(configuration.micDeactivationGracePeriod)s grace period")
+            FileLogger.shared.debug("Mic deactivated for \(app), starting \(configuration.micDeactivationGracePeriod)s grace period")
             await startMicDeactivationGracePeriod(for: app)
         default:
             break
@@ -724,7 +702,7 @@ public actor MeetingDetector {
         let gracePeriod = configuration.micDeactivationGracePeriod
 
         micDeactivationGraceTask = Task {
-            debugLog("Grace period started: waiting \(gracePeriod)s before ending meeting")
+            FileLogger.shared.debug("Grace period started: waiting \(gracePeriod)s before ending meeting")
 
             do {
                 // Wait for the grace period
@@ -732,16 +710,16 @@ public actor MeetingDetector {
 
                 // If we get here, grace period expired without mic reactivation
                 guard !Task.isCancelled else {
-                    debugLog("Grace period was cancelled (mic reactivated)")
+                    FileLogger.shared.debug("Grace period was cancelled (mic reactivated)")
                     return
                 }
 
-                debugLog("Grace period expired, ending meeting for: \(app)")
+                FileLogger.shared.debug("Grace period expired, ending meeting for: \(app)")
                 await updateState(.endingMeeting(app: app))
                 await handleMeetingEnded()
             } catch {
                 // Task was cancelled (mic was reactivated)
-                debugLog("Grace period interrupted: \(error)")
+                FileLogger.shared.debug("Grace period interrupted: \(error)")
             }
 
             pendingDeactivationApp = nil
@@ -751,7 +729,7 @@ public actor MeetingDetector {
     /// Cancel the grace period (called when mic is reactivated)
     private func cancelMicDeactivationGracePeriod() {
         if micDeactivationGraceTask != nil {
-            debugLog("Cancelling mic deactivation grace period - mic reactivated")
+            FileLogger.shared.debug("Cancelling mic deactivation grace period - mic reactivated")
             micDeactivationGraceTask?.cancel()
             micDeactivationGraceTask = nil
             pendingDeactivationApp = nil
@@ -759,7 +737,7 @@ public actor MeetingDetector {
     }
 
     private func triggerMeetingDetection(app: String, bundleID: String) async {
-        debugLog("triggerMeetingDetection: app=\(app), bundleID=\(bundleID)")
+        FileLogger.shared.debug("triggerMeetingDetection: app=\(app), bundleID=\(bundleID)")
 
         currentRecordingBundleID = bundleID
         await updateState(.meetingDetected(app: app))
@@ -767,9 +745,9 @@ public actor MeetingDetector {
         do {
             try await requestStartRecording(for: app)
             await updateState(.recording(app: app))
-            debugLog("Recording started successfully for \(app) (\(bundleID))")
+            FileLogger.shared.debug("Recording started successfully for \(app) (\(bundleID))")
         } catch {
-            debugLog("ERROR: Failed to start recording: \(error)")
+            FileLogger.shared.debug("ERROR: Failed to start recording: \(error)")
             await notifyError(error)
             await updateState(.monitoring(app: app))
         }

@@ -4,25 +4,44 @@ import Foundation
 import CoreAudio
 import os.log
 
-// Debug logging to file (disabled in release builds)
-#if DEBUG
-func debugLog(_ message: String) {
-    let timestamp = ISO8601DateFormatter().string(from: Date())
-    let line = "[\(timestamp)] \(message)\n"
-    let logFile = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Engram/debug.log")
+// Shared file logger that writes to ~/Library/Logs/Engram/debug.log
+// This matches the format used by FileLogger in the App module
+private let audioEngineLogQueue = DispatchQueue(label: "dev.balakumar.engram.audioengine.log", qos: .utility)
+private let audioEngineDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    return formatter
+}()
 
-    if let handle = try? FileHandle(forWritingTo: logFile) {
-        handle.seekToEndOfFile()
-        handle.write(line.data(using: .utf8)!)
-        handle.closeFile()
-    } else {
-        try? line.data(using: .utf8)?.write(to: logFile)
+/// Log a debug message to the shared debug log file
+/// This is a standalone function for AudioEngine module that writes to the same location as FileLogger
+func fileDebugLog(_ message: String, file: String = #file, line: Int = #line) {
+    audioEngineLogQueue.async {
+        let logDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Logs/Engram")
+        let logFile = logDir.appendingPathComponent("debug.log")
+
+        // Create directory if needed
+        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+
+        let timestamp = audioEngineDateFormatter.string(from: Date())
+        let fileName = URL(fileURLWithPath: file).lastPathComponent
+        let logLine = "[\(timestamp)] [DEBUG] [\(fileName):\(line)] \(message)\n"
+
+        guard let data = logLine.data(using: .utf8) else { return }
+
+        if FileManager.default.fileExists(atPath: logFile.path) {
+            if let handle = try? FileHandle(forWritingTo: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: logFile)
+        }
     }
 }
-#else
-@inline(__always) func debugLog(_ message: String) {}
-#endif
 
 /// Thread-safe audio writer that can be accessed from any thread
 /// This is separate from the actor to allow synchronous buffer writes
@@ -61,7 +80,7 @@ final class AudioWriter: @unchecked Sendable {
         
         if let input = microphoneInput, assetWriter?.canAdd(input) == true {
             assetWriter?.add(input)
-            debugLog("[AudioWriter] Added microphone track (mono)")
+            fileDebugLog("[AudioWriter] Added microphone track (mono)")
         }
         
         // Track 2: System Audio (STEREO)
@@ -77,7 +96,7 @@ final class AudioWriter: @unchecked Sendable {
         
         if let input = systemAudioInput, assetWriter?.canAdd(input) == true {
             assetWriter?.add(input)
-            debugLog("[AudioWriter] Added system audio track (stereo)")
+            fileDebugLog("[AudioWriter] Added system audio track (stereo)")
         }
         
         logger.info("Audio writer configured with 2 audio tracks")
@@ -129,9 +148,9 @@ final class AudioWriter: @unchecked Sendable {
         if input.append(adjustedBuffer) {
             micBufferCount += 1
             if micBufferCount == 1 {
-                debugLog("[Mic] ✅ First buffer written!")
+                fileDebugLog("[Mic] ✅ First buffer written!")
             } else if micBufferCount % 100 == 0 {
-                debugLog("[Mic] \(micBufferCount) buffers written")
+                fileDebugLog("[Mic] \(micBufferCount) buffers written")
             }
         }
     }
@@ -149,9 +168,9 @@ final class AudioWriter: @unchecked Sendable {
         if input.append(adjustedBuffer) {
             systemBufferCount += 1
             if systemBufferCount == 1 {
-                debugLog("[System] ✅ First buffer written!")
+                fileDebugLog("[System] ✅ First buffer written!")
             } else if systemBufferCount % 100 == 0 {
-                debugLog("[System] \(systemBufferCount) buffers written")
+                fileDebugLog("[System] \(systemBufferCount) buffers written")
             }
         }
     }
@@ -296,7 +315,7 @@ public actor AudioCaptureEngine {
         ) { [weak self] notification in
             guard let device = notification.object as? AVCaptureDevice,
                   device.hasMediaType(.audio) else { return }
-            debugLog("[AudioEngine] Audio device connected: \(device.localizedName)")
+            fileDebugLog("[AudioEngine] Audio device connected: \(device.localizedName)")
             Task { [weak self] in
                 await self?.handleDeviceChange()
             }
@@ -310,7 +329,7 @@ public actor AudioCaptureEngine {
         ) { notification in
             guard let device = notification.object as? AVCaptureDevice,
                   device.hasMediaType(.audio) else { return }
-            debugLog("[AudioEngine] Audio device disconnected: \(device.localizedName)")
+            fileDebugLog("[AudioEngine] Audio device disconnected: \(device.localizedName)")
             // We don't switch on disconnect - system will handle fallback
         }
     }
@@ -320,17 +339,17 @@ public actor AudioCaptureEngine {
 
         // Get the new default device
         guard let newDevice = AVCaptureDevice.default(for: .audio) else {
-            debugLog("[AudioEngine] No default audio device after change")
+            fileDebugLog("[AudioEngine] No default audio device after change")
             return
         }
 
         // Check if it's actually different from current
         if newDevice.uniqueID == currentMicDeviceID {
-            debugLog("[AudioEngine] Device change detected but same device, ignoring")
+            fileDebugLog("[AudioEngine] Device change detected but same device, ignoring")
             return
         }
 
-        debugLog("[AudioEngine] Switching to new audio device: \(newDevice.localizedName)")
+        fileDebugLog("[AudioEngine] Switching to new audio device: \(newDevice.localizedName)")
         logger.info("Auto-switching microphone to: \(newDevice.localizedName)")
 
         // Reconfigure the capture session with the new device
@@ -357,12 +376,12 @@ public actor AudioCaptureEngine {
             if session.canAddInput(newInput) {
                 session.addInput(newInput)
                 currentMicDeviceID = newDevice.uniqueID
-                debugLog("[AudioEngine] Switched to device: \(newDevice.localizedName)")
+                fileDebugLog("[AudioEngine] Switched to device: \(newDevice.localizedName)")
             } else {
-                debugLog("[AudioEngine] Cannot add new device input")
+                fileDebugLog("[AudioEngine] Cannot add new device input")
             }
         } catch {
-            debugLog("[AudioEngine] Failed to create input for new device: \(error.localizedDescription)")
+            fileDebugLog("[AudioEngine] Failed to create input for new device: \(error.localizedDescription)")
         }
 
         // Commit configuration
@@ -370,7 +389,7 @@ public actor AudioCaptureEngine {
 
         // Restart session
         session.startRunning()
-        debugLog("[AudioEngine] Session restarted with new device, isRunning: \(session.isRunning)")
+        fileDebugLog("[AudioEngine] Session restarted with new device, isRunning: \(session.isRunning)")
     }
     
     // MARK: - Permission Management
@@ -456,16 +475,16 @@ public actor AudioCaptureEngine {
     ///   - recordingName: Name to use for the recording file (typically the meeting title)
     ///   - outputDirectory: Directory to save the recording
     public func startRecording(targetApp: String? = nil, recordingName: String? = nil, outputDirectory: URL) async throws -> URL {
-        debugLog("[AudioEngine] startRecording called")
+        fileDebugLog("[AudioEngine] startRecording called")
         guard !isRecording else {
-            debugLog("[AudioEngine] Already recording!")
+            fileDebugLog("[AudioEngine] Already recording!")
             throw CaptureError.recordingAlreadyActive
         }
 
         // Reset markers for new recording
         markers = []
 
-        debugLog("[AudioEngine] Starting recording session...")
+        fileDebugLog("[AudioEngine] Starting recording session...")
         logger.info("Starting recording session...")
 
         // Create output file with .mov extension (supports multiple audio tracks)
@@ -491,14 +510,14 @@ public actor AudioCaptureEngine {
         }
 
         // Start microphone capture (AVCaptureSession)
-        debugLog("[AudioEngine] Starting AVCaptureSession for microphone...")
+        fileDebugLog("[AudioEngine] Starting AVCaptureSession for microphone...")
         captureSession?.startRunning()
-        debugLog("[AudioEngine] AVCaptureSession isRunning: \(captureSession?.isRunning ?? false)")
+        fileDebugLog("[AudioEngine] AVCaptureSession isRunning: \(captureSession?.isRunning ?? false)")
 
         // Start system audio capture (ScreenCaptureKit)
-        debugLog("[AudioEngine] Starting screen capture for system audio...")
+        fileDebugLog("[AudioEngine] Starting screen capture for system audio...")
         try await screenStream?.startCapture()
-        debugLog("[AudioEngine] Screen capture started")
+        fileDebugLog("[AudioEngine] Screen capture started")
         
         isRecording = true
         recordingStartTime = Date()
@@ -516,9 +535,9 @@ public actor AudioCaptureEngine {
         logger.info("Stopping recording...")
 
         // Stop microphone capture (AVCaptureSession)
-        debugLog("[AudioEngine] Stopping AVCaptureSession...")
+        fileDebugLog("[AudioEngine] Stopping AVCaptureSession...")
         captureSession?.stopRunning()
-        debugLog("[AudioEngine] AVCaptureSession stopped")
+        fileDebugLog("[AudioEngine] AVCaptureSession stopped")
 
         // Stop screen capture
         try? await screenStream?.stopCapture()
@@ -608,30 +627,30 @@ public actor AudioCaptureEngine {
     // MARK: - Private Setup Methods
 
     private func setupMicrophoneCapture() async throws {
-        debugLog("[AudioEngine] Setting up microphone capture with AVCaptureSession...")
+        fileDebugLog("[AudioEngine] Setting up microphone capture with AVCaptureSession...")
 
         // Check authorization status FIRST
         let authStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-        debugLog("[AudioEngine] Mic auth status: \(authStatus.rawValue) (0=notDetermined, 1=restricted, 2=denied, 3=authorized)")
+        fileDebugLog("[AudioEngine] Mic auth status: \(authStatus.rawValue) (0=notDetermined, 1=restricted, 2=denied, 3=authorized)")
 
         if authStatus == .notDetermined {
-            debugLog("[AudioEngine] Requesting microphone permission...")
+            fileDebugLog("[AudioEngine] Requesting microphone permission...")
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
-            debugLog("[AudioEngine] Permission result: \(granted ? "GRANTED" : "DENIED")")
+            fileDebugLog("[AudioEngine] Permission result: \(granted ? "GRANTED" : "DENIED")")
             if !granted {
                 throw CaptureError.permissionDenied
             }
         } else if authStatus == .denied || authStatus == .restricted {
-            debugLog("[AudioEngine] Microphone permission DENIED!")
+            fileDebugLog("[AudioEngine] Microphone permission DENIED!")
             throw CaptureError.permissionDenied
         }
 
         // Get the default microphone
         guard let micDevice = AVCaptureDevice.default(for: .audio) else {
-            debugLog("[AudioEngine] No microphone found!")
+            fileDebugLog("[AudioEngine] No microphone found!")
             throw CaptureError.noDevicesFound
         }
-        debugLog("[AudioEngine] Found microphone: \(micDevice.localizedName)")
+        fileDebugLog("[AudioEngine] Found microphone: \(micDevice.localizedName)")
         logger.info("Using microphone: \(micDevice.localizedName)")
 
         // Create AVCaptureSession - this is designed for recording and shares nicely with other apps
@@ -642,16 +661,16 @@ public actor AudioCaptureEngine {
         do {
             micInput = try AVCaptureDeviceInput(device: micDevice)
         } catch {
-            debugLog("[AudioEngine] Failed to create mic input: \(error.localizedDescription)")
+            fileDebugLog("[AudioEngine] Failed to create mic input: \(error.localizedDescription)")
             throw CaptureError.streamConfigurationFailed
         }
 
         guard session.canAddInput(micInput) else {
-            debugLog("[AudioEngine] Cannot add mic input to session")
+            fileDebugLog("[AudioEngine] Cannot add mic input to session")
             throw CaptureError.streamConfigurationFailed
         }
         session.addInput(micInput)
-        debugLog("[AudioEngine] Added microphone input to session")
+        fileDebugLog("[AudioEngine] Added microphone input to session")
 
         // Create audio output with delegate
         let audioOutput = AVCaptureAudioDataOutput()
@@ -662,18 +681,18 @@ public actor AudioCaptureEngine {
         audioOutput.setSampleBufferDelegate(delegate, queue: audioQueue)
 
         guard session.canAddOutput(audioOutput) else {
-            debugLog("[AudioEngine] Cannot add audio output to session")
+            fileDebugLog("[AudioEngine] Cannot add audio output to session")
             throw CaptureError.streamConfigurationFailed
         }
         session.addOutput(audioOutput)
-        debugLog("[AudioEngine] Added audio output to session")
+        fileDebugLog("[AudioEngine] Added audio output to session")
 
         // Store references
         captureSession = session
         micCaptureDelegate = delegate
         currentMicDeviceID = micDevice.uniqueID
 
-        debugLog("[AudioEngine] AVCaptureSession configured successfully (allows mic sharing with Zoom)")
+        fileDebugLog("[AudioEngine] AVCaptureSession configured successfully (allows mic sharing with Zoom)")
         logger.info("Microphone capture with AVCaptureSession configured successfully")
     }
     
@@ -751,7 +770,7 @@ private final class ScreenCaptureDelegate: NSObject, SCStreamOutput {
         
         bufferCount += 1
         if bufferCount == 1 {
-            debugLog("[ScreenCapture] First audio buffer received!")
+            fileDebugLog("[ScreenCapture] First audio buffer received!")
         }
 
         // Write synchronously to system audio track
@@ -828,7 +847,7 @@ final class MicrophoneCaptureDelegate: NSObject, AVCaptureAudioDataOutputSampleB
                 let sampleRate = asbd?.mSampleRate ?? 0
                 let channels = asbd?.mChannelsPerFrame ?? 0
                 let bitsPerChannel = asbd?.mBitsPerChannel ?? 0
-                debugLog("[MicCapture] First buffer received! Format: \(sampleRate)Hz, \(channels) channels, \(bitsPerChannel) bits")
+                fileDebugLog("[MicCapture] First buffer received! Format: \(sampleRate)Hz, \(channels) channels, \(bitsPerChannel) bits")
             }
         }
 
@@ -933,7 +952,7 @@ final class MicrophoneCaptureDelegate: NSObject, AVCaptureAudioDataOutputSampleB
         cachedConverter = converter
         cachedInputFormat = inputFormat
 
-        debugLog("[MicCapture] Created new converter: \(inputRate)Hz \(inputChannels)ch -> \(targetSampleRate)Hz 1ch")
+        fileDebugLog("[MicCapture] Created new converter: \(inputRate)Hz \(inputChannels)ch -> \(targetSampleRate)Hz 1ch")
 
         return converter
     }

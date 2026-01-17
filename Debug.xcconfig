@@ -1,0 +1,18 @@
+// Debug build configuration for Engram
+// Forces Swift runtime embedding and consistent code signing
+
+// Swift runtime - include Xcode toolchain path for Swift 6.2 compat libraries
+ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks @loader_path/../Frameworks /usr/lib/swift /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-6.2/macosx
+SWIFT_FORCE_STATIC_LINK_STDLIB = NO
+SWIFT_FORCE_DYNAMIC_LINK_STDLIB = YES
+
+// Code signing - use consistent certificate to preserve TCC permissions
+CODE_SIGN_IDENTITY = Engram Development
+CODE_SIGN_STYLE = Manual
+DEVELOPMENT_TEAM =
+CODE_SIGN_ENTITLEMENTS = Engram.entitlements
+PRODUCT_BUNDLE_IDENTIFIER = dev.balakumar.engram
+
+// Hardened runtime with exceptions for debugging
+ENABLE_HARDENED_RUNTIME = YES

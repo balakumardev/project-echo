@@ -52,28 +52,7 @@ public actor TranscriptAgent {
 
     private let logger = Logger(subsystem: "dev.balakumar.engram", category: "TranscriptAgent")
 
-    /// Debug log file for agent operations
-    private static let debugLogURL: URL = {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("engram_rag.log")
-    }()
-
-    /// Write to debug log file
-    private func debugLog(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(timestamp)] [Agent] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: Self.debugLogURL.path) {
-                if let handle = try? FileHandle(forWritingTo: Self.debugLogURL) {
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                    handle.closeFile()
-                }
-            } else {
-                try? data.write(to: Self.debugLogURL)
-            }
-        }
-    }
+    // Note: Uses fileAgentLog() from FileLoggerUtility.swift for logging
 
     // MARK: - Initialization
 
@@ -105,17 +84,17 @@ public actor TranscriptAgent {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    self.debugLog("processQuery: '\(query)', recordingId: \(String(describing: recordingId))")
+                    fileAgentLog("processQuery: '\(query)', recordingId: \(String(describing: recordingId))")
 
                     // Determine strategy based on whether a recording is selected
                     // NO intent classification - let LLM decide what to do with the context
                     let strategy = try await self.determineStrategy(recordingId: recordingId)
-                    self.debugLog("Strategy: \(strategy)")
+                    fileAgentLog("Strategy: \(strategy)")
 
                     // Execute strategy
                     switch strategy {
                     case .ragSearch:
-                        self.debugLog("Executing RAG search (no recording selected)...")
+                        fileAgentLog("Executing RAG search (no recording selected)...")
                         try await self.executeRAGSearch(
                             query: query,
                             recordingId: recordingId,
@@ -125,7 +104,7 @@ public actor TranscriptAgent {
                         )
 
                     case .directFullText(let transcript, let title):
-                        self.debugLog("Executing with full transcript context...")
+                        fileAgentLog("Executing with full transcript context...")
                         try await self.executeWithFullContext(
                             query: query,
                             transcript: transcript,
@@ -135,7 +114,7 @@ public actor TranscriptAgent {
                         )
 
                     case .mapReduce(let chunks):
-                        self.debugLog("Executing map-reduce with \(chunks.count) chunks...")
+                        fileAgentLog("Executing map-reduce with \(chunks.count) chunks...")
                         try await self.executeMapReduce(
                             query: query,
                             chunks: chunks,
@@ -143,11 +122,11 @@ public actor TranscriptAgent {
                         )
                     }
 
-                    self.debugLog("Query processing complete")
+                    fileAgentLog("Query processing complete")
                     continuation.finish()
 
                 } catch {
-                    self.debugLog("ERROR: \(error.localizedDescription)")
+                    fileAgentLog("ERROR: \(error.localizedDescription)")
                     self.logger.error("Agent error: \(error.localizedDescription)")
                     continuation.finish(throwing: error)
                 }
@@ -162,15 +141,15 @@ public actor TranscriptAgent {
     private func determineStrategy(recordingId: Int64?) async throws -> AgentStrategy {
         // If no recording is selected, use RAG search across all recordings
         guard let recId = recordingId else {
-            debugLog("No recording selected -> using RAG search across all recordings")
+            fileAgentLog("No recording selected -> using RAG search across all recordings")
             return .ragSearch
         }
 
         // Recording is selected - try to load the full transcript
-        debugLog("Recording \(recId) selected, loading transcript...")
+        fileAgentLog("Recording \(recId) selected, loading transcript...")
 
         guard let transcript = try await databaseManager.getTranscript(forRecording: recId) else {
-            debugLog("ERROR: No transcript found for recording \(recId)")
+            fileAgentLog("ERROR: No transcript found for recording \(recId)")
             throw AgentError.transcriptNotFound
         }
 
@@ -184,7 +163,7 @@ public actor TranscriptAgent {
         }
 
         let segments = try await databaseManager.getSegments(forTranscriptId: transcript.id)
-        debugLog("Found \(segments.count) segments for transcript \(transcript.id)")
+        fileAgentLog("Found \(segments.count) segments for transcript \(transcript.id)")
 
         // Format the transcript with timestamps and speakers
         let formattedTranscript = segments.map { segment in
@@ -194,17 +173,17 @@ public actor TranscriptAgent {
         let totalTokens = chunker.estimateTokens(formattedTranscript)
         let config = await getChunkingConfig()
 
-        debugLog("Transcript: '\(recordingTitle)', \(segments.count) segments, \(totalTokens) tokens (max: \(config.maxTokens))")
+        fileAgentLog("Transcript: '\(recordingTitle)', \(segments.count) segments, \(totalTokens) tokens (max: \(config.maxTokens))")
         logger.info("Transcript size: \(totalTokens) tokens, max: \(config.maxTokens)")
 
         // Check if transcript fits in context
         if !chunker.needsChunking(transcriptTokens: totalTokens, config: config) {
-            debugLog("Transcript fits in context -> giving LLM full transcript")
+            fileAgentLog("Transcript fits in context -> giving LLM full transcript")
             return .directFullText(transcript: formattedTranscript, recordingTitle: recordingTitle)
         } else {
             // Too long - need to chunk
             let chunks = chunker.chunk(segments: segments, recordingId: recId, config: config)
-            debugLog("Transcript too large -> using mapReduce with \(chunks.count) chunks")
+            fileAgentLog("Transcript too large -> using mapReduce with \(chunks.count) chunks")
             logger.info("Created \(chunks.count) chunks for map-reduce")
             return .mapReduce(chunks: chunks)
         }
@@ -239,12 +218,12 @@ public actor TranscriptAgent {
         conversationHistory: [LLMEngine.Message],
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
-        debugLog("Sending query to LLM with full transcript (\(transcript.count) chars)")
+        fileAgentLog("Sending query to LLM with full transcript (\(transcript.count) chars)")
 
         // Guard against empty transcripts - don't let LLM hallucinate
         let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedTranscript.isEmpty {
-            debugLog("WARNING: Empty transcript - returning early to prevent hallucination")
+            fileAgentLog("WARNING: Empty transcript - returning early to prevent hallucination")
             let emptyMessage = "This recording doesn't have a transcript yet. The transcription may still be in progress, or there was no speech detected in the audio."
             continuation.yield(emptyMessage)
             return

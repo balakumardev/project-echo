@@ -5,25 +5,7 @@ import CoreMedia
 import VideoToolbox
 import os.log
 
-// Debug logging to file for ScreenRecorder (disabled in release builds)
-#if DEBUG
-private func screenDebugLog(_ message: String) {
-    let timestamp = ISO8601DateFormatter().string(from: Date())
-    let line = "[\(timestamp)] [ScreenRecorder] \(message)\n"
-    let logFile = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Engram/debug.log")
-
-    if let handle = try? FileHandle(forWritingTo: logFile) {
-        handle.seekToEndOfFile()
-        handle.write(line.data(using: .utf8)!)
-        handle.closeFile()
-    } else {
-        try? line.data(using: .utf8)?.write(to: logFile)
-    }
-}
-#else
-@inline(__always) private func screenDebugLog(_ message: String) {}
-#endif
+// Note: Uses fileDebugLog() from AudioCaptureEngine.swift for logging
 
 /// Thread-safe video-only writer using AVAssetWriter
 @available(macOS 14.0, *)
@@ -98,7 +80,7 @@ final class VideoWriter: @unchecked Sendable {
 
         guard assetWriter?.startWriting() == true else {
             logger.error("Failed to start asset writer: \(self.assetWriter?.error?.localizedDescription ?? "unknown")")
-            screenDebugLog("VideoWriter: ERROR - startWriting failed: \(self.assetWriter?.error?.localizedDescription ?? "unknown")")
+            fileDebugLog("VideoWriter: ERROR - startWriting failed: \(self.assetWriter?.error?.localizedDescription ?? "unknown")")
             return false
         }
 
@@ -106,7 +88,7 @@ final class VideoWriter: @unchecked Sendable {
         isWriting = true
         frameCount = 0
         videoStartTime = nil
-        screenDebugLog("VideoWriter: AVAssetWriter started successfully (video-only)")
+        fileDebugLog("VideoWriter: AVAssetWriter started successfully (video-only)")
         logger.info("Video writer started (video-only)")
         return true
     }
@@ -117,14 +99,14 @@ final class VideoWriter: @unchecked Sendable {
 
         guard isWriting else {
             if frameCount == 0 {
-                screenDebugLog("VideoWriter: isWriting is false, skipping frame")
+                fileDebugLog("VideoWriter: isWriting is false, skipping frame")
             }
             return
         }
 
         guard let input = videoInput, input.isReadyForMoreMediaData else {
             if frameCount == 0 {
-                screenDebugLog("VideoWriter: videoInput not ready for more data")
+                fileDebugLog("VideoWriter: videoInput not ready for more data")
             }
             return
         }
@@ -133,7 +115,7 @@ final class VideoWriter: @unchecked Sendable {
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if videoStartTime == nil {
             videoStartTime = presentationTime
-            screenDebugLog("VideoWriter: First video frame, starting at \(presentationTime.seconds)s")
+            fileDebugLog("VideoWriter: First video frame, starting at \(presentationTime.seconds)s")
         }
 
         guard let start = videoStartTime else { return }
@@ -146,40 +128,40 @@ final class VideoWriter: @unchecked Sendable {
                 frameCount += 1
                 if frameCount == 1 {
                     logger.info("First video frame written")
-                    screenDebugLog("VideoWriter: ✅ First video frame WRITTEN successfully!")
+                    fileDebugLog("VideoWriter: ✅ First video frame WRITTEN successfully!")
                 } else if frameCount % 100 == 0 {
                     logger.debug("\(self.frameCount) video frames written")
-                    screenDebugLog("VideoWriter: \(frameCount) video frames written")
+                    fileDebugLog("VideoWriter: \(frameCount) video frames written")
                 }
             } else {
                 if frameCount == 0 {
-                    screenDebugLog("VideoWriter: ERROR - pixelBufferAdaptor.append FAILED, assetWriter status: \(String(describing: assetWriter?.status.rawValue)), error: \(String(describing: assetWriter?.error))")
+                    fileDebugLog("VideoWriter: ERROR - pixelBufferAdaptor.append FAILED, assetWriter status: \(String(describing: assetWriter?.status.rawValue)), error: \(String(describing: assetWriter?.error))")
                 }
             }
         } else {
             if frameCount == 0 {
-                screenDebugLog("VideoWriter: ERROR - Could not get imageBuffer from sampleBuffer or adaptor is nil")
+                fileDebugLog("VideoWriter: ERROR - Could not get imageBuffer from sampleBuffer or adaptor is nil")
             }
         }
     }
 
     func finishWriting() async {
-        screenDebugLog("VideoWriter: finishWriting called, frameCount=\(frameCount)")
+        fileDebugLog("VideoWriter: finishWriting called, frameCount=\(frameCount)")
         let writer: AVAssetWriter? = {
             lock.lock()
             defer { lock.unlock() }
-            screenDebugLog("VideoWriter: Setting isWriting=false and marking video input as finished")
+            fileDebugLog("VideoWriter: Setting isWriting=false and marking video input as finished")
             isWriting = false
             videoInput?.markAsFinished()
             return assetWriter
         }()
 
         if let w = writer {
-            screenDebugLog("VideoWriter: Calling finishWriting on asset writer, status before: \(w.status.rawValue)")
+            fileDebugLog("VideoWriter: Calling finishWriting on asset writer, status before: \(w.status.rawValue)")
             await w.finishWriting()
-            screenDebugLog("VideoWriter: finishWriting completed, status after: \(w.status.rawValue), error: \(String(describing: w.error))")
+            fileDebugLog("VideoWriter: finishWriting completed, status after: \(w.status.rawValue), error: \(String(describing: w.error))")
         } else {
-            screenDebugLog("VideoWriter: ERROR - assetWriter is nil!")
+            fileDebugLog("VideoWriter: ERROR - assetWriter is nil!")
         }
         logger.info("Video writer finished. Total frames: \(self.frameCount)")
     }
@@ -222,9 +204,9 @@ final class VideoStreamDelegate: NSObject, SCStreamOutput, @unchecked Sendable {
         videoFrameCount += 1
         if videoFrameCount == 1 {
             logger.info("[VideoStreamDelegate] First video frame received")
-            screenDebugLog("First video frame received!")
+            fileDebugLog("First video frame received!")
         } else if videoFrameCount % 100 == 0 {
-            screenDebugLog("\(videoFrameCount) video frames received")
+            fileDebugLog("\(videoFrameCount) video frames received")
         }
         videoWriter.writeVideoFrame(sampleBuffer)
     }
@@ -487,7 +469,7 @@ public actor ScreenRecorder {
         }
 
         logger.info("Starting screen recording for window: \(window.title ?? "untitled") (ID: \(windowId))")
-        screenDebugLog("Starting screen recording for window ID \(windowId): '\(window.title ?? "untitled")'")
+        fileDebugLog("Starting screen recording for window ID \(windowId): '\(window.title ?? "untitled")'")
 
         return try await startRecordingWithWindow(window: window, outputDirectory: outputDirectory, baseFilename: baseFilename)
     }
@@ -508,16 +490,16 @@ public actor ScreenRecorder {
         }
 
         logger.info("Starting screen recording for bundle: \(bundleId) (video-only)")
-        screenDebugLog("Starting screen recording for bundle: \(bundleId) (video-only)")
+        fileDebugLog("Starting screen recording for bundle: \(bundleId) (video-only)")
 
         // Find the best meeting window
         let window: SCWindow
         do {
             window = try await findMeetingWindow(bundleId: bundleId)
             logger.info("Found meeting window: \(window.title ?? "untitled")")
-            screenDebugLog("Found meeting window: \(window.title ?? "untitled")")
+            fileDebugLog("Found meeting window: \(window.title ?? "untitled")")
         } catch {
-            screenDebugLog("ERROR: Failed to find meeting window: \(error)")
+            fileDebugLog("ERROR: Failed to find meeting window: \(error)")
             throw error
         }
 
@@ -581,21 +563,21 @@ public actor ScreenRecorder {
         try stream.addStreamOutput(delegate, type: .screen, sampleHandlerQueue: outputQueue)
 
         // Start writing
-        screenDebugLog("Starting asset writer...")
+        fileDebugLog("Starting asset writer...")
         guard writer.startWriting() else {
-            screenDebugLog("ERROR: Failed to start asset writer")
+            fileDebugLog("ERROR: Failed to start asset writer")
             throw RecorderError.encodingFailed
         }
-        screenDebugLog("Asset writer started successfully")
+        fileDebugLog("Asset writer started successfully")
 
         // Start capture
         do {
-            screenDebugLog("Starting SCStream capture...")
+            fileDebugLog("Starting SCStream capture...")
             try await stream.startCapture()
-            screenDebugLog("SCStream capture started successfully")
+            fileDebugLog("SCStream capture started successfully")
         } catch {
             logger.error("Failed to start capture: \(error.localizedDescription)")
-            screenDebugLog("ERROR: Failed to start SCStream capture: \(error)")
+            fileDebugLog("ERROR: Failed to start SCStream capture: \(error)")
             writer.reset()
             throw RecorderError.streamConfigurationFailed
         }
@@ -616,7 +598,7 @@ public actor ScreenRecorder {
         }
 
         logger.info("Stopping screen recording...")
-        screenDebugLog("Stopping screen recording...")
+        fileDebugLog("Stopping screen recording...")
 
         // Stop capture
         if let stream = windowStream {
@@ -681,9 +663,9 @@ public actor ScreenRecorder {
             return true
         }
 
-        screenDebugLog("Found \(appWindows.count) windows for \(bundleId)")
+        fileDebugLog("Found \(appWindows.count) windows for \(bundleId)")
         for window in appWindows {
-            screenDebugLog("  - '\(window.title ?? "untitled")' (\(Int(window.frame.width))x\(Int(window.frame.height)))")
+            fileDebugLog("  - '\(window.title ?? "untitled")' (\(Int(window.frame.width))x\(Int(window.frame.height)))")
         }
 
         guard !appWindows.isEmpty else {
@@ -697,7 +679,7 @@ public actor ScreenRecorder {
             return !skipPatterns.contains { title.contains($0) }
         }
 
-        screenDebugLog("After filtering skip patterns: \(candidateWindows.count) candidate windows")
+        fileDebugLog("After filtering skip patterns: \(candidateWindows.count) candidate windows")
 
         // Priority 1: Look for windows with meeting-related keywords in title
         // If multiple windows match, pick the largest one (avoid small popups/dialogs)
@@ -710,7 +692,7 @@ public actor ScreenRecorder {
             ($0.frame.width * $0.frame.height) < ($1.frame.width * $1.frame.height)
         }) {
             logger.info("Found meeting window (keyword match): \(bestMeetingWindow.title ?? "untitled") (\(Int(bestMeetingWindow.frame.width))x\(Int(bestMeetingWindow.frame.height)))")
-            screenDebugLog("Selected window (keyword match, largest of \(meetingWindows.count)): '\(bestMeetingWindow.title ?? "untitled")' (\(Int(bestMeetingWindow.frame.width))x\(Int(bestMeetingWindow.frame.height)))")
+            fileDebugLog("Selected window (keyword match, largest of \(meetingWindows.count)): '\(bestMeetingWindow.title ?? "untitled")' (\(Int(bestMeetingWindow.frame.width))x\(Int(bestMeetingWindow.frame.height)))")
             return bestMeetingWindow
         }
 
@@ -719,14 +701,14 @@ public actor ScreenRecorder {
             ($0.frame.width * $0.frame.height) < ($1.frame.width * $1.frame.height)
         }) {
             logger.info("Using largest window: \(largestWindow.title ?? "untitled") (\(Int(largestWindow.frame.width))x\(Int(largestWindow.frame.height)))")
-            screenDebugLog("Selected window (largest): '\(largestWindow.title ?? "untitled")' (\(Int(largestWindow.frame.width))x\(Int(largestWindow.frame.height)))")
+            fileDebugLog("Selected window (largest): '\(largestWindow.title ?? "untitled")' (\(Int(largestWindow.frame.width))x\(Int(largestWindow.frame.height)))")
             return largestWindow
         }
 
         // Fallback: use first available window
         if let firstWindow = appWindows.first {
             logger.info("Using first available window: \(firstWindow.title ?? "untitled")")
-            screenDebugLog("Selected window (fallback): '\(firstWindow.title ?? "untitled")'")
+            fileDebugLog("Selected window (fallback): '\(firstWindow.title ?? "untitled")'")
             return firstWindow
         }
 

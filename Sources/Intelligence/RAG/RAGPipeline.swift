@@ -83,28 +83,7 @@ public actor RAGPipeline {
     /// Default number of results to return from search
     public static let defaultSearchLimit = 5
 
-    /// Debug log file for RAG operations
-    private static let debugLogURL: URL = {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("engram_rag.log")
-    }()
-
-    /// Write to debug log file
-    private func debugLog(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(timestamp)] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: Self.debugLogURL.path) {
-                if let handle = try? FileHandle(forWritingTo: Self.debugLogURL) {
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                    handle.closeFile()
-                }
-            } else {
-                try? data.write(to: Self.debugLogURL)
-            }
-        }
-    }
+    // Note: Uses fileRagLog() from FileLoggerUtility.swift for logging
 
     /// Maximum number of segments to include in context
     private static let maxContextSegments = 10
@@ -437,12 +416,12 @@ public actor RAGPipeline {
         limit: Int = defaultSearchLimit,
         recordingFilter: Int64? = nil
     ) async throws -> [SearchResult] {
-        debugLog("[Search] isInitialized: \(isInitialized), vectorDB: \(vectorDB != nil)")
-        debugLog("[Search] documentToSegment count: \(documentToSegment.count)")
-        debugLog("[Search] indexedRecordings: \(indexedRecordings.count)")
+        fileRagLog("[Search] isInitialized: \(isInitialized), vectorDB: \(vectorDB != nil)")
+        fileRagLog("[Search] documentToSegment count: \(documentToSegment.count)")
+        fileRagLog("[Search] indexedRecordings: \(indexedRecordings.count)")
 
         guard isInitialized, let vectorDB = vectorDB else {
-            debugLog("[Search] ERROR: Not initialized!")
+            fileRagLog("[Search] ERROR: Not initialized!")
             throw RAGError.notInitialized
         }
 
@@ -451,21 +430,21 @@ public actor RAGPipeline {
             return []
         }
 
-        debugLog("[Search] Query: '\(trimmedQuery)', limit: \(limit), filter: \(String(describing: recordingFilter))")
+        fileRagLog("[Search] Query: '\(trimmedQuery)', limit: \(limit), filter: \(String(describing: recordingFilter))")
         logger.debug("Searching for: '\(trimmedQuery)' (limit: \(limit), filter: \(String(describing: recordingFilter)))")
 
         do {
             // Search using text query (VecturaKit handles embedding internally)
             let topK = recordingFilter == nil ? limit * 2 : limit  // Get more results if filtering
-            debugLog("[Search] Calling vectorDB.search with topK=\(topK), threshold=\(Self.minimumSimilarityScore)")
+            fileRagLog("[Search] Calling vectorDB.search with topK=\(topK), threshold=\(Self.minimumSimilarityScore)")
             let vectorResults = try await vectorDB.search(
                 query: .text(trimmedQuery),
                 numResults: topK,
                 threshold: Self.minimumSimilarityScore
             )
-            debugLog("[Search] VectorDB returned \(vectorResults.count) results")
+            fileRagLog("[Search] VectorDB returned \(vectorResults.count) results")
             for (i, r) in vectorResults.prefix(3).enumerated() {
-                debugLog("[Search]   Result \(i): id=\(r.id), score=\(r.score)")
+                fileRagLog("[Search]   Result \(i): id=\(r.id), score=\(r.score)")
             }
 
             // Process results
@@ -513,9 +492,9 @@ public actor RAGPipeline {
             }
 
             if filteredOutCount > 0 {
-                debugLog("[Search] Filtered out \(filteredOutCount) results (wrong recording)")
+                fileRagLog("[Search] Filtered out \(filteredOutCount) results (wrong recording)")
             }
-            debugLog("[Search] Final results: \(searchResults.count)")
+            fileRagLog("[Search] Final results: \(searchResults.count)")
             logger.debug("Search returned \(searchResults.count) results")
             return searchResults
 
@@ -551,7 +530,7 @@ public actor RAGPipeline {
 
                     // Debug: Log indexing status
                     self.logger.info("[RAG Chat] Query: '\(query)', Filter: \(String(describing: recordingFilter)), Indexed recordings: \(self.indexedRecordings.count)")
-                    self.debugLog("[Chat] Query: '\(query)', Filter: \(String(describing: recordingFilter)), Indexed: \(self.indexedRecordings.count)")
+                    fileRagLog("[Chat] Query: '\(query)', Filter: \(String(describing: recordingFilter)), Indexed: \(self.indexedRecordings.count)")
 
                     // Save user message to history
                     _ = try await self.databaseManager.saveChatMessage(
@@ -571,14 +550,14 @@ public actor RAGPipeline {
 
                     // Debug: Log search results
                     self.logger.info("[RAG Chat] Search returned \(searchResults.count) results")
-                    self.debugLog("[Chat] Search returned \(searchResults.count) results")
+                    fileRagLog("[Chat] Search returned \(searchResults.count) results")
                     for (i, result) in searchResults.prefix(3).enumerated() {
-                        self.debugLog("[Chat] Result \(i+1): \(result.recording.title) - \(result.segment.text.prefix(50))... (score: \(result.score))")
+                        fileRagLog("[Chat] Result \(i+1): \(result.recording.title) - \(result.segment.text.prefix(50))... (score: \(result.score))")
                     }
 
                     // Build context from search results
                     let context = self.buildContext(from: searchResults)
-                    self.debugLog("[Chat] Context length: \(context.count) chars")
+                    fileRagLog("[Chat] Context length: \(context.count) chars")
                     let citedSegmentIds = searchResults.map { $0.segment.id }
 
                     // Get conversation history
@@ -652,7 +631,7 @@ public actor RAGPipeline {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    self.debugLog("[AgentChat] Query: '\(query)', Filter: \(String(describing: recordingFilter))")
+                    fileRagLog("[AgentChat] Query: '\(query)', Filter: \(String(describing: recordingFilter))")
 
                     // Save user message first
                     _ = try await self.databaseManager.saveChatMessage(
@@ -671,7 +650,7 @@ public actor RAGPipeline {
                         return LLMEngine.Message(role: role, content: msg.content)
                     }
 
-                    self.debugLog("[AgentChat] Creating TranscriptAgent...")
+                    fileRagLog("[AgentChat] Creating TranscriptAgent...")
 
                     // Create agent and process query
                     let agent = TranscriptAgent(
@@ -680,7 +659,7 @@ public actor RAGPipeline {
                     )
 
                     var fullResponse = ""
-                    self.debugLog("[AgentChat] Calling agent.processQuery...")
+                    fileRagLog("[AgentChat] Calling agent.processQuery...")
 
                     let stream = await agent.processQuery(
                         query: query,
@@ -690,14 +669,14 @@ public actor RAGPipeline {
                         conversationHistory: Array(conversationHistory)
                     )
 
-                    self.debugLog("[AgentChat] Starting to stream response...")
+                    fileRagLog("[AgentChat] Starting to stream response...")
 
                     for try await token in stream {
                         fullResponse += token
                         continuation.yield(token)
                     }
 
-                    self.debugLog("[AgentChat] Response complete, length: \(fullResponse.count) chars")
+                    fileRagLog("[AgentChat] Response complete, length: \(fullResponse.count) chars")
 
                     // Save assistant response
                     if !fullResponse.isEmpty {
@@ -739,11 +718,11 @@ public actor RAGPipeline {
             // Get existing documents from VecturaKit's persistent storage (instant - no re-embedding!)
             let existingDocs = try await vectorDB.getAllDocuments()
             let existingDocIds = Set(existingDocs.map { $0.id })
-            debugLog("[Init] Found \(existingDocs.count) persisted documents in VecturaKit")
+            fileRagLog("[Init] Found \(existingDocs.count) persisted documents in VecturaKit")
 
             let recordings = try await databaseManager.getAllRecordings()
             let recordingsWithTranscripts = recordings.filter { $0.hasTranscript }
-            debugLog("[Init] Recordings with transcripts: \(recordingsWithTranscripts.count)")
+            fileRagLog("[Init] Recordings with transcripts: \(recordingsWithTranscripts.count)")
 
             var newDocsToAdd: [(text: String, id: UUID, segmentId: Int64, recordingId: Int64)] = []
 
@@ -779,7 +758,7 @@ public actor RAGPipeline {
 
             // Add any new documents that weren't persisted yet
             if !newDocsToAdd.isEmpty {
-                debugLog("[Init] Adding \(newDocsToAdd.count) new documents to index...")
+                fileRagLog("[Init] Adding \(newDocsToAdd.count) new documents to index...")
                 for doc in newDocsToAdd {
                     do {
                         _ = try await vectorDB.addDocument(text: doc.text, id: doc.id)
@@ -794,7 +773,7 @@ public actor RAGPipeline {
                             model: "NLContextualEmbedder"
                         )
                     } catch {
-                        debugLog("[Init] Failed to add doc \(doc.id): \(error.localizedDescription)")
+                        fileRagLog("[Init] Failed to add doc \(doc.id): \(error.localizedDescription)")
                     }
                 }
 
@@ -804,12 +783,12 @@ public actor RAGPipeline {
                 }
             }
 
-            debugLog("[Init] Complete - \(self.indexedRecordings.count) recordings, \(self.documentToSegment.count) segments mapped")
+            fileRagLog("[Init] Complete - \(self.indexedRecordings.count) recordings, \(self.documentToSegment.count) segments mapped")
             logger.info("Loaded \(self.indexedRecordings.count) recordings (\(existingDocs.count) from cache, \(newDocsToAdd.count) new)")
 
         } catch {
             logger.warning("Failed to load indexed recordings: \(error.localizedDescription)")
-            debugLog("[Init] Error: \(error.localizedDescription)")
+            fileRagLog("[Init] Error: \(error.localizedDescription)")
         }
     }
 

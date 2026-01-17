@@ -8,7 +8,7 @@ import PackageDescription
 let package = Package(
     name: "Engram",
     platforms: [
-        .macOS(.v14) // Sonoma minimum
+        .macOS(.v15) // Sequoia - matches current OS, avoids Swift runtime compatibility issues
     ],
     products: [
         .executable(name: "Engram", targets: ["App"])

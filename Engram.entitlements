@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Allow debugger attachment (debug builds only) -->
+    <key>com.apple.security.get-task-allow</key>
+    <true/>
+
     <!-- Microphone Access -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
@@ -9,11 +13,11 @@
     <!-- Disable Library Validation (for development) -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
-    
+
     <!-- File System Access -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
-    
+
     <!-- Network (for future cloud API support) -->
     <key>com.apple.security.network.client</key>
     <true/>

@@ -20,7 +20,7 @@ public typealias Citation = UI.Citation
 // Import Theme from UI module
 @_exported import enum UI.Theme
 
-// Note: debugLog is defined in MeetingDetector.swift and is available here
+// Note: Uses FileLogger.shared for centralized logging across the App module
 
 // MARK: - Window Action Notifications
 // Notifications for opening windows from AppDelegate before SwiftUI windows are available
@@ -957,14 +957,14 @@ App location: \(appPath)
             )
 
             // Start detector if auto-record is enabled
-            debugLog("autoRecordEnabled = \(autoRecordEnabled)")
+            FileLogger.shared.debug("autoRecordEnabled = \(autoRecordEnabled)")
             if autoRecordEnabled {
-                debugLog("Calling meetingDetector.start()...")
+                FileLogger.shared.debug("Calling meetingDetector.start()...")
                 await meetingDetector.start()
-                debugLog("meetingDetector.start() completed")
+                FileLogger.shared.debug("meetingDetector.start() completed")
                 logger.info("Meeting detector started")
             } else {
-                debugLog("Auto-record is DISABLED, not starting detector")
+                FileLogger.shared.debug("Auto-record is DISABLED, not starting detector")
             }
         }
 
