@@ -201,6 +201,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     @AppStorage("enabledMeetingApps") private var enabledMeetingAppsRaw = "zoom,teams,meet,slack,discord"
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
     @AppStorage("recordVideoEnabled") private var recordVideoEnabled: Bool = false
+    @AppStorage("windowSelectionMode") private var windowSelectionMode: String = "smart"
 
     // Auto AI Generation Settings
     @AppStorage("autoGenerateSummary") private var autoGenerateSummary = true
@@ -1048,66 +1049,32 @@ App location: \(appPath)
         if recordVideoEnabled, let bundleID = screenRecordBundleID {
             // Extract base filename from audio URL to keep timestamps synchronized
             let baseFilename = url.deletingPathExtension().lastPathComponent
+            let mode = windowSelectionMode
             Task {
                 do {
-                    // First, try automatic detection using heuristics
-                    let videoURL = try await screenRecorder.startRecording(
-                        bundleId: bundleID,
-                        outputDirectory: outputDirectory,
-                        baseFilename: baseFilename
-                    )
-                    await MainActor.run {
-                        currentVideoRecordingURL = videoURL
-                    }
-                    logger.info("Video recording started for \(bundleID): \(videoURL.lastPathComponent)")
-                } catch ScreenRecorder.RecorderError.windowNotFound {
-                    // Heuristics failed - fall back to window selector
-                    logger.info("No clear meeting window found, checking for candidates...")
+                    switch mode {
+                    case "alwaysAsk":
+                        // Always Ask: Get candidates first, show picker for 2+ windows
+                        try await startRecordingWithPicker(
+                            bundleId: bundleID,
+                            appName: appName,
+                            baseFilename: baseFilename
+                        )
 
-                    do {
-                        let candidates = try await screenRecorder.getCandidateWindows(bundleId: bundleID)
+                    case "auto":
+                        // Auto: Never show picker, use heuristics or pick largest
+                        try await startRecordingAutomatic(
+                            bundleId: bundleID,
+                            baseFilename: baseFilename
+                        )
 
-                        if candidates.isEmpty {
-                            logger.warning("No windows found for \(bundleID), skipping video recording")
-                            return
-                        }
-
-                        let videoURL: URL
-                        if candidates.count == 1 {
-                            // Single window - auto-select
-                            logger.info("Single candidate window, auto-selecting: \(candidates[0].title)")
-                            videoURL = try await screenRecorder.startRecordingWindow(
-                                windowId: candidates[0].id,
-                                bundleId: bundleID,
-                                outputDirectory: outputDirectory,
-                                baseFilename: baseFilename
-                            )
-                        } else {
-                            // Multiple windows - show selector popup
-                            logger.info("Multiple windows found (\(candidates.count)), showing selector")
-                            let controller = WindowSelectorController()
-                            let selectedWindow = await controller.showSelector(windows: candidates, appName: appName)
-
-                            guard let window = selectedWindow else {
-                                logger.info("User cancelled window selection, skipping video recording")
-                                return
-                            }
-
-                            logger.info("User selected window: \(window.title)")
-                            videoURL = try await screenRecorder.startRecordingWindow(
-                                windowId: window.id,
-                                bundleId: bundleID,
-                                outputDirectory: outputDirectory,
-                                baseFilename: baseFilename
-                            )
-                        }
-
-                        await MainActor.run {
-                            currentVideoRecordingURL = videoURL
-                        }
-                        logger.info("Video recording started for \(bundleID): \(videoURL.lastPathComponent)")
-                    } catch {
-                        logger.warning("Failed to get candidate windows: \(error.localizedDescription)")
+                    default:
+                        // Smart (default): Current behavior - heuristics first, picker if ambiguous
+                        try await startRecordingSmart(
+                            bundleId: bundleID,
+                            appName: appName,
+                            baseFilename: baseFilename
+                        )
                     }
                 } catch {
                     logger.warning("Video recording failed to start: \(error.localizedDescription)")
@@ -1167,6 +1134,156 @@ App location: \(appPath)
 
         currentRecordingURL = nil
         currentRecordingApp = nil
+    }
+
+    // MARK: - Video Recording Modes
+
+    /// Smart mode: Uses heuristics first, shows picker only if ambiguous
+    private func startRecordingSmart(bundleId: String, appName: String, baseFilename: String) async throws {
+        do {
+            // First, try automatic detection using heuristics
+            let videoURL = try await screenRecorder.startRecording(
+                bundleId: bundleId,
+                outputDirectory: outputDirectory,
+                baseFilename: baseFilename
+            )
+            await MainActor.run {
+                currentVideoRecordingURL = videoURL
+            }
+            logger.info("Video recording started for \(bundleId): \(videoURL.lastPathComponent)")
+        } catch ScreenRecorder.RecorderError.windowNotFound {
+            // Heuristics failed - fall back to window selector
+            logger.info("No clear meeting window found, checking for candidates...")
+
+            let candidates = try await screenRecorder.getCandidateWindows(bundleId: bundleId)
+
+            if candidates.isEmpty {
+                logger.warning("No windows found for \(bundleId), skipping video recording")
+                return
+            }
+
+            let videoURL: URL
+            if candidates.count == 1 {
+                // Single window - auto-select
+                logger.info("Single candidate window, auto-selecting: \(candidates[0].title)")
+                videoURL = try await screenRecorder.startRecordingWindow(
+                    windowId: candidates[0].id,
+                    bundleId: bundleId,
+                    outputDirectory: outputDirectory,
+                    baseFilename: baseFilename
+                )
+            } else {
+                // Multiple windows - show selector popup
+                logger.info("Multiple windows found (\(candidates.count)), showing selector")
+                let controller = WindowSelectorController()
+                let selectedWindow = await controller.showSelector(windows: candidates, appName: appName)
+
+                guard let window = selectedWindow else {
+                    logger.info("User cancelled window selection, skipping video recording")
+                    return
+                }
+
+                logger.info("User selected window: \(window.title)")
+                videoURL = try await screenRecorder.startRecordingWindow(
+                    windowId: window.id,
+                    bundleId: bundleId,
+                    outputDirectory: outputDirectory,
+                    baseFilename: baseFilename
+                )
+            }
+
+            await MainActor.run {
+                currentVideoRecordingURL = videoURL
+            }
+            logger.info("Video recording started for \(bundleId): \(videoURL.lastPathComponent)")
+        }
+    }
+
+    /// Always Ask mode: Always shows picker for 2+ windows
+    private func startRecordingWithPicker(bundleId: String, appName: String, baseFilename: String) async throws {
+        let candidates = try await screenRecorder.getCandidateWindows(bundleId: bundleId)
+
+        if candidates.isEmpty {
+            logger.warning("No windows found for \(bundleId), skipping video recording")
+            return
+        }
+
+        let videoURL: URL
+        if candidates.count == 1 {
+            // Single window - auto-select (no point showing picker)
+            logger.info("Single candidate window, auto-selecting: \(candidates[0].title)")
+            videoURL = try await screenRecorder.startRecordingWindow(
+                windowId: candidates[0].id,
+                bundleId: bundleId,
+                outputDirectory: outputDirectory,
+                baseFilename: baseFilename
+            )
+        } else {
+            // Multiple windows - always show selector
+            logger.info("Multiple windows found (\(candidates.count)), showing selector (Always Ask mode)")
+            let controller = WindowSelectorController()
+            let selectedWindow = await controller.showSelector(windows: candidates, appName: appName)
+
+            guard let window = selectedWindow else {
+                logger.info("User cancelled window selection, skipping video recording")
+                return
+            }
+
+            logger.info("User selected window: \(window.title)")
+            videoURL = try await screenRecorder.startRecordingWindow(
+                windowId: window.id,
+                bundleId: bundleId,
+                outputDirectory: outputDirectory,
+                baseFilename: baseFilename
+            )
+        }
+
+        await MainActor.run {
+            currentVideoRecordingURL = videoURL
+        }
+        logger.info("Video recording started for \(bundleId): \(videoURL.lastPathComponent)")
+    }
+
+    /// Auto mode: Never shows picker, uses heuristics or picks largest window
+    private func startRecordingAutomatic(bundleId: String, baseFilename: String) async throws {
+        do {
+            // First, try automatic detection using heuristics
+            let videoURL = try await screenRecorder.startRecording(
+                bundleId: bundleId,
+                outputDirectory: outputDirectory,
+                baseFilename: baseFilename
+            )
+            await MainActor.run {
+                currentVideoRecordingURL = videoURL
+            }
+            logger.info("Video recording started for \(bundleId): \(videoURL.lastPathComponent)")
+        } catch ScreenRecorder.RecorderError.windowNotFound {
+            // Heuristics failed - pick largest window automatically (no picker)
+            logger.info("No clear meeting window found, picking largest window (Auto mode)")
+
+            let candidates = try await screenRecorder.getCandidateWindows(bundleId: bundleId)
+
+            if candidates.isEmpty {
+                logger.warning("No windows found for \(bundleId), skipping video recording")
+                return
+            }
+
+            // Pick the largest window by area
+            let largestWindow = candidates.max { ($0.width * $0.height) < ($1.width * $1.height) }!
+
+            logger.info("Auto-selecting largest window: \(largestWindow.title) (\(largestWindow.width)x\(largestWindow.height))")
+            let videoURL = try await screenRecorder.startRecordingWindow(
+                windowId: largestWindow.id,
+                bundleId: bundleId,
+                outputDirectory: outputDirectory,
+                baseFilename: baseFilename
+            )
+
+            await MainActor.run {
+                currentVideoRecordingURL = videoURL
+            }
+            logger.info("Video recording started for \(bundleId): \(videoURL.lastPathComponent)")
+        }
     }
 
     private func handleSystemEvent(_ event: SystemEventHandler.SystemEvent) async {
@@ -1303,6 +1420,7 @@ struct GeneralSettingsView: View {
     @AppStorage("storageLocation") private var storageLocation = "~/Documents/Engram"
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
     @AppStorage("recordVideoEnabled") private var recordVideoEnabled: Bool = false
+    @AppStorage("windowSelectionMode") private var windowSelectionMode: String = "smart"
 
     // Login item state
     @State private var launchAtLogin: Bool = false
@@ -1402,6 +1520,29 @@ struct GeneralSettingsView: View {
                             subtitle: "Capture meeting window video along with audio (uses more storage)",
                             isOn: $recordVideoEnabled
                         )
+
+                        if recordVideoEnabled {
+                            Divider().padding(.vertical, 8)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Window selection")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                Picker("", selection: $windowSelectionMode) {
+                                    Text("Smart").tag("smart")
+                                    Text("Always Ask").tag("alwaysAsk")
+                                    Text("Auto").tag("auto")
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+
+                                Text(windowSelectionHelpText)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+                            .padding(.leading, 8)
+                        }
                     }
                 }
 
@@ -1490,6 +1631,17 @@ struct GeneralSettingsView: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             storageLocation = url.path
+        }
+    }
+
+    private var windowSelectionHelpText: String {
+        switch windowSelectionMode {
+        case "alwaysAsk":
+            return "You'll choose which window to record for every meeting"
+        case "auto":
+            return "Automatically picks the meeting window without asking"
+        default:
+            return "Detects meeting window automatically, asks only if uncertain"
         }
     }
 
@@ -2081,7 +2233,8 @@ struct AISettingsView: View {
                             // Legend
                             HStack(spacing: 12) {
                                 legendItem(color: Theme.Colors.success, text: "Active")
-                                legendItem(color: Theme.Colors.secondary, text: "Downloaded")
+                                legendItem(color: Theme.Colors.secondary, text: "Sleeping")
+                                legendItem(color: Theme.Colors.secondary.opacity(0.6), text: "Downloaded")
                                 legendItem(color: Theme.Colors.textMuted, text: "Not Downloaded")
                             }
                             .padding(.bottom, 8)
@@ -2588,6 +2741,7 @@ struct AISettingsView: View {
         let isCurrentModel = aiService.selectedModelId == model.id
         let isCached = aiService.isModelCached(model.id)
         let isActive = isCurrentModel && aiService.isReady
+        let isSleeping = isCurrentModel && aiService.isUnloadedToSaveMemory
         let isPendingSelection = pendingMLXModel == model.id && model.id != aiService.selectedModelId
         // Include "pending initial load" state: when service is initializing and this cached model will be auto-loaded
         // isIndexingLoading is true when service is not initialized or currently initializing
@@ -2599,14 +2753,19 @@ struct AISettingsView: View {
             ZStack {
                 Circle()
                     .stroke(isActive ? Theme.Colors.success :
+                           (isSleeping ? Theme.Colors.secondary :
                            (isPendingSelection ? Theme.Colors.warning :
-                           (isCached ? Theme.Colors.secondary : Theme.Colors.textMuted)), lineWidth: 2)
+                           (isCached ? Theme.Colors.secondary : Theme.Colors.textMuted))), lineWidth: 2)
                     .frame(width: 18, height: 18)
 
                 if isActive {
                     Circle()
                         .fill(Theme.Colors.success)
                         .frame(width: 10, height: 10)
+                } else if isSleeping {
+                    Image(systemName: "moon.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(Theme.Colors.secondary)
                 } else if isPendingSelection {
                     Circle()
                         .fill(Theme.Colors.warning)
@@ -2623,9 +2782,10 @@ struct AISettingsView: View {
                 // First row: Name + badges
                 HStack(spacing: 6) {
                     Text(model.displayName)
-                        .font(.system(size: 13, weight: isActive || isPendingSelection ? .semibold : .medium))
+                        .font(.system(size: 13, weight: isActive || isSleeping || isPendingSelection ? .semibold : .medium))
                         .foregroundColor(isActive ? Theme.Colors.success :
-                                        (isPendingSelection ? Theme.Colors.warning : Theme.Colors.textPrimary))
+                                        (isSleeping ? Theme.Colors.secondary :
+                                        (isPendingSelection ? Theme.Colors.warning : Theme.Colors.textPrimary)))
 
                     tierBadge(model.tier)
 
@@ -2658,6 +2818,22 @@ struct AISettingsView: View {
                         .background(
                             Capsule()
                                 .fill(Theme.Colors.success)
+                        )
+                    }
+
+                    if isSleeping {
+                        HStack(spacing: 2) {
+                            Image(systemName: "moon.fill")
+                                .font(.system(size: 8))
+                            Text("Sleeping")
+                        }
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(Theme.Colors.secondary)
                         )
                     }
 
@@ -2737,6 +2913,16 @@ struct AISettingsView: View {
                     Text("In Use")
                         .font(.system(size: 9))
                         .foregroundColor(Theme.Colors.success)
+                }
+            } else if isSleeping {
+                // Sleeping - show status with wake button
+                VStack(spacing: 2) {
+                    Image(systemName: "moon.zzz.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(Theme.Colors.secondary)
+                    Text("Sleeping")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.Colors.secondary)
                 }
             } else if isPendingSelection {
                 // Pending selection - show undo option
@@ -2825,15 +3011,17 @@ struct AISettingsView: View {
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(isActive ? Theme.Colors.success.opacity(0.08) :
+                      (isSleeping ? Theme.Colors.secondary.opacity(0.08) :
                       (isPendingSelection ? Theme.Colors.warning.opacity(0.08) :
-                      (isCached ? Theme.Colors.secondary.opacity(0.05) : Theme.Colors.background)))
+                      (isCached ? Theme.Colors.secondary.opacity(0.05) : Theme.Colors.background))))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .stroke(isActive ? Theme.Colors.success.opacity(0.4) :
+                        (isSleeping ? Theme.Colors.secondary.opacity(0.5) :
                         (isPendingSelection ? Theme.Colors.warning.opacity(0.5) :
-                        (isCached ? Theme.Colors.secondary.opacity(0.2) : Theme.Colors.borderSubtle)),
-                        lineWidth: isActive || isPendingSelection ? 2 : 1)
+                        (isCached ? Theme.Colors.secondary.opacity(0.2) : Theme.Colors.borderSubtle))),
+                        lineWidth: isActive || isSleeping || isPendingSelection ? 2 : 1)
         )
     }
 
