@@ -803,6 +803,68 @@ public actor AIService {
         }
     }
 
+    // MARK: - Public API: Direct LLM Generation
+
+    /// Direct LLM generation without RAG context
+    /// Use this for simple prompts that don't need transcript context
+    /// - Parameters:
+    ///   - prompt: The prompt to send to the LLM
+    ///   - context: Optional context string to include (defaults to empty)
+    ///   - systemPrompt: Optional system prompt
+    /// - Returns: AsyncThrowingStream of response tokens
+    public func directGenerate(
+        prompt: String,
+        context: String = "",
+        systemPrompt: String? = nil
+    ) -> AsyncThrowingStream<String, Error> {
+        logToFile("[AIService.directGenerate] Prompt length: \(prompt.count), Context length: \(context.count)")
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    // Reset inactivity timer
+                    self.resetInactivityTimer()
+
+                    // Reload model if it was auto-unloaded
+                    try await self.reloadModelIfNeeded()
+
+                    guard let engine = self.llmEngine else {
+                        self.logToFile("[AIService.directGenerate] ERROR: llmEngine is nil")
+                        throw AIError.notInitialized
+                    }
+
+                    guard await engine.isModelLoaded else {
+                        self.logToFile("[AIService.directGenerate] ERROR: model not loaded")
+                        throw AIError.notInitialized
+                    }
+
+                    // Mark as actively processing to prevent auto-unload
+                    self.isActivelyProcessing = true
+                    defer {
+                        self.isActivelyProcessing = false
+                        self.resetInactivityTimer()
+                    }
+
+                    self.logToFile("[AIService.directGenerate] Calling llmEngine.generateStream...")
+                    let stream = await engine.generateStream(
+                        prompt: prompt,
+                        context: context,
+                        systemPrompt: systemPrompt
+                    )
+
+                    for try await token in stream {
+                        continuation.yield(token)
+                    }
+
+                    continuation.finish()
+
+                } catch {
+                    self.isActivelyProcessing = false
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Public API: Indexing
 
     /// Index a recording's transcript

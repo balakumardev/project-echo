@@ -217,6 +217,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     private var currentRecordingApp: String?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ensure only one instance of the app runs at a time
+        if let bundleIdentifier = Bundle.main.bundleIdentifier {
+            let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+            if runningApps.count > 1 {
+                // Another instance is already running - activate it and quit this one
+                logger.warning("Another instance of Engram is already running. Terminating this instance.")
+                if let existingApp = runningApps.first(where: { $0 != NSRunningApplication.current }) {
+                    existingApp.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                }
+                NSApp.terminate(nil)
+                return
+            }
+        }
+        
         logger.info("Engram starting...")
 
         // Hide dock icon (menu bar only app)
@@ -694,6 +708,51 @@ App location: \(appPath)
         return cleaned.isEmpty ? nil : cleaned
     }
 
+    /// Check if transcript has meaningful content worth generating AI summary for
+    /// Returns false for empty transcripts or transcripts with only noise markers
+    private func hasMeaningfulContent(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        // Remove timestamp prefixes like "[0:00]" and speaker labels like "Unknown:" or "Speaker 2:"
+        let cleanedText = trimmed
+            .replacingOccurrences(of: #"\[\d+:\d+\]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(Unknown|Speaker\s*\d*|You):"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // List of noise markers that indicate no real content
+        let noiseMarkers = [
+            "[INAUDIBLE]", "[inaudible]",
+            "[SILENCE]", "[silence]",
+            "[NOISE]", "[noise]",
+            "[MUSIC]", "[music]",
+            "[BLANK_AUDIO]", "[blank_audio]",
+            "[BACKGROUND_NOISE]", "[background_noise]"
+        ]
+
+        // Check if the cleaned text only contains noise markers
+        var textWithoutNoise = cleanedText
+        for marker in noiseMarkers {
+            textWithoutNoise = textWithoutNoise.replacingOccurrences(of: marker, with: "")
+        }
+        textWithoutNoise = textWithoutNoise.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Require at least 20 characters of actual content (roughly 4-5 words)
+        // This filters out transcripts that are basically empty or only noise
+        if textWithoutNoise.count < 20 {
+            return false
+        }
+
+        // Also require at least 3 words
+        let words = textWithoutNoise.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        if words.count < 3 {
+            return false
+        }
+
+        return true
+    }
+
     /// Automatically generate AI summary and action items for a recording
     private func autoGenerateAIContent(recordingId: Int64) async {
         // Check if AI is enabled
@@ -703,11 +762,17 @@ App location: \(appPath)
         guard autoGenerateSummary || autoGenerateActionItems else { return }
 
         do {
-            // Verify transcript exists and has content before generating AI content
+            // Verify transcript exists and has meaningful content before generating AI content
             if let transcript = try? await database.getTranscript(forRecording: recordingId) {
-                let hasContent = !transcript.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                if !hasContent {
-                    logger.warning("Skipping auto-generation for recording \(recordingId) - transcript is empty")
+                if !hasMeaningfulContent(transcript.fullText) {
+                    logger.warning("Skipping auto-generation for recording \(recordingId) - transcript has no meaningful content")
+                    // Save markers to prevent re-processing on restart
+                    if autoGenerateSummary {
+                        try? await database.saveSummary(recordingId: recordingId, summary: "[No meaningful audio content]")
+                    }
+                    if autoGenerateActionItems {
+                        try? await database.saveActionItems(recordingId: recordingId, actionItems: "[No action items]")
+                    }
                     return
                 }
             } else {
@@ -834,36 +899,9 @@ App location: \(appPath)
     }
 
     /// Generate a meaningful title from the meeting summary using LLM
-    /// Only updates if the current title appears to be a generic/auto-generated one
+    /// Always generates an AI title since we have meaningful content (summary)
     private func generateTitleFromSummary(recordingId: Int64, summary: String) async {
         do {
-            // Get the current recording to check its title
-            let recordings = try await database.getAllRecordings()
-            guard let recording = recordings.first(where: { $0.id == recordingId }) else {
-                logger.warning("Could not find recording \(recordingId) to update title")
-                return
-            }
-
-            // Check if the title looks generic (auto-generated from app name)
-            let genericPatterns = [
-                "Zoom_Meeting", "Zoom Meeting", "zoom_meeting",
-                "Google_Meet", "Google Meet", "Meet_",
-                "Microsoft_Teams", "Teams_Meeting", "teams_meeting",
-                "Slack_Call", "slack_call",
-                "Discord_Call", "discord_call",
-                "FaceTime_", "facetime_",
-                "Webex_", "webex_",
-                "Skype_", "skype_"
-            ]
-
-            let currentTitle = recording.title
-            let isGenericTitle = genericPatterns.contains { currentTitle.lowercased().contains($0.lowercased()) }
-
-            guard isGenericTitle else {
-                logger.info("Recording \(recordingId) has a custom title, skipping auto-generation")
-                return
-            }
-
             logger.info("Generating title for recording \(recordingId) from summary...")
 
             // Generate a concise title from the summary
@@ -876,10 +914,10 @@ App location: \(appPath)
                 \(summary.prefix(1500))
                 """
 
-            let titleStream = await AIService.shared.agentChat(
-                query: titlePrompt,
-                sessionId: "title-gen-\(recordingId)",
-                recordingFilter: nil  // Don't use RAG, just process the prompt
+            // Use directGenerate for simple prompt processing without RAG
+            let titleStream = await AIService.shared.directGenerate(
+                prompt: titlePrompt,
+                systemPrompt: "You are a helpful assistant that generates concise meeting titles. Return only the title, nothing else."
             )
 
             var generatedTitle = ""
