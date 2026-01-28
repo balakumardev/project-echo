@@ -362,16 +362,13 @@ struct SummarySection: View {
     }
 
     /// Parse markdown string into AttributedString for proper rendering
-    /// Supports bold (**text**), italic (*text*), and other markdown formatting
     private func markdownAttributedString(from text: String) -> AttributedString {
         do {
-            // Use AttributedString's markdown parsing
             let attributed = try AttributedString(markdown: text, options: AttributedString.MarkdownParsingOptions(
                 interpretedSyntax: .inlineOnlyPreservingWhitespace
             ))
             return attributed
         } catch {
-            // Fallback to plain text if markdown parsing fails
             return AttributedString(text)
         }
     }

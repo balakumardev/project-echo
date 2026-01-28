@@ -125,6 +125,7 @@ struct RecordingDetailView: View {
             }
             .padding(Theme.Spacing.xl)
         }
+        .frame(minWidth: 500) // Prevent content from being squished when chat panel is open
         .background(Theme.Colors.background)
     }
 }

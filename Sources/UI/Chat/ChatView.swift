@@ -530,7 +530,7 @@ public struct ChatView: View {
                 )
 
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                Text(viewModel.streamingResponse)
+                Text(markdownAttributedString(from: viewModel.streamingResponse))
                     .font(Theme.Typography.body)
                     .foregroundColor(Theme.Colors.textPrimary)
                     .textSelection(.enabled)
@@ -549,6 +549,20 @@ public struct ChatView: View {
             Spacer(minLength: 60)
         }
         .id("streaming")
+    }
+
+    // MARK: - Markdown Parsing
+
+    /// Parse markdown string into AttributedString for proper rendering
+    private func markdownAttributedString(from text: String) -> AttributedString {
+        do {
+            let attributed = try AttributedString(markdown: text, options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            ))
+            return attributed
+        } catch {
+            return AttributedString(text)
+        }
     }
 
     @State private var cursorOpacity: Double = 1.0

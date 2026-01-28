@@ -556,13 +556,111 @@ public actor DatabaseManager {
     }
 
     /// Update the title of a recording (e.g., with AI-generated title)
+    /// Also renames the file on disk if it exists (fails gracefully if file is missing/moved)
+    /// Handles both audio (.mov) and video (_video.mov) files
     public func updateTitle(recordingId: Int64, newTitle: String) async throws {
         guard let db = db else { throw DatabaseError.initializationFailed }
 
         let query = recordings.filter(id == recordingId)
-        try db.run(query.update(title <- newTitle))
+
+        // Get the current file URL
+        guard let row = try db.pluck(query) else {
+            throw DatabaseError.notFound
+        }
+
+        let currentFileURL = URL(fileURLWithPath: row[fileURL])
+        var newFileURL = currentFileURL
+
+        // Try to rename the file on disk (fail gracefully if file doesn't exist)
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: currentFileURL.path) {
+            // Sanitize the new title for use as a filename
+            let sanitizedTitle = sanitizeForFilename(newTitle)
+            let fileExtension = currentFileURL.pathExtension
+            let directory = currentFileURL.deletingLastPathComponent()
+            newFileURL = directory.appendingPathComponent(sanitizedTitle).appendingPathExtension(fileExtension)
+
+            // Only rename if the new path is different and doesn't already exist
+            if newFileURL != currentFileURL {
+                if fileManager.fileExists(atPath: newFileURL.path) {
+                    // File with new name already exists - add timestamp to make unique
+                    let timestamp = Int(Date().timeIntervalSince1970)
+                    let uniqueName = "\(sanitizedTitle)_\(timestamp)"
+                    newFileURL = directory.appendingPathComponent(uniqueName).appendingPathExtension(fileExtension)
+                }
+
+                do {
+                    try fileManager.moveItem(at: currentFileURL, to: newFileURL)
+                    logger.info("File renamed from \(currentFileURL.lastPathComponent) to \(newFileURL.lastPathComponent)")
+
+                    // Also rename the video file if it exists (video files have _video suffix before extension)
+                    let currentBaseName = currentFileURL.deletingPathExtension().lastPathComponent
+                    let videoFileName = "\(currentBaseName)_video.\(fileExtension)"
+                    let currentVideoURL = directory.appendingPathComponent(videoFileName)
+
+                    if fileManager.fileExists(atPath: currentVideoURL.path) {
+                        let newVideoFileName = "\(sanitizedTitle)_video.\(fileExtension)"
+                        let newVideoURL = directory.appendingPathComponent(newVideoFileName)
+
+                        do {
+                            try fileManager.moveItem(at: currentVideoURL, to: newVideoURL)
+                            logger.info("Video file renamed from \(currentVideoURL.lastPathComponent) to \(newVideoURL.lastPathComponent)")
+                        } catch {
+                            logger.warning("Could not rename video file: \(error.localizedDescription)")
+                        }
+                    }
+                } catch {
+                    // Log but don't fail - file might be in use or have permission issues
+                    logger.warning("Could not rename file: \(error.localizedDescription). Updating title only.")
+                    newFileURL = currentFileURL // Keep original URL if rename failed
+                }
+            }
+        } else {
+            logger.info("File not found at \(currentFileURL.path) - updating title in database only")
+        }
+
+        // Update database with new title and potentially new file URL
+        try db.run(query.update(
+            title <- newTitle,
+            fileURL <- newFileURL.path
+        ))
 
         logger.info("Title updated for recording \(recordingId): \(newTitle)")
+    }
+
+    /// Sanitize a string for use as a filename
+    private func sanitizeForFilename(_ name: String) -> String {
+        var sanitized = name
+
+        // Replace invalid filesystem characters with underscores
+        let invalidChars = CharacterSet(charactersIn: ":/\\?*<>|\"'\n\r\t")
+        sanitized = sanitized.unicodeScalars
+            .map { invalidChars.contains($0) ? "_" : String($0) }
+            .joined()
+
+        // Replace multiple spaces/underscores with single underscore
+        while sanitized.contains("  ") {
+            sanitized = sanitized.replacingOccurrences(of: "  ", with: " ")
+        }
+        while sanitized.contains("__") {
+            sanitized = sanitized.replacingOccurrences(of: "__", with: "_")
+        }
+
+        // Trim whitespace and underscores from ends
+        sanitized = sanitized.trimmingCharacters(in: .whitespaces)
+        sanitized = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+
+        // Limit length to avoid filesystem issues (keep under 200 chars)
+        if sanitized.count > 200 {
+            sanitized = String(sanitized.prefix(200))
+        }
+
+        // Fallback if completely empty
+        if sanitized.isEmpty {
+            sanitized = "Recording"
+        }
+
+        return sanitized
     }
 
     // MARK: - Transcript Operations

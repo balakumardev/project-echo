@@ -239,11 +239,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         // Setup output directory
         setupOutputDirectory()
 
-        // Setup processing queue handlers
-        setupProcessingQueue()
-
-        // Initialize components
+        // Initialize components (includes setting up processing queue handlers BEFORE resuming work)
         Task {
+            // IMPORTANT: Set up processing queue handlers FIRST, before initializing components
+            // This ensures handlers are ready before resumeIncompleteWork is called
+            await setupProcessingQueueAsync()
+
             await initializeComponents()
         }
 
@@ -257,29 +258,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         logger.info("Engram ready")
     }
 
-    private func setupProcessingQueue() {
+    private func setupProcessingQueueAsync() async {
         // Configure the processing queue with handlers that call our methods
         // This ensures transcription and AI generation tasks run serially
 
-        Task {
-            // Transcription handler
-            await ProcessingQueue.shared.setTranscriptionHandler { [weak self] recordingId, audioURL in
-                await self?.transcribeRecording(id: recordingId, url: audioURL)
-            }
+        FileLogger.shared.debug("setupProcessingQueueAsync: Setting handlers...")
 
-            // AI generation handler (summary + action items)
-            await ProcessingQueue.shared.setAIGenerationHandler { [weak self] recordingId in
-                await self?.autoGenerateAIContent(recordingId: recordingId)
-            }
-
-            logger.info("Processing queue handlers configured")
+        // Transcription handler
+        await ProcessingQueue.shared.setTranscriptionHandler { [weak self] recordingId, audioURL in
+            FileLogger.shared.debug("Transcription handler called for recording \(recordingId)")
+            await self?.transcribeRecording(id: recordingId, url: audioURL)
+            FileLogger.shared.debug("Transcription handler completed for recording \(recordingId)")
         }
+
+        // AI generation handler (summary + action items)
+        await ProcessingQueue.shared.setAIGenerationHandler { [weak self] recordingId in
+            FileLogger.shared.debug("AI generation handler called for recording \(recordingId)")
+            await self?.autoGenerateAIContent(recordingId: recordingId)
+            FileLogger.shared.debug("AI generation handler completed for recording \(recordingId)")
+        }
+
+        FileLogger.shared.debug("setupProcessingQueueAsync: Handlers configured successfully")
+        logger.info("Processing queue handlers configured")
     }
 
     /// Resume incomplete processing tasks from a previous session.
     /// Called after database is initialized to query for recordings that need work.
     private func resumeIncompleteProcessing() async {
+        FileLogger.shared.debug("resumeIncompleteProcessing called")
+
         guard let db = database else {
+            FileLogger.shared.debug("resumeIncompleteProcessing: database not initialized")
             logger.warning("Cannot resume incomplete processing - database not initialized")
             return
         }
@@ -289,6 +298,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         let autoSummaryEnabled = autoGenerateSummary
         let autoActionItemsEnabled = autoGenerateActionItems
 
+        FileLogger.shared.debug("resumeIncompleteProcessing: autoTranscribe=\(autoTranscribeEnabled), autoSummary=\(autoSummaryEnabled), autoActions=\(autoActionItemsEnabled)")
         logger.info("Checking for incomplete work (transcribe: \(autoTranscribeEnabled), summary: \(autoSummaryEnabled), actions: \(autoActionItemsEnabled))")
 
         // Queue any incomplete work
@@ -298,6 +308,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
             autoGenerateSummary: autoSummaryEnabled,
             autoGenerateActionItems: autoActionItemsEnabled
         )
+
+        FileLogger.shared.debug("resumeIncompleteProcessing completed")
     }
 
     // MARK: - URL Scheme Handling
@@ -344,16 +356,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         // Transcription Engine
         transcriptionEngine = TranscriptionEngine()
 
-        // Load Whisper model in background
+        // Load Whisper model - we need this before resuming incomplete transcriptions
+        // Load synchronously so resume can work, but don't block the main thread
         let engine = transcriptionEngine
         let log = logger
-        Task.detached(priority: .background) {
-            do {
-                try await engine?.loadModel()
-                log.info("Whisper model loaded")
-            } catch {
-                log.error("Failed to load Whisper model: \(error.localizedDescription)")
-            }
+        do {
+            try await engine?.loadModel()
+            log.info("Whisper model loaded")
+        } catch {
+            log.error("Failed to load Whisper model: \(error.localizedDescription)")
         }
 
         // Database (use shared instance to prevent concurrent access issues)
@@ -362,7 +373,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
             logger.info("Database initialized")
 
             // Resume any incomplete work from previous session
-            // This runs after database is ready so we can query for incomplete recordings
+            // This runs after database AND model are ready so transcriptions can succeed
             await resumeIncompleteProcessing()
         } catch {
             logger.error("Database initialization failed: \(error.localizedDescription)")
@@ -372,16 +383,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         let aiEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true
         if aiEnabled {
             let aiLog = logger
+            let db = database
+            let appDelegate = self
             Task.detached(priority: .background) {
                 do {
                     try await AIService.shared.initialize()
                     aiLog.info("AI Service initialized")
+
+                    // After AI is ready, regenerate titles for recordings with summaries but generic titles
+                    await appDelegate.regenerateMissingTitles(database: db)
                 } catch {
                     aiLog.warning("AI Service initialization failed: \(error.localizedDescription)")
                 }
             }
         } else {
             logger.info("AI Service disabled by user preference, skipping initialization")
+        }
+    }
+
+    /// Regenerate titles for recordings that have summaries but still have generic titles
+    private func regenerateMissingTitles(database: DatabaseManager?) async {
+        guard let db = database else { return }
+
+        // Wait for AI service to be fully ready (model loaded) - can take 2+ minutes
+        FileLogger.shared.debug("[TitleRegen] Waiting for AI service to be ready...")
+        var waitCount = 0
+        var aiReady = await AIService.shared.isReady
+        while !aiReady && waitCount < 180 {
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+            waitCount += 1
+            if waitCount % 30 == 0 {
+                FileLogger.shared.debug("[TitleRegen] Still waiting for AI service... (\(waitCount)s)")
+            }
+            aiReady = await AIService.shared.isReady
+        }
+
+        guard aiReady else {
+            FileLogger.shared.debug("[TitleRegen] AI service not ready after 180s, skipping title regeneration")
+            return
+        }
+        FileLogger.shared.debug("[TitleRegen] AI service ready, starting title regeneration")
+
+        do {
+            let recordings = try await db.getAllRecordings()
+            for recording in recordings {
+                // Check if title is generic (Zoom_Meeting_ or Zoom_Workplace_)
+                let isGenericTitle = recording.title.hasPrefix("Zoom_Meeting_") ||
+                                     recording.title.hasPrefix("Zoom_Workplace_") ||
+                                     recording.title.hasPrefix("Zoom Meeting")
+
+                // Check if has summary
+                let hasSummary = recording.summary != nil &&
+                                 !recording.summary!.isEmpty &&
+                                 !recording.summary!.hasPrefix("[No")
+
+                if isGenericTitle && hasSummary {
+                    FileLogger.shared.debug("[TitleRegen] Recording \(recording.id) needs title regeneration")
+                    await generateTitleFromSummary(recordingId: recording.id, summary: recording.summary!)
+                }
+            }
+        } catch {
+            logger.warning("Failed to check for missing titles: \(error.localizedDescription)")
         }
     }
     
@@ -581,6 +643,7 @@ App location: \(appPath)
     }
 
     private func transcribeRecording(id: Int64, url: URL) async {
+        FileLogger.shared.debug("[transcribeRecording] Starting for recording \(id), url: \(url.lastPathComponent)")
         logger.info("Starting auto-transcription for recording \(id)")
 
         // Notify UI that transcription started
@@ -591,7 +654,9 @@ App location: \(appPath)
         )
 
         do {
+            FileLogger.shared.debug("[transcribeRecording] Calling transcriptionEngine.transcribe...")
             let result = try await transcriptionEngine.transcribe(audioURL: url)
+            FileLogger.shared.debug("[transcribeRecording] Transcription completed: \(result.segments.count) segments, \(result.text.count) chars")
 
             let segments = result.segments.map { segment in
                 DatabaseManager.TranscriptSegment(
@@ -638,6 +703,7 @@ App location: \(appPath)
             // Queue AI generation (processed serially to avoid LLM resource conflicts)
             await ProcessingQueue.shared.queueAIGeneration(recordingId: id)
         } catch {
+            FileLogger.shared.debugError("[transcribeRecording] FAILED for recording \(id)", error: error)
             logger.error("Auto-transcription failed: \(error.localizedDescription)")
             // Notify UI that transcription completed (even on error)
             NotificationCenter.default.post(
@@ -811,9 +877,11 @@ App location: \(appPath)
                 if !summary.isEmpty {
                     try await database.saveSummary(recordingId: recordingId, summary: summary)
                     logger.info("Auto-generated summary for recording \(recordingId)")
+                    FileLogger.shared.debug("[AutoGen] Summary saved for recording \(recordingId), calling generateTitleFromSummary...")
 
                     // Generate a meaningful title from the summary if current title is generic
                     await generateTitleFromSummary(recordingId: recordingId, summary: summary)
+                    FileLogger.shared.debug("[AutoGen] generateTitleFromSummary completed for recording \(recordingId)")
 
                     // Notify UI that summary is available
                     NotificationCenter.default.post(
@@ -901,8 +969,10 @@ App location: \(appPath)
     /// Generate a meaningful title from the meeting summary using LLM
     /// Always generates an AI title since we have meaningful content (summary)
     private func generateTitleFromSummary(recordingId: Int64, summary: String) async {
+        FileLogger.shared.rag("[TitleGen] Starting for recording \(recordingId), summary length: \(summary.count)")
         do {
             logger.info("Generating title for recording \(recordingId) from summary...")
+            FileLogger.shared.rag("[TitleGen] Calling directGenerate for recording \(recordingId)...")
 
             // Generate a concise title from the summary
             let titlePrompt = """
@@ -924,6 +994,13 @@ App location: \(appPath)
             for try await token in titleStream {
                 generatedTitle += token
             }
+            FileLogger.shared.rag("[TitleGen] Raw generated title length: \(generatedTitle.count)")
+
+            // Strip <think>...</think> tags from reasoning models (e.g., Qwen3)
+            if let thinkEndRange = generatedTitle.range(of: "</think>") {
+                generatedTitle = String(generatedTitle[thinkEndRange.upperBound...])
+                FileLogger.shared.rag("[TitleGen] Stripped thinking tags, remaining: '\(generatedTitle)'")
+            }
 
             // Clean up the generated title
             generatedTitle = generatedTitle
@@ -934,12 +1011,15 @@ App location: \(appPath)
             // Validate the title
             guard !generatedTitle.isEmpty, generatedTitle.count >= 3, generatedTitle.count <= 100 else {
                 logger.warning("Generated title is invalid: '\(generatedTitle)'")
+                FileLogger.shared.rag("[TitleGen] INVALID title for recording \(recordingId): '\(generatedTitle)' (length: \(generatedTitle.count))")
                 return
             }
 
             // Update the database with the new title
+            FileLogger.shared.rag("[TitleGen] Updating database title for recording \(recordingId) to: '\(generatedTitle)'")
             try await database.updateTitle(recordingId: recordingId, newTitle: generatedTitle)
             logger.info("Updated recording \(recordingId) title to: \(generatedTitle)")
+            FileLogger.shared.rag("[TitleGen] SUCCESS: Recording \(recordingId) title updated to: '\(generatedTitle)'")
 
             // Notify UI that recording info has been updated
             NotificationCenter.default.post(
@@ -950,6 +1030,7 @@ App location: \(appPath)
 
         } catch {
             logger.warning("Failed to generate title for recording \(recordingId): \(error.localizedDescription)")
+            FileLogger.shared.rag("[TitleGen] ERROR for recording \(recordingId): \(error.localizedDescription)")
         }
     }
 

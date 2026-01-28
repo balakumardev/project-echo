@@ -83,8 +83,8 @@ public struct MessageBubble: View {
                 )
 
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                // Message content
-                Text(message.content)
+                // Message content with markdown rendering
+                Text(markdownAttributedString(from: message.content))
                     .font(Theme.Typography.body)
                     .foregroundColor(Theme.Colors.textPrimary)
                     .textSelection(.enabled)
@@ -110,6 +110,20 @@ public struct MessageBubble: View {
             }
 
             Spacer(minLength: 60)
+        }
+    }
+
+    // MARK: - Markdown Parsing
+
+    /// Parse markdown string into AttributedString for proper rendering
+    private func markdownAttributedString(from text: String) -> AttributedString {
+        do {
+            let attributed = try AttributedString(markdown: text, options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            ))
+            return attributed
+        } catch {
+            return AttributedString(text)
         }
     }
 
