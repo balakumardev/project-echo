@@ -11,6 +11,7 @@ import Intelligence
 import Database
 import UI
 import os.log
+import Darwin  // For signal handlers (SIGTERM, SIGINT)
 
 // Re-export types needed for AI Chat
 public typealias RAGPipelineProtocol = UI.RAGPipelineProtocol
@@ -255,7 +256,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         // Setup Meeting Detection
         setupMeetingDetection()
 
+        // Setup signal handlers for graceful termination
+        setupSignalHandlers()
+
         logger.info("Engram ready")
+    }
+
+    /// Setup signal handlers for SIGTERM and SIGINT to attempt graceful recording finalization
+    private func setupSignalHandlers() {
+        // SIGTERM - sent by `kill` command or system shutdown
+        signal(SIGTERM) { _ in
+            FileLogger.shared.debug("SIGTERM received - requesting app termination")
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+        }
+
+        // SIGINT - sent by Ctrl+C in terminal
+        signal(SIGINT) { _ in
+            FileLogger.shared.debug("SIGINT received - requesting app termination")
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+        }
+
+        logger.info("Signal handlers configured for graceful termination")
     }
 
     private func setupProcessingQueueAsync() async {
@@ -1424,6 +1449,69 @@ App location: \(appPath)
                 await meetingDetector.handleSystemWake()
             }
         }
+    }
+
+    // MARK: - App Termination Handling
+
+    func applicationWillTerminate(_ notification: Notification) {
+        logger.info("Application will terminate - attempting graceful recording shutdown")
+        FileLogger.shared.debug("applicationWillTerminate called - finalizing recordings")
+
+        // Use a semaphore to block until finalization completes (or timeout)
+        let semaphore = DispatchSemaphore(value: 0)
+        let timeout = DispatchTime.now() + .seconds(5)
+
+        Task {
+            await finalizeActiveRecordings()
+            semaphore.signal()
+        }
+
+        // Wait for finalization (with timeout to avoid hanging)
+        let result = semaphore.wait(timeout: timeout)
+        if result == .timedOut {
+            logger.warning("Recording finalization timed out during app termination")
+            FileLogger.shared.debug("applicationWillTerminate: finalization timed out after 5s")
+        } else {
+            FileLogger.shared.debug("applicationWillTerminate: finalization completed")
+        }
+    }
+
+    /// Emergency finalization of any active recordings
+    /// Called during app termination to save as much data as possible
+    private func finalizeActiveRecordings() async {
+        // Check if we have active recordings
+        guard currentRecordingURL != nil || currentVideoRecordingURL != nil else {
+            FileLogger.shared.debug("finalizeActiveRecordings: no active recordings to finalize")
+            return
+        }
+
+        logger.info("Finalizing active recordings...")
+        FileLogger.shared.debug("finalizeActiveRecordings: starting emergency finalization")
+
+        // Stop audio recording
+        if currentRecordingURL != nil {
+            do {
+                _ = try await audioEngine.stopRecording()
+                FileLogger.shared.debug("finalizeActiveRecordings: audio recording finalized")
+            } catch {
+                logger.error("Failed to finalize audio recording: \(error.localizedDescription)")
+                FileLogger.shared.debug("finalizeActiveRecordings: audio finalization failed: \(error)")
+            }
+        }
+
+        // Stop video recording
+        if currentVideoRecordingURL != nil {
+            do {
+                _ = try await screenRecorder.stopRecording()
+                FileLogger.shared.debug("finalizeActiveRecordings: video recording finalized")
+            } catch {
+                logger.error("Failed to finalize video recording: \(error.localizedDescription)")
+                FileLogger.shared.debug("finalizeActiveRecordings: video finalization failed: \(error)")
+            }
+        }
+
+        logger.info("Emergency recording finalization complete")
+        FileLogger.shared.debug("finalizeActiveRecordings: completed")
     }
 }
 

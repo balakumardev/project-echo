@@ -27,6 +27,12 @@ final class VideoWriter: @unchecked Sendable {
 
         assetWriter = try AVAssetWriter(url: outputURL, fileType: .mov)
 
+        // Enable fragmented movie writing for crash resistance
+        // This writes the moov atom every 5 seconds instead of only at finalization
+        // If the app crashes mid-recording, the file will still be playable up to the last fragment
+        assetWriter?.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
+        fileDebugLog("VideoWriter: Configured with movieFragmentInterval=5s for crash resistance")
+
         // Choose codec: HEVC (H.265) for ~40% smaller files, or H.264 for compatibility
         // Both are hardware accelerated on Apple Silicon
         let codec: AVVideoCodecType = useHEVC ? .hevc : .h264

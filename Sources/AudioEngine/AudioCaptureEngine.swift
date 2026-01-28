@@ -63,9 +63,15 @@ final class AudioWriter: @unchecked Sendable {
     func configure(outputURL: URL, targetSampleRate: Double) throws {
         lock.lock()
         defer { lock.unlock() }
-        
+
         // Use MOV format to support multiple audio tracks
         assetWriter = try AVAssetWriter(url: outputURL, fileType: .mov)
+
+        // Enable fragmented movie writing for crash resistance
+        // This writes the moov atom every 5 seconds instead of only at finalization
+        // If the app crashes mid-recording, the file will still be playable up to the last fragment
+        assetWriter?.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
+        fileDebugLog("[AudioWriter] Configured with movieFragmentInterval=5s for crash resistance")
         
         // Track 1: Microphone (MONO)
         let micSettings: [String: Any] = [

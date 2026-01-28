@@ -17,6 +17,7 @@ final class VideoPlayerModel: ObservableObject {
 
     private var timeObserver: Any?
     private var fullscreenWindow: NSWindow?
+    private var windowDelegate: FullscreenWindowDelegate?
     let videoURL: URL
 
     init(url: URL) {
@@ -119,10 +120,24 @@ final class VideoPlayerModel: ObservableObject {
     }
 
     func exitFullscreen() {
-        if let window = fullscreenWindow {
-            if window.styleMask.contains(.fullScreen) {
-                window.toggleFullScreen(nil)
+        guard let window = fullscreenWindow else {
+            isFullscreen = false
+            return
+        }
+
+        if window.styleMask.contains(.fullScreen) {
+            // Set up delegate to close window after transition completes
+            windowDelegate = FullscreenWindowDelegate { [weak self] in
+                Task { @MainActor in
+                    self?.fullscreenWindow?.close()
+                    self?.fullscreenWindow = nil
+                    self?.windowDelegate = nil
+                }
             }
+            window.delegate = windowDelegate
+            window.toggleFullScreen(nil)
+        } else {
+            // Not in fullscreen, safe to close immediately
             window.close()
             fullscreenWindow = nil
         }
@@ -130,6 +145,20 @@ final class VideoPlayerModel: ObservableObject {
     }
 
     func cleanup() {
+        // Exit fullscreen first if active
+        if isFullscreen, let window = fullscreenWindow {
+            // Force close without animation to avoid crash during cleanup
+            window.delegate = nil
+            if window.styleMask.contains(.fullScreen) {
+                // Use orderOut instead of close to avoid animation issues
+                window.orderOut(nil)
+            }
+            window.close()
+            fullscreenWindow = nil
+            windowDelegate = nil
+            isFullscreen = false
+        }
+
         // Remove time observer to prevent leaks
         if let observer = timeObserver {
             player.removeTimeObserver(observer)
@@ -142,6 +171,27 @@ final class VideoPlayerModel: ObservableObject {
         // Ensure cleanup on deallocation
         // Note: Can't call cleanup() directly since deinit is nonisolated
         // The time observer uses [weak self] so it won't retain us
+    }
+}
+
+// MARK: - Fullscreen Window Delegate
+
+@available(macOS 14.0, *)
+private class FullscreenWindowDelegate: NSObject, NSWindowDelegate {
+    private let onExitFullscreen: () -> Void
+
+    init(onExitFullscreen: @escaping () -> Void) {
+        self.onExitFullscreen = onExitFullscreen
+        super.init()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        // Called after fullscreen transition completes - safe to close now
+        onExitFullscreen()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Window is closing, nothing to do
     }
 }
 
@@ -162,6 +212,11 @@ struct NativeVideoPlayerView: NSViewRepresentable {
 
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
         nsView.player = player
+    }
+
+    static func dismantleNSView(_ nsView: AVPlayerView, coordinator: ()) {
+        // Clean up the player view to prevent retain cycles
+        nsView.player = nil
     }
 }
 

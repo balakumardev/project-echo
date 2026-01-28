@@ -17,73 +17,113 @@ struct AudioPlayerCard: View {
     @State private var timer: Timer?
 
     var body: some View {
-        GlassCard(padding: Theme.Spacing.lg) {
-            VStack(spacing: Theme.Spacing.lg) {
-                // Waveform
-                WaveformView(
-                    progress: player.duration > 0 ? currentTime / player.duration : 0,
-                    duration: player.duration,
-                    onSeek: { time in
-                        player.currentTime = time
-                        currentTime = time
-                    }
-                )
-
-                // Time display
+        GlassCard(padding: Theme.Spacing.md) {
+            VStack(spacing: Theme.Spacing.md) {
+                // Compact header with label
                 HStack {
-                    Text(Formatters.formatTime(currentTime))
-                        .font(Theme.Typography.monoBody)
+                    Label("Audio Recording", systemImage: "waveform")
+                        .font(Theme.Typography.callout)
                         .foregroundColor(Theme.Colors.textSecondary)
-
                     Spacer()
-
-                    Text("-" + Formatters.formatTime(player.duration - currentTime))
-                        .font(Theme.Typography.monoBody)
-                        .foregroundColor(Theme.Colors.textMuted)
-                }
-
-                // Controls
-                HStack(spacing: Theme.Spacing.xl) {
                     // Playback rate
                     PlaybackRateButton(rate: $playbackRate) { newRate in
                         player.rate = newRate
                     }
+                }
 
-                    Spacer()
+                // Progress bar with scrubber
+                GeometryReader { geometry in
+                    let progress = player.duration > 0 ? currentTime / player.duration : 0
+                    let scrubberX = geometry.size.width * CGFloat(progress)
 
-                    // Main controls
-                    HStack(spacing: Theme.Spacing.lg) {
-                        IconButton(icon: "gobackward.10", size: 40, style: .ghost) {
-                            player.currentTime = max(0, player.currentTime - 10)
-                        }
-                        .accessibilityLabel("Skip back 10 seconds")
+                    ZStack(alignment: .leading) {
+                        // Track background
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Theme.Colors.surfaceHover)
+                            .frame(height: 6)
+                            .frame(maxHeight: .infinity, alignment: .center)
 
-                        // Play/Pause button
-                        Button {
-                            togglePlayback()
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .fill(Theme.Colors.primary)
-                                    .frame(width: 56, height: 56)
+                        // Progress fill
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Theme.Colors.primary)
+                            .frame(width: max(0, scrubberX), height: 6)
+                            .frame(maxHeight: .infinity, alignment: .center)
 
-                                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 22, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .offset(x: isPlaying ? 0 : 2)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .shadow(color: Theme.Colors.primary.opacity(0.4), radius: 12, y: 4)
-                        .accessibilityLabel(isPlaying ? "Pause" : "Play")
-
-                        IconButton(icon: "goforward.10", size: 40, style: .ghost) {
-                            player.currentTime = min(player.duration, player.currentTime + 10)
-                        }
-                        .accessibilityLabel("Skip forward 10 seconds")
+                        // Scrubber handle
+                        Circle()
+                            .fill(Theme.Colors.primary)
+                            .frame(width: 14, height: 14)
+                            .shadow(color: Theme.Colors.primary.opacity(0.4), radius: 3, y: 1)
+                            .position(x: max(7, min(geometry.size.width - 7, scrubberX)), y: geometry.size.height / 2)
                     }
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let newProgress = min(max(0, value.location.x / geometry.size.width), 1)
+                                let newTime = player.duration * newProgress
+                                player.currentTime = newTime
+                                currentTime = newTime
+                            }
+                    )
+                }
+                .frame(height: 24)
+
+                // Controls row - compact
+                HStack(spacing: Theme.Spacing.md) {
+                    // Time
+                    Text(Formatters.formatTime(currentTime))
+                        .font(Theme.Typography.monoSmall)
+                        .foregroundColor(Theme.Colors.textSecondary)
+                        .frame(width: 50, alignment: .leading)
 
                     Spacer()
+
+                    // Skip back
+                    Button {
+                        player.currentTime = max(0, player.currentTime - 10)
+                    } label: {
+                        Image(systemName: "gobackward.10")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(Theme.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    // Play/Pause button - smaller
+                    Button {
+                        togglePlayback()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Theme.Colors.primary)
+                                .frame(width: 44, height: 44)
+
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .offset(x: isPlaying ? 0 : 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 8, y: 3)
+
+                    // Skip forward
+                    Button {
+                        player.currentTime = min(player.duration, player.currentTime + 10)
+                    } label: {
+                        Image(systemName: "goforward.10")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(Theme.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    // Remaining time
+                    Text("-" + Formatters.formatTime(player.duration - currentTime))
+                        .font(Theme.Typography.monoSmall)
+                        .foregroundColor(Theme.Colors.textMuted)
+                        .frame(width: 50, alignment: .trailing)
 
                     // Volume
                     VolumeControl(volume: $volume) { newVolume in
