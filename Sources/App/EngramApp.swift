@@ -1623,7 +1623,6 @@ struct SettingsTabButton: View {
 struct GeneralSettingsView: View {
     @AppStorage("autoRecord") private var autoRecord = true
     @AppStorage("autoTranscribe") private var autoTranscribe = true
-    @AppStorage("whisperModel") private var whisperModel = "small.en"
     @AppStorage("storageLocation") private var storageLocation = "~/Documents/Engram"
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
     @AppStorage("recordVideoEnabled") private var recordVideoEnabled: Bool = false
@@ -1763,36 +1762,6 @@ struct GeneralSettingsView: View {
 
                             MeetingAppsPickerView()
                         }
-                    }
-                }
-
-                // Transcription Section
-                SettingsSection(title: "Transcription", icon: "text.quote") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Whisper Model")
-                            .font(.system(size: 13))
-                            .foregroundColor(Theme.Colors.textPrimary)
-
-                        Picker("", selection: $whisperModel) {
-                            Text("Tiny").tag("tiny.en")
-                            Text("Base").tag("base.en")
-                            Text("Small (Recommended)").tag("small.en")
-                            Text("Medium").tag("medium.en")
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .onChange(of: whisperModel) { oldValue, newValue in
-                            // Reload Whisper model when user changes selection
-                            Task {
-                                if let appDelegate = NSApp.delegate as? AppDelegate {
-                                    await appDelegate.reloadWhisperModel()
-                                }
-                            }
-                        }
-
-                        Text("Larger models are more accurate but use more resources. Changes take effect immediately.")
-                            .font(.system(size: 11))
-                            .foregroundColor(Theme.Colors.textMuted)
                     }
                 }
 
@@ -2114,7 +2083,6 @@ struct AdvancedSettingsView: View {
         // Reset all AppStorage values to defaults
         UserDefaults.standard.removeObject(forKey: "autoRecord")
         UserDefaults.standard.removeObject(forKey: "autoTranscribe")
-        UserDefaults.standard.removeObject(forKey: "whisperModel")
         UserDefaults.standard.removeObject(forKey: "storageLocation")
         UserDefaults.standard.removeObject(forKey: "autoRecordOnWake")
         UserDefaults.standard.removeObject(forKey: "recordVideoEnabled")
@@ -2146,6 +2114,12 @@ struct AISettingsView: View {
     @AppStorage("autoGenerateSummary") private var autoGenerateSummary = true
     @AppStorage("autoGenerateActionItems") private var autoGenerateActionItems = true
     @State private var isRebuildingIndex = false
+
+    // Transcription provider settings
+    @AppStorage("transcriptionProvider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("geminiAPIKey") private var geminiAPIKey = ""
+    @AppStorage("geminiModel") private var geminiModel = "gemini-3-flash-preview"
+    @AppStorage("whisperModel") private var whisperModel = "small.en"
 
     // MARK: - Pending State (unified apply)
     /// Pending provider selection (nil means no change from current)
@@ -2262,6 +2236,124 @@ struct AISettingsView: View {
 
                 // Status Section - Shows current AI state
                 statusSection
+
+                // Transcription Section
+                SettingsSection(title: "Transcription", icon: "text.quote") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        // Provider Selection
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Provider")
+                                .font(.system(size: 13))
+                                .foregroundColor(Theme.Colors.textPrimary)
+
+                            Picker("", selection: $transcriptionProvider) {
+                                Text("Local (WhisperKit)").tag("whisperkit")
+                                Text("Gemini Cloud").tag("gemini-cloud")
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+
+                        Divider()
+
+                        // Local Provider Settings
+                        if transcriptionProvider == "whisperkit" {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Whisper Model")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                Picker("", selection: $whisperModel) {
+                                    Text("Tiny").tag("tiny.en")
+                                    Text("Base").tag("base.en")
+                                    Text("Small (Recommended)").tag("small.en")
+                                    Text("Medium").tag("medium.en")
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .onChange(of: whisperModel) { oldValue, newValue in
+                                    Task {
+                                        if let appDelegate = NSApp.delegate as? AppDelegate {
+                                            await appDelegate.reloadWhisperModel()
+                                        }
+                                    }
+                                }
+
+                                Text("Larger models are more accurate but use more resources.")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+
+                                // Local benefits
+                                HStack(spacing: 6) {
+                                    Image(systemName: "checkmark.shield.fill")
+                                        .foregroundColor(.green)
+                                        .font(.system(size: 11))
+                                    Text("Private: Audio never leaves your device")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.Colors.textMuted)
+                                }
+                            }
+                        }
+
+                        // Gemini Cloud Settings
+                        if transcriptionProvider == "gemini-cloud" {
+                            VStack(alignment: .leading, spacing: 12) {
+                                // API Key
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("API Key")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(Theme.Colors.textPrimary)
+
+                                    SecureField("Enter your Gemini API key", text: $geminiAPIKey)
+                                        .textFieldStyle(.roundedBorder)
+
+                                    Link("Get API key from Google AI Studio",
+                                         destination: URL(string: "https://aistudio.google.com/app/apikey")!)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.Colors.primary)
+                                }
+
+                                // Model Selection
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Model")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(Theme.Colors.textPrimary)
+
+                                    Picker("", selection: $geminiModel) {
+                                        Text("Gemini 3 Pro (Best quality)").tag("gemini-3-pro-preview")
+                                        Text("Gemini 3 Flash (Recommended)").tag("gemini-3-flash-preview")
+                                        Text("Gemini 2.5 Flash Lite (Fastest)").tag("gemini-2.5-flash-lite")
+                                        Text("Gemini 2.0 Flash (Stable)").tag("gemini-2.0-flash")
+                                    }
+                                    .labelsHidden()
+
+                                    Text(geminiModelDescription)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.Colors.textMuted)
+                                }
+
+                                // Privacy Warning
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                        .font(.system(size: 14))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Cloud Processing")
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundColor(.orange)
+                                        Text("Audio will be sent to Google's servers for transcription. Requires internet connection and may incur API usage fees.")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.Colors.textMuted)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .padding(10)
+                                .background(Color.orange.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                        }
+                    }
+                }
 
                 // AI Provider Section
                 SettingsSection(title: "AI Provider", icon: "cpu") {
@@ -3240,6 +3332,21 @@ struct AISettingsView: View {
             return "Uses Apple's MLX framework for on-device AI. Best for Apple Silicon Macs. Your data stays private."
         case .openAICompatible:
             return "Uses OpenAI's API. Requires internet connection and API key. Faster but data is sent to OpenAI."
+        }
+    }
+
+    private var geminiModelDescription: String {
+        switch geminiModel {
+        case "gemini-3-pro-preview":
+            return "Highest accuracy, advanced reasoning. Best for complex meetings."
+        case "gemini-3-flash-preview":
+            return "Good balance of speed and quality. Recommended for most use cases."
+        case "gemini-2.5-flash-lite":
+            return "Fastest and lowest cost. Good for simple conversations."
+        case "gemini-2.0-flash":
+            return "Stable release. Reliable fallback option."
+        default:
+            return "Select a model for cloud transcription."
         }
     }
 

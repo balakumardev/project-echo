@@ -60,6 +60,8 @@ public actor TranscriptionEngine {
         case modelNotLoaded
         case audioConversionFailed
         case transcriptionFailed
+        case configurationError(String)
+        case geminiError(String)
     }
     
     // MARK: - Properties
@@ -67,6 +69,12 @@ public actor TranscriptionEngine {
     private let logger = Logger(subsystem: "dev.balakumar.engram", category: "Transcription")
     nonisolated(unsafe) private var whisperKit: WhisperKit?
     private var isModelLoaded = false
+
+    // Transcription configuration
+    private var config: TranscriptionConfig
+
+    // Gemini cloud transcriber (lazy-initialized)
+    private var geminiTranscriber: GeminiTranscriber?
 
     // Diarization components (lazy-initialized)
     private var diarizationEngine: SpeakerDiarizationEngine?
@@ -100,7 +108,43 @@ public actor TranscriptionEngine {
 
     // MARK: - Initialization
 
-    public init() {}
+    public init() {
+        self.config = TranscriptionConfig.load()
+    }
+
+    // MARK: - Configuration
+
+    /// Get the current transcription configuration
+    public var currentConfig: TranscriptionConfig {
+        config
+    }
+
+    /// Update the transcription configuration
+    public func setConfig(_ newConfig: TranscriptionConfig) {
+        config = newConfig
+        config.save()
+        logger.info("Transcription config updated: provider=\(newConfig.provider.rawValue)")
+    }
+
+    /// Set the transcription provider
+    public func setProvider(_ provider: TranscriptionProvider) {
+        config.provider = provider
+        config.save()
+        logger.info("Transcription provider set to: \(provider.rawValue)")
+    }
+
+    /// Configure Gemini settings
+    public func configureGemini(apiKey: String, model: GeminiModel = .gemini3Flash) {
+        config.geminiAPIKey = apiKey
+        config.geminiModel = model
+        config.save()
+        logger.info("Gemini configured: model=\(model.rawValue)")
+    }
+
+    /// Check if Gemini is properly configured
+    public var isGeminiConfigured: Bool {
+        !config.geminiAPIKey.isEmpty
+    }
        
     // MARK: - Model Management
     
@@ -142,18 +186,82 @@ public actor TranscriptionEngine {
     /// Transcribe an audio file with speaker diarization
     /// - Parameters:
     ///   - audioURL: URL to the audio file to transcribe
-    ///   - enableDiarization: Whether to run speaker diarization (default: true)
+    ///   - enableDiarization: Whether to run speaker diarization (default: true, ignored for Gemini)
     ///   - diarizationOptions: Options for speaker diarization (default: .meetings for optimal accuracy)
     public func transcribe(
         audioURL: URL,
         enableDiarization: Bool = true,
         diarizationOptions: SpeakerDiarizationEngine.DiarizationOptions = .meetings
     ) async throws -> TranscriptionResult {
+        // Route to appropriate provider
+        switch config.provider {
+        case .local:
+            return try await transcribeWithWhisperKit(
+                audioURL: audioURL,
+                enableDiarization: enableDiarization,
+                diarizationOptions: diarizationOptions
+            )
+        case .gemini:
+            return try await transcribeWithGemini(audioURL: audioURL)
+        }
+    }
+
+    /// Transcribe using Gemini cloud API
+    private func transcribeWithGemini(audioURL: URL) async throws -> TranscriptionResult {
+        guard !config.geminiAPIKey.isEmpty else {
+            throw TranscriptionError.configurationError("Gemini API key is not configured")
+        }
+
+        logger.info("Starting Gemini transcription: \(audioURL.lastPathComponent)")
+        let startTime = Date()
+
+        // Initialize Gemini transcriber if needed
+        if geminiTranscriber == nil {
+            geminiTranscriber = GeminiTranscriber()
+        }
+
+        guard let transcriber = geminiTranscriber else {
+            throw TranscriptionError.transcriptionFailed
+        }
+
+        do {
+            let geminiSegments = try await transcriber.transcribe(
+                audioURL: audioURL,
+                apiKey: config.geminiAPIKey,
+                model: config.geminiModel
+            )
+
+            // Convert Gemini segments to engine segments
+            let segments = geminiSegments.map { $0.toEngineSegment() }
+            let fullText = segments.map { $0.text }.joined(separator: " ")
+            let processingTime = Date().timeIntervalSince(startTime)
+
+            logger.info("Gemini transcription complete: \(segments.count) segments in \(processingTime)s")
+
+            return TranscriptionResult(
+                text: fullText,
+                segments: segments,
+                language: "en", // Gemini doesn't return language, assume English
+                processingTime: processingTime
+            )
+        } catch let error as GeminiTranscriber.GeminiError {
+            throw TranscriptionError.geminiError(error.localizedDescription)
+        } catch {
+            throw TranscriptionError.geminiError(error.localizedDescription)
+        }
+    }
+
+    /// Transcribe using local WhisperKit
+    private func transcribeWithWhisperKit(
+        audioURL: URL,
+        enableDiarization: Bool,
+        diarizationOptions: SpeakerDiarizationEngine.DiarizationOptions
+    ) async throws -> TranscriptionResult {
         guard isModelLoaded, let kit = whisperKit else {
             throw TranscriptionError.modelNotLoaded
         }
 
-        logger.info("Starting transcription: \(audioURL.lastPathComponent)")
+        logger.info("Starting WhisperKit transcription: \(audioURL.lastPathComponent)")
         let startTime = Date()
 
         // Step 1: Extract and mix audio tracks (mic + system audio)
