@@ -49,6 +49,7 @@ public actor AIService {
     public enum Provider: String, Sendable, CaseIterable, Codable {
         case localMLX = "local-mlx"
         case openAICompatible = "openai"
+        case gemini = "gemini"
     }
 
     /// Memory check result
@@ -106,6 +107,9 @@ public actor AIService {
         public var openAIBaseURL: String = ""
         public var openAIModel: String = "gpt-4o-mini"
         public var openAITemperature: Float = 1.0
+        public var geminiKey: String = ""
+        public var geminiAIModel: String = GeminiAIModel.gemini25FlashLite.rawValue
+        public var geminiTemperature: Float = 0.3
         public var autoIndexTranscripts: Bool = true
         public var autoUnloadEnabled: Bool = true   // NEW: Enable auto-unload to save memory
         public var autoUnloadMinutes: Int = 5       // NEW: Minutes of inactivity before unloading (0 = disabled)
@@ -312,6 +316,23 @@ public actor AIService {
             }
         } else if provider == .openAICompatible && config.openAIKey.isEmpty {
             logToFile("[AIService] OpenAI provider selected but no API key configured")
+        } else if provider == .gemini && !config.geminiKey.isEmpty {
+            // Auto-configure Gemini on startup if saved provider is gemini
+            logger.info("Auto-configuring Gemini backend on startup")
+            logToFile("[AIService] Auto-configuring Gemini backend: model=\(config.geminiAIModel), temperature=\(config.geminiTemperature)")
+            do {
+                try await configureGemini(
+                    apiKey: config.geminiKey,
+                    model: config.geminiAIModel,
+                    temperature: config.geminiTemperature
+                )
+                logToFile("[AIService] Gemini backend auto-configured successfully")
+            } catch {
+                logger.warning("Failed to auto-configure Gemini: \(error.localizedDescription)")
+                logToFile("[AIService] Failed to auto-configure Gemini: \(error.localizedDescription)")
+            }
+        } else if provider == .gemini && config.geminiKey.isEmpty {
+            logToFile("[AIService] Gemini provider selected but no API key configured")
         }
 
         // Update indexing count
@@ -505,27 +526,69 @@ public actor AIService {
         logger.info("OpenAI backend configured: \(model) with temperature: \(temperature)")
     }
 
+    /// Configure Google Gemini API backend
+    public func configureGemini(apiKey: String, model: String, temperature: Float = 0.3) async throws {
+        logger.info("Configuring Gemini backend")
+
+        // Ensure initialized
+        if !isInitialized {
+            try await initialize()
+        }
+
+        guard !apiKey.isEmpty else {
+            throw AIError.openAINotConfigured  // Reuse error - key is empty
+        }
+
+        // Unload any MLX model
+        await unloadMLXModel()
+
+        // Configure Gemini backend on LLM engine
+        await llmEngine?.setGeminiBackend(apiKey: apiKey, model: model, temperature: temperature)
+
+        // Save config
+        config.provider = .gemini
+        config.geminiKey = apiKey
+        config.geminiAIModel = model
+        config.geminiTemperature = temperature
+        saveConfig()
+
+        provider = .gemini
+        status = .ready(modelName: GeminiAIModel(rawValue: model)?.displayName ?? model)
+
+        logger.info("Gemini backend configured: \(model) with temperature: \(temperature)")
+    }
+
     /// Switch between providers
     public func setProvider(_ newProvider: Provider) async throws {
         guard newProvider != provider else { return }
 
         logger.info("Switching provider to: \(newProvider.rawValue)")
 
-        if newProvider == .localMLX {
+        switch newProvider {
+        case .localMLX:
             // Switch to local - need to load a model
             if isModelCached(config.selectedModelId) {
                 try await setupModel(config.selectedModelId)
             } else {
                 status = .notConfigured
             }
-        } else {
-            // Switch to OpenAI
+        case .openAICompatible:
             if !config.openAIKey.isEmpty {
                 try await configureOpenAI(
                     apiKey: config.openAIKey,
                     baseURL: config.openAIBaseURL.isEmpty ? nil : config.openAIBaseURL,
                     model: config.openAIModel,
                     temperature: config.openAITemperature
+                )
+            } else {
+                status = .notConfigured
+            }
+        case .gemini:
+            if !config.geminiKey.isEmpty {
+                try await configureGemini(
+                    apiKey: config.geminiKey,
+                    model: config.geminiAIModel,
+                    temperature: config.geminiTemperature
                 )
             } else {
                 status = .notConfigured

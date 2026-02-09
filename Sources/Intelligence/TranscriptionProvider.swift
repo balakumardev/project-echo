@@ -62,6 +62,41 @@ public enum GeminiModel: String, Sendable, CaseIterable, Codable {
     }
 }
 
+/// Available Gemini models for AI text generation (chat, summarization, title generation)
+/// Separate from GeminiModel (transcription) - text tasks use cheaper/faster models
+public enum GeminiAIModel: String, Sendable, CaseIterable, Codable {
+    case gemini25FlashLite = "gemini-2.5-flash-lite"
+    case gemini25Flash = "gemini-2.5-flash"
+    case gemini3Flash = "gemini-3-flash-preview"
+    case gemini3Pro = "gemini-3-pro-preview"
+
+    public var displayName: String {
+        switch self {
+        case .gemini25FlashLite:
+            return "Gemini 2.5 Flash Lite (Cheapest)"
+        case .gemini25Flash:
+            return "Gemini 2.5 Flash"
+        case .gemini3Flash:
+            return "Gemini 3 Flash"
+        case .gemini3Pro:
+            return "Gemini 3 Pro (Best quality)"
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .gemini25FlashLite:
+            return "$0.10/M input, $0.40/M output. Fast and cost-effective for summaries and chat."
+        case .gemini25Flash:
+            return "$0.15/M input, $0.60/M output. Good balance of quality and cost."
+        case .gemini3Flash:
+            return "Latest Flash model. Fast with good quality."
+        case .gemini3Pro:
+            return "Highest quality. Best for complex analysis and detailed responses."
+        }
+    }
+}
+
 /// Configuration for transcription providers
 public struct TranscriptionConfig: Codable, Sendable, Equatable {
     public var provider: TranscriptionProvider

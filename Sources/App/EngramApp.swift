@@ -2141,6 +2141,9 @@ struct AISettingsView: View {
     @AppStorage("autoIndexTranscripts") private var autoIndexTranscripts = true
     @AppStorage("autoGenerateSummary") private var autoGenerateSummary = true
     @AppStorage("autoGenerateActionItems") private var autoGenerateActionItems = true
+    // Transcription settings (read here for Gemini key sync)
+    @AppStorage("transcriptionProvider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("geminiAPIKey") private var geminiAPIKey = ""
     @State private var isRebuildingIndex = false
     @State private var rebuildError: String?
     @State private var clearModelsError: String?
@@ -2158,6 +2161,12 @@ struct AISettingsView: View {
     @State private var pendingOpenAITemperature: Float = 1.0
     /// Pending MLX model ID (nil means no change from current)
     @State private var pendingMLXModel: String?
+    /// Pending Gemini API key
+    @State private var pendingGeminiKey: String = ""
+    /// Pending Gemini AI model
+    @State private var pendingGeminiAIModel: String = GeminiAIModel.gemini25FlashLite.rawValue
+    /// Pending Gemini temperature
+    @State private var pendingGeminiTemperature: Float = 0.3
     /// Whether initial values have been loaded from service
     @State private var hasLoadedInitial = false
     /// Whether changes are currently being applied
@@ -2207,6 +2216,15 @@ struct AISettingsView: View {
             }
         }
 
+        // Check Gemini config if using Gemini (current or pending)
+        if effectiveSelectedProvider == .gemini {
+            if pendingGeminiKey != aiService.geminiKey ||
+               pendingGeminiAIModel != aiService.geminiAIModel ||
+               pendingGeminiTemperature != aiService.geminiTemperature {
+                return true
+            }
+        }
+
         return false
     }
 
@@ -2226,6 +2244,13 @@ struct AISettingsView: View {
                 return "OpenAI API - \(aiService.openAIModel)"
             } else {
                 return "OpenAI API - Not connected"
+            }
+        case .gemini:
+            if case .ready = aiService.status {
+                let modelName = GeminiAIModel(rawValue: aiService.geminiAIModel)?.displayName ?? aiService.geminiAIModel
+                return "Gemini - \(modelName)"
+            } else {
+                return "Gemini - Not connected"
             }
         }
     }
@@ -2395,14 +2420,14 @@ struct AISettingsView: View {
                         }
 
                         Picker("Provider", selection: Binding(
-                            get: { effectiveSelectedProvider == .localMLX ? "local-mlx" : "openai" },
+                            get: { effectiveSelectedProvider.rawValue },
                             set: { newValue in
-                                // Only update pending state - don't apply immediately
-                                pendingProvider = (newValue == "local-mlx") ? .localMLX : .openAICompatible
+                                pendingProvider = AIService.Provider(rawValue: newValue) ?? .localMLX
                             }
                         )) {
                             Text("Local (MLX)").tag("local-mlx")
                             Text("OpenAI API").tag("openai")
+                            Text("Gemini").tag("gemini")
                         }
                         .pickerStyle(.segmented)
 
@@ -2561,6 +2586,156 @@ struct AISettingsView: View {
                             if let result = aiService.connectionTestResult {
                                 connectionTestResultView(result)
                             }
+                        }
+                    }
+                }
+
+                // Gemini Configuration Section
+                if effectiveSelectedProvider == .gemini {
+                    SettingsSection(title: "Gemini Configuration", icon: "key") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            // API Key
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text("API Key")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(Theme.Colors.textPrimary)
+
+                                    // Show "Shared with Transcription" badge when both use Gemini
+                                    if transcriptionProvider == "gemini-cloud" {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "link")
+                                                .font(.system(size: 8))
+                                            Text("Shared with Transcription")
+                                        }
+                                        .font(.system(size: 9, weight: .medium))
+                                        .foregroundColor(Theme.Colors.primary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule()
+                                                .fill(Theme.Colors.primaryMuted)
+                                        )
+                                    }
+                                }
+
+                                SecureField("Enter your Gemini API key", text: $pendingGeminiKey)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .padding(8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Theme.Colors.surface)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(pendingGeminiKey != aiService.geminiKey ? Theme.Colors.warning : Theme.Colors.border, lineWidth: 1)
+                                    )
+                                    .onChange(of: pendingGeminiKey) { _, newValue in
+                                        // Sync to transcription key when both use Gemini
+                                        if transcriptionProvider == "gemini-cloud" {
+                                            geminiAPIKey = newValue
+                                        }
+                                    }
+
+                                Link("Get API key from Google AI Studio",
+                                     destination: URL(string: "https://aistudio.google.com/app/apikey")!)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.primary)
+                            }
+
+                            // AI Model Selection
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("AI Model")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                Picker("", selection: $pendingGeminiAIModel) {
+                                    ForEach(GeminiAIModel.allCases, id: \.rawValue) { model in
+                                        Text(model.displayName).tag(model.rawValue)
+                                    }
+                                }
+                                .labelsHidden()
+
+                                if let model = GeminiAIModel(rawValue: pendingGeminiAIModel) {
+                                    Text(model.description)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.Colors.textMuted)
+                                }
+                            }
+
+                            // Temperature Slider
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text("Temperature")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(Theme.Colors.textPrimary)
+                                    Spacer()
+                                    Text(String(format: "%.1f", pendingGeminiTemperature))
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .foregroundColor(pendingGeminiTemperature != aiService.geminiTemperature ? Theme.Colors.warning : Theme.Colors.textSecondary)
+                                }
+
+                                Slider(value: $pendingGeminiTemperature, in: 0.0...2.0, step: 0.1)
+                                    .tint(pendingGeminiTemperature != aiService.geminiTemperature ? Theme.Colors.warning : Theme.Colors.primary)
+
+                                Text("Lower = more factual (0.3 recommended for summaries), higher = more creative")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            // Test connection button
+                            HStack(spacing: 8) {
+                                Button {
+                                    testGeminiConnectionWithPendingValues()
+                                } label: {
+                                    if aiService.isTestingConnection {
+                                        HStack(spacing: 6) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                                .frame(width: 14, height: 14)
+                                            Text("Testing...")
+                                        }
+                                    } else {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                                .font(.system(size: 12))
+                                            Text("Test Connection")
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(pendingGeminiKey.isEmpty || aiService.isTestingConnection)
+
+                                Text("Tests with your entered API key (before applying)")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            // Connection test result feedback
+                            if let result = aiService.connectionTestResult {
+                                connectionTestResultView(result)
+                            }
+
+                            // Cloud processing warning
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.system(size: 14))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Cloud Processing")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(.orange)
+                                    Text("Text will be sent to Google's servers for AI processing. Requires internet connection and may incur API usage fees.")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.Colors.textMuted)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(8)
                         }
                     }
                 }
@@ -2740,6 +2915,27 @@ struct AISettingsView: View {
         .onChange(of: aiService.openAITemperature) { _, newValue in
             if !hasLoadedInitial {
                 pendingOpenAITemperature = newValue
+            }
+        }
+        .onChange(of: aiService.geminiKey) { _, newValue in
+            if !hasLoadedInitial {
+                pendingGeminiKey = newValue
+            }
+        }
+        .onChange(of: aiService.geminiAIModel) { _, newValue in
+            if !hasLoadedInitial {
+                pendingGeminiAIModel = newValue
+            }
+        }
+        .onChange(of: aiService.geminiTemperature) { _, newValue in
+            if !hasLoadedInitial {
+                pendingGeminiTemperature = newValue
+            }
+        }
+        .onChange(of: geminiAPIKey) { _, newValue in
+            // Sync transcription API key to AI Gemini key when both use Gemini
+            if transcriptionProvider == "gemini-cloud" && effectiveSelectedProvider == .gemini {
+                pendingGeminiKey = newValue
             }
         }
         .alert("Rebuild Failed", isPresented: Binding(
@@ -3211,6 +3407,8 @@ struct AISettingsView: View {
             return "Uses Apple's MLX framework for on-device AI. Best for Apple Silicon Macs. Your data stays private."
         case .openAICompatible:
             return "Uses OpenAI's API. Requires internet connection and API key. Faster but data is sent to OpenAI."
+        case .gemini:
+            return "Uses Google's Gemini API. Requires API key. Fast and cost-effective for text tasks."
         }
     }
 
@@ -3264,10 +3462,21 @@ struct AISettingsView: View {
         pendingOpenAIBaseURL = config.openAIBaseURL
         pendingOpenAIModel = config.openAIModel
         pendingOpenAITemperature = config.openAITemperature
+        pendingGeminiKey = config.geminiKey
+        pendingGeminiAIModel = config.geminiAIModel
+        pendingGeminiTemperature = config.geminiTemperature
+        // If Gemini AI key is empty but transcription key is set and both use Gemini, sync it
+        if config.geminiKey.isEmpty && !geminiAPIKey.isEmpty && config.provider == .gemini {
+            pendingGeminiKey = geminiAPIKey
+        }
+        // If Gemini AI key is set but the provider is switching to gemini, pre-fill from transcription key
+        if config.geminiKey.isEmpty && !geminiAPIKey.isEmpty {
+            pendingGeminiKey = geminiAPIKey
+        }
         pendingProvider = nil
         pendingMLXModel = nil
         hasLoadedInitial = true
-        logToFile("[Settings] Initialized pending state from service config: key=\(config.openAIKey.isEmpty ? "(empty)" : "(set)"), baseURL=\(config.openAIBaseURL.isEmpty ? "(empty)" : config.openAIBaseURL), model=\(config.openAIModel)")
+        logToFile("[Settings] Initialized pending state from service config: openAIKey=\(config.openAIKey.isEmpty ? "(empty)" : "(set)"), geminiKey=\(config.geminiKey.isEmpty ? "(empty)" : "(set)"), model=\(config.openAIModel)")
     }
 
     /// Discard all pending changes and reset to current values
@@ -3280,6 +3489,9 @@ struct AISettingsView: View {
         pendingOpenAIBaseURL = config.openAIBaseURL
         pendingOpenAIModel = config.openAIModel
         pendingOpenAITemperature = config.openAITemperature
+        pendingGeminiKey = config.geminiKey
+        pendingGeminiAIModel = config.geminiAIModel
+        pendingGeminiTemperature = config.geminiTemperature
         applyError = nil
         aiService.clearConnectionTestResult()
         logToFile("[Settings] Discarded all pending changes")
@@ -3290,7 +3502,13 @@ struct AISettingsView: View {
         var changes: [String] = []
 
         if let pending = pendingProvider, pending != aiService.provider {
-            changes.append("Provider: \(pending == .localMLX ? "Local MLX" : "OpenAI API")")
+            let name: String
+            switch pending {
+            case .localMLX: name = "Local MLX"
+            case .openAICompatible: name = "OpenAI API"
+            case .gemini: name = "Gemini"
+            }
+            changes.append("Provider: \(name)")
         }
 
         if effectiveSelectedProvider == .openAICompatible {
@@ -3315,6 +3533,22 @@ struct AISettingsView: View {
                 } else {
                     changes.append("Model changed")
                 }
+            }
+        }
+
+        if effectiveSelectedProvider == .gemini {
+            if pendingGeminiKey != aiService.geminiKey {
+                changes.append("API Key")
+            }
+            if pendingGeminiAIModel != aiService.geminiAIModel {
+                if let model = GeminiAIModel(rawValue: pendingGeminiAIModel) {
+                    changes.append("Model: \(model.displayName)")
+                } else {
+                    changes.append("Model changed")
+                }
+            }
+            if pendingGeminiTemperature != aiService.geminiTemperature {
+                changes.append("Temperature: \(String(format: "%.1f", pendingGeminiTemperature))")
             }
         }
 
@@ -3361,6 +3595,23 @@ struct AISettingsView: View {
                     }
                 }
 
+                // 4. Configure Gemini when using Gemini provider with a key
+                if targetProvider == .gemini && !pendingGeminiKey.isEmpty {
+                    logToFile("[Settings] Configuring Gemini with model: \(pendingGeminiAIModel), temperature: \(pendingGeminiTemperature)")
+                    try await AIService.shared.configureGemini(
+                        apiKey: pendingGeminiKey,
+                        model: pendingGeminiAIModel,
+                        temperature: pendingGeminiTemperature
+                    )
+                    logToFile("[Settings] Ensuring provider is set to gemini after configureGemini")
+                    try await AIService.shared.setProvider(.gemini)
+
+                    // Sync key to transcription if both use Gemini
+                    if transcriptionProvider == "gemini-cloud" {
+                        geminiAPIKey = pendingGeminiKey
+                    }
+                }
+
                 // Success - reset pending state
                 await MainActor.run {
                     pendingProvider = nil
@@ -3370,6 +3621,10 @@ struct AISettingsView: View {
                     pendingOpenAIBaseURL = aiService.openAIBaseURL
                     pendingOpenAIModel = aiService.openAIModel
                     pendingOpenAITemperature = aiService.openAITemperature
+                    // Update pending Gemini values to match what was saved
+                    pendingGeminiKey = aiService.geminiKey
+                    pendingGeminiAIModel = aiService.geminiAIModel
+                    pendingGeminiTemperature = aiService.geminiTemperature
                     isApplyingChanges = false
                     aiService.clearConnectionTestResult()
                     logToFile("[Settings] applyAllChanges completed successfully")
@@ -3396,6 +3651,13 @@ struct AISettingsView: View {
         // Test with pending values directly without modifying aiService state
         // This prevents the service from being left in a broken/polluted state
         aiService.testOpenAIConnectionWith(apiKey: pendingOpenAIKey, baseURL: pendingOpenAIBaseURL)
+    }
+
+    /// Test Gemini connection with pending API key
+    private func testGeminiConnectionWithPendingValues() {
+        guard !pendingGeminiKey.isEmpty else { return }
+        aiService.clearConnectionTestResult()
+        aiService.testGeminiConnectionWith(apiKey: pendingGeminiKey)
     }
 
     private func rebuildIndex() {
