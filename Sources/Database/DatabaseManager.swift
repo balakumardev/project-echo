@@ -1207,13 +1207,13 @@ public actor DatabaseManager {
 
         let ftsQuery = tokens.joined(separator: " OR ")
 
-        // Use bm25() to rank by relevance instead of raw count.
-        // BM25 applies TF-IDF weighting: terms appearing in fewer segments score higher,
-        // so ubiquitous words like "the"/"was" contribute near-zero to the score.
-        // We sum per-segment BM25 scores within each recording for the final ranking.
+        // Use FTS5's built-in `rank` column (BM25 by default) for TF-IDF relevance scoring.
+        // `rank` is negative (lower = more relevant), so we negate and sum per recording.
+        // Note: bm25() auxiliary function cannot be used with GROUP BY, but the `rank`
+        // column is materialized per-row and supports aggregation.
         let sql = """
             SELECT CAST(recording_id AS INTEGER) as rec_id,
-                   SUM(-bm25(segment_search)) as relevance
+                   SUM(-rank) as relevance
             FROM segment_search
             WHERE segment_search MATCH ?
             GROUP BY recording_id
