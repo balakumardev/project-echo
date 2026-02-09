@@ -1561,6 +1561,10 @@ App location: \(appPath)
 
     // MARK: - App Termination Handling
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false  // Menu bar app — keep running when windows are closed
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         logger.info("Application will terminate - attempting graceful recording shutdown")
         FileLogger.shared.debug("applicationWillTerminate called - finalizing recordings")
