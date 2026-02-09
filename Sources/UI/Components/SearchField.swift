@@ -6,6 +6,8 @@ public struct SearchField: View {
     @Binding var text: String
     let placeholder: String
     let onSubmit: (() -> Void)?
+    let showAIButton: Bool
+    let onAISearch: ((String) -> Void)?
 
     @State private var isFocused = false
     @FocusState private var fieldFocus: Bool
@@ -13,10 +15,14 @@ public struct SearchField: View {
     public init(
         text: Binding<String>,
         placeholder: String = "Search...",
+        showAIButton: Bool = false,
+        onAISearch: ((String) -> Void)? = nil,
         onSubmit: (() -> Void)? = nil
     ) {
         self._text = text
         self.placeholder = placeholder
+        self.showAIButton = showAIButton
+        self.onAISearch = onAISearch
         self.onSubmit = onSubmit
     }
 
@@ -51,6 +57,24 @@ public struct SearchField: View {
                 }
                 .buttonStyle(.plain)
                 .transition(.scale.combined(with: .opacity))
+            }
+
+            // AI search button
+            if showAIButton {
+                Button {
+                    onAISearch?(text)
+                } label: {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(Theme.Colors.primary)
+                        .frame(width: 26, height: 26)
+                        .background(
+                            Circle()
+                                .fill(Theme.Colors.primaryMuted)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Ask AI")
             }
 
             // Keyboard shortcut hint

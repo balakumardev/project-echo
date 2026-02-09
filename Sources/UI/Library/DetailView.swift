@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import Database
-import Intelligence
 
 // MARK: - Detail View
 
@@ -43,19 +42,7 @@ struct RecordingDetailView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Main content
-            mainContent
-
-            // Chat panel
-            if showChatPanel {
-                Divider()
-                ChatPanel(recording: recording)
-                    .frame(width: 350)
-                    .transition(.move(edge: .trailing))
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: showChatPanel)
+        mainContent
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 if aiEnabled {
@@ -264,52 +251,3 @@ struct DetailHeader: View {
     }
 }
 
-// MARK: - Chat Panel
-
-/// A wrapper view that initializes the ChatViewModel for a specific recording
-/// Uses AIService.shared for AI operations
-@available(macOS 14.0, *)
-struct ChatPanel: View {
-    let recording: Recording
-    @StateObject private var chatViewModel: ChatViewModel
-
-    init(recording: Recording) {
-        self.recording = recording
-        // ChatViewModel now uses AIService.shared directly
-        _chatViewModel = StateObject(wrappedValue: ChatViewModel(recording: recording))
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            chatHeader
-
-            // Chat content
-            ChatView(viewModel: chatViewModel)
-        }
-        .background(Theme.Colors.surface)
-    }
-
-    private var chatHeader: some View {
-        HStack {
-            Image(systemName: "sparkles")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(Theme.Colors.primary)
-
-            Text("AI Chat")
-                .font(Theme.Typography.headline)
-                .foregroundColor(Theme.Colors.textPrimary)
-
-            Spacer()
-        }
-        .padding(.horizontal, Theme.Spacing.lg)
-        .padding(.vertical, Theme.Spacing.md)
-        .background(Theme.Colors.surface)
-        .overlay(
-            Rectangle()
-                .fill(Theme.Colors.borderSubtle)
-                .frame(height: 1),
-            alignment: .bottom
-        )
-    }
-}

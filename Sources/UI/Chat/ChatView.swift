@@ -330,8 +330,8 @@ public struct ChatView: View {
         case .loading(let name):
             return "Loading \(name)..."
         case .ready:
-            if let recording = viewModel.recording {
-                return "Ready - Searching in: \(recording.title)"
+            if viewModel.hasRecordingScope {
+                return "Ready - Scoped to recording"
             }
             return "Ready - Global search"
         case .error:
@@ -416,7 +416,7 @@ public struct ChatView: View {
             }
 
             // Quick actions for recording-specific queries
-            if viewModel.recording != nil {
+            if viewModel.hasRecordingScope {
                 VStack(spacing: Theme.Spacing.md) {
                     Text("Quick Actions")
                         .font(Theme.Typography.caption)
@@ -494,14 +494,14 @@ public struct ChatView: View {
     }
 
     private var emptyStateSubtitle: String {
-        if let recording = viewModel.recording {
-            return "Ask questions about \"\(recording.title)\""
+        if viewModel.hasRecordingScope {
+            return "Ask questions about this recording"
         }
         return "Search across all your transcribed meetings"
     }
 
     private var exampleQuestions: [String] {
-        if viewModel.recording != nil {
+        if viewModel.hasRecordingScope {
             return [
                 "What were the main action items?",
                 "Summarize the key decisions",

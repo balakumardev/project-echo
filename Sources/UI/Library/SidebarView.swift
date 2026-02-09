@@ -13,6 +13,7 @@ struct SidebarView: View {
     @Binding var selectedSort: RecordingSort
     @Binding var customStartDate: Date?
     @Binding var customEndDate: Date?
+    var onAISearch: ((String) -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,7 +29,8 @@ struct SidebarView: View {
                     Task {
                         await viewModel.refresh()
                     }
-                }
+                },
+                onAISearch: onAISearch
             )
 
             // Filter chips — full width
@@ -160,6 +162,7 @@ struct SidebarHeader: View {
     @Binding var searchText: String
     let onSearch: (String) -> Void
     let onRefresh: () -> Void
+    var onAISearch: ((String) -> Void)?
 
     var body: some View {
         VStack(spacing: Theme.Spacing.md) {
@@ -182,7 +185,12 @@ struct SidebarHeader: View {
             }
 
             // Search
-            SearchField(text: $searchText, placeholder: "Search recordings...") {
+            SearchField(
+                text: $searchText,
+                placeholder: "Search recordings...",
+                showAIButton: onAISearch != nil,
+                onAISearch: onAISearch
+            ) {
                 onSearch(searchText)
             }
             .onChange(of: searchText) { _, newValue in

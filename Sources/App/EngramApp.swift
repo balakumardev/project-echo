@@ -28,7 +28,7 @@ public typealias Citation = UI.Citation
 extension Notification.Name {
     static let openLibraryWindow = Notification.Name("dev.balakumar.engram.openLibraryWindow")
     static let openSettingsWindow = Notification.Name("dev.balakumar.engram.openSettingsWindow")
-    static let openAIChatWindow = Notification.Name("dev.balakumar.engram.openAIChatWindow")
+    static let openAIChatPanel = Notification.Name("dev.balakumar.engram.openAIChatPanel")
 }
 
 // MARK: - Window Action Holder
@@ -37,7 +37,7 @@ extension Notification.Name {
 enum WindowActions {
     static var openLibrary: (() -> Void)?
     static var openSettings: (() -> Void)?
-    static var openAIChat: (() -> Void)?
+    static var openAIChatPanel: (() -> Void)?
 }
 
 @main
@@ -91,16 +91,17 @@ struct EngramApp: App {
             }
         }
 
-        // Observe AI chat window request
+        // Observe AI chat panel request — opens library + shows chat panel
         NotificationCenter.default.addObserver(
-            forName: .openAIChatWindow,
+            forName: .openAIChatPanel,
             object: nil,
             queue: .main
         ) { [self] _ in
             Task { @MainActor in
                 NSApp.setActivationPolicy(.regular)
                 NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "ai-chat")
+                openWindow(id: "library")
+                UserDefaults.standard.set(true, forKey: "showChatPanel_v2")
             }
         }
     }
@@ -124,25 +125,15 @@ struct EngramApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
 
-            // AI Chat menu item
+            // AI Chat menu item — opens library + shows chat panel
             CommandGroup(after: .windowList) {
                 Button("AI Chat") {
-                    openWindow(id: "ai-chat")
+                    openWindow(id: "library")
+                    UserDefaults.standard.set(true, forKey: "showChatPanel_v2")
                 }
                 .keyboardShortcut("j", modifiers: [.command, .shift])
             }
         }
-
-        // AI Chat window
-        WindowGroup("AI Chat", id: "ai-chat") {
-            AIChatWindowView()
-                .onAppear {
-                    registerWindowActions()
-                }
-        }
-        .defaultSize(width: 500, height: 600)
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
 
         // Settings window
         Settings {
@@ -178,10 +169,11 @@ struct EngramApp: App {
             NSApp.activate(ignoringOtherApps: true)
             openSettings()
         }
-        WindowActions.openAIChat = { [openWindow] in
+        WindowActions.openAIChatPanel = { [openWindow] in
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "ai-chat")
+            openWindow(id: "library")
+            UserDefaults.standard.set(true, forKey: "showChatPanel_v2")
         }
     }
 }
@@ -714,13 +706,12 @@ App location: \(appPath)
     }
 
     func menuBarDidRequestOpenAIChat() {
-        if let action = WindowActions.openAIChat {
-            // Use SwiftUI's openWindow if available
+        if let action = WindowActions.openAIChatPanel {
             action()
         } else {
-            // Fallback: Post notification to open AI chat window
-            logger.info("Using notification fallback to open AI chat window")
-            NotificationCenter.default.post(name: .openAIChatWindow, object: nil)
+            // Fallback: Post notification to open library + chat panel
+            logger.info("Using notification fallback to open AI chat panel")
+            NotificationCenter.default.post(name: .openAIChatPanel, object: nil)
         }
     }
 

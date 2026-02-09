@@ -142,6 +142,9 @@ public class ChatViewModel: ObservableObject {
     /// Public read-only access to the initial recording (for UI display)
     public var recording: DatabaseManager.Recording? { initialRecording }
 
+    /// Whether the view model currently has a recording scope (either initial or dynamic filter)
+    public var hasRecordingScope: Bool { recordingFilter != nil }
+
     /// Dynamic recording filter that can be changed at runtime
     /// When set, queries are scoped to this recording ID
     @Published public var recordingFilter: Int64?

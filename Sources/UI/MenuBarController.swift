@@ -150,7 +150,7 @@ public class MenuBarController: NSObject {
 
         let aiChatItem = NSMenuItem(
             title: "AI Chat",
-            action: #selector(openAIChat),
+            action: #selector(toggleAIChat),
             keyEquivalent: ""
         )
         aiChatItem.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "AI Chat")
@@ -347,7 +347,7 @@ public class MenuBarController: NSObject {
         delegate?.menuBarDidRequestOpenSettings()
     }
 
-    @objc func openAIChat() {
+    @objc func toggleAIChat() {
         delegate?.menuBarDidRequestOpenAIChat()
     }
 
