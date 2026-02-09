@@ -121,6 +121,8 @@ public struct LibraryView: View {
     // MARK: - AI Search
 
     private func handleAISearch(_ query: String) {
+        // AI search from the sidebar search field should always search across all recordings
+        chatViewModel.recordingFilter = nil
         showChatPanel = true
         if !query.isEmpty {
             chatViewModel.inputText = query

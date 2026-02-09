@@ -3565,14 +3565,10 @@ struct AISettingsView: View {
             do {
                 let targetProvider = pendingProvider ?? aiService.provider
 
-                // 1. If provider changed, switch provider first
-                if let newProvider = pendingProvider, newProvider != aiService.provider {
-                    logToFile("[Settings] Switching provider to \(newProvider.rawValue)")
-                    try await AIService.shared.setProvider(newProvider)
-                }
+                // Configure the target provider with its settings FIRST, then switch.
+                // This avoids an intermediate state where provider is set but not configured.
 
-                // 2. Configure OpenAI when using OpenAI provider with a key
-                // Always call configureOpenAI() to ensure backend is properly initialized
+                // 1. Configure OpenAI when using OpenAI provider with a key
                 if targetProvider == .openAICompatible && !pendingOpenAIKey.isEmpty {
                     logToFile("[Settings] Configuring OpenAI with settings (temperature: \(pendingOpenAITemperature))")
                     try await AIService.shared.configureOpenAI(
@@ -3581,21 +3577,22 @@ struct AISettingsView: View {
                         model: pendingOpenAIModel,
                         temperature: pendingOpenAITemperature
                     )
-                    // Explicitly ensure provider is set to OpenAI after successful configuration
-                    // This guarantees the provider change is saved even if setProvider() used old config values
-                    logToFile("[Settings] Ensuring provider is set to openAICompatible after configureOpenAI")
-                    try await AIService.shared.setProvider(.openAICompatible)
+                    logToFile("[Settings] OpenAI configured and provider set")
                 }
 
-                // 3. If MLX model changed (and using local MLX)
+                // 2. If MLX model changed (and using local MLX)
                 if targetProvider == .localMLX {
                     if let newModel = pendingMLXModel, newModel != aiService.selectedModelId {
                         logToFile("[Settings] Setting up MLX model: \(newModel)")
                         try await AIService.shared.setupModel(newModel)
+                    } else if let newProvider = pendingProvider, newProvider != aiService.provider {
+                        // Provider changed to localMLX but no model change — just switch
+                        logToFile("[Settings] Switching to localMLX provider")
+                        try await AIService.shared.setProvider(.localMLX)
                     }
                 }
 
-                // 4. Configure Gemini when using Gemini provider with a key
+                // 3. Configure Gemini when using Gemini provider with a key
                 if targetProvider == .gemini && !pendingGeminiKey.isEmpty {
                     logToFile("[Settings] Configuring Gemini with model: \(pendingGeminiAIModel), temperature: \(pendingGeminiTemperature)")
                     try await AIService.shared.configureGemini(
@@ -3603,8 +3600,7 @@ struct AISettingsView: View {
                         model: pendingGeminiAIModel,
                         temperature: pendingGeminiTemperature
                     )
-                    logToFile("[Settings] Ensuring provider is set to gemini after configureGemini")
-                    try await AIService.shared.setProvider(.gemini)
+                    logToFile("[Settings] Gemini configured and provider set")
 
                     // Sync key to transcription if both use Gemini
                     if transcriptionProvider == "gemini-cloud" {
@@ -3613,18 +3609,21 @@ struct AISettingsView: View {
                 }
 
                 // Success - reset pending state
+                // Read directly from AIService.shared to avoid stale values
+                // from the polling AIServiceObservable
+                let savedConfig = await AIService.shared.currentConfig
                 await MainActor.run {
                     pendingProvider = nil
                     pendingMLXModel = nil
                     // Update pending OpenAI values to match what was saved
-                    pendingOpenAIKey = aiService.openAIKey
-                    pendingOpenAIBaseURL = aiService.openAIBaseURL
-                    pendingOpenAIModel = aiService.openAIModel
-                    pendingOpenAITemperature = aiService.openAITemperature
+                    pendingOpenAIKey = savedConfig.openAIKey
+                    pendingOpenAIBaseURL = savedConfig.openAIBaseURL
+                    pendingOpenAIModel = savedConfig.openAIModel
+                    pendingOpenAITemperature = savedConfig.openAITemperature
                     // Update pending Gemini values to match what was saved
-                    pendingGeminiKey = aiService.geminiKey
-                    pendingGeminiAIModel = aiService.geminiAIModel
-                    pendingGeminiTemperature = aiService.geminiTemperature
+                    pendingGeminiKey = savedConfig.geminiKey
+                    pendingGeminiAIModel = savedConfig.geminiAIModel
+                    pendingGeminiTemperature = savedConfig.geminiTemperature
                     isApplyingChanges = false
                     aiService.clearConnectionTestResult()
                     logToFile("[Settings] applyAllChanges completed successfully")
