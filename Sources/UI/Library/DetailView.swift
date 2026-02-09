@@ -99,6 +99,7 @@ struct RecordingDetailView: View {
                 // Header card
                 DetailHeader(
                     recording: recording,
+                    viewModel: viewModel,
                     onDelete: {
                         showDeleteConfirmation = true
                     }
@@ -135,7 +136,43 @@ struct RecordingDetailView: View {
 @available(macOS 14.0, *)
 struct DetailHeader: View {
     let recording: Recording
+    @ObservedObject var viewModel: RecordingDetailViewModel
     let onDelete: () -> Void
+    @AppStorage("aiEnabled") private var aiEnabled = true
+    @StateObject private var aiService = AIServiceObservable()
+
+    /// Whether AI can be used (ready or sleeping - sleeping will auto-reload)
+    private var canUseAI: Bool {
+        aiService.canUseAI
+    }
+
+    /// Whether AI is currently loading or downloading
+    private var isAILoading: Bool {
+        aiService.isLoading
+    }
+
+    /// User-friendly help text explaining why AI buttons might be disabled
+    private var aiStatusHelpText: String {
+        switch aiService.status {
+        case .notConfigured:
+            return "AI model not configured. Go to Settings to set up an AI model."
+        case .unloadedToSaveMemory(let name):
+            return "\(name) is sleeping to save memory. It will reload when you use AI features."
+        case .downloading(let progress, let name):
+            return "Downloading \(name)... \(Int(progress * 100))%. Please wait."
+        case .loading(let name):
+            return "Loading \(name)... Please wait a moment."
+        case .ready:
+            return "AI is ready"
+        case .error(let message):
+            return "AI error: \(message). Try restarting the app or check Settings."
+        }
+    }
+
+    /// The display title - shows generated title if available, otherwise recording title
+    private var displayTitle: String {
+        viewModel.generatedTitle ?? recording.title
+    }
 
     var body: some View {
         GlassCard(padding: Theme.Spacing.xl) {
@@ -145,9 +182,34 @@ struct DetailHeader: View {
 
                 // Info
                 VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    Text(recording.title)
-                        .font(Theme.Typography.title1)
-                        .foregroundColor(Theme.Colors.textPrimary)
+                    // Title with generate/regenerate button
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Text(displayTitle)
+                            .font(Theme.Typography.title1)
+                            .foregroundColor(Theme.Colors.textPrimary)
+
+                        // Title generation button (only show if AI is enabled and has transcript)
+                        if aiEnabled && recording.hasTranscript {
+                            if viewModel.isLoadingTitle {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .help("Generating title...")
+                            } else {
+                                Button {
+                                    viewModel.generateTitle(for: recording)
+                                } label: {
+                                    Image(systemName: viewModel.generatedTitle != nil ? "arrow.clockwise" : "sparkles")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(canUseAI ? Theme.Colors.primary : Theme.Colors.textMuted)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!canUseAI)
+                                .help(viewModel.generatedTitle != nil
+                                    ? (canUseAI ? "Regenerate title with AI" : aiStatusHelpText)
+                                    : (canUseAI ? "Generate title with AI" : aiStatusHelpText))
+                            }
+                        }
+                    }
 
                     HStack(spacing: Theme.Spacing.lg) {
                         Label(recording.date.formatted(date: .complete, time: .shortened), systemImage: "calendar")
@@ -158,6 +220,13 @@ struct DetailHeader: View {
                     }
                     .font(Theme.Typography.callout)
                     .foregroundColor(Theme.Colors.textSecondary)
+
+                    // Title error message
+                    if let error = viewModel.titleError {
+                        Text(error)
+                            .font(Theme.Typography.caption)
+                            .foregroundColor(.orange)
+                    }
                 }
 
                 Spacer()
@@ -185,7 +254,7 @@ struct DetailHeader: View {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.audio, .movie]
         let ext = recording.fileURL.pathExtension
-        panel.nameFieldStringValue = recording.title + "." + (ext.isEmpty ? "m4a" : ext)
+        panel.nameFieldStringValue = displayTitle + "." + (ext.isEmpty ? "m4a" : ext)
 
         panel.begin { response in
             if response == .OK, let url = panel.url {

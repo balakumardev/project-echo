@@ -32,8 +32,8 @@ public enum TranscriptionProvider: String, Sendable, CaseIterable, Codable {
 public enum GeminiModel: String, Sendable, CaseIterable, Codable {
     case gemini3Pro = "gemini-3-pro-preview"
     case gemini3Flash = "gemini-3-flash-preview"
+    case gemini25Flash = "gemini-2.5-flash"
     case gemini25FlashLite = "gemini-2.5-flash-lite"
-    case gemini20Flash = "gemini-2.0-flash"
 
     public var displayName: String {
         switch self {
@@ -41,10 +41,10 @@ public enum GeminiModel: String, Sendable, CaseIterable, Codable {
             return "Gemini 3 Pro (Best quality)"
         case .gemini3Flash:
             return "Gemini 3 Flash (Recommended)"
+        case .gemini25Flash:
+            return "Gemini 2.5 Flash (Balanced)"
         case .gemini25FlashLite:
-            return "Gemini 2.5 Flash Lite (Fastest/Cheapest)"
-        case .gemini20Flash:
-            return "Gemini 2.0 Flash (Stable)"
+            return "Gemini 2.5 Flash Lite (Cheapest)"
         }
     }
 
@@ -54,10 +54,10 @@ public enum GeminiModel: String, Sendable, CaseIterable, Codable {
             return "Highest accuracy, advanced reasoning. Best for complex meetings."
         case .gemini3Flash:
             return "Good balance of speed and quality. Recommended for most use cases."
+        case .gemini25Flash:
+            return "Stable release with good quality. Reliable for everyday use."
         case .gemini25FlashLite:
-            return "Fastest and lowest cost. Good for simple conversations."
-        case .gemini20Flash:
-            return "Stable release. Reliable fallback option."
+            return "Fastest and lowest cost ($0.30/M audio tokens). Great for most meetings."
         }
     }
 }

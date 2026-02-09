@@ -4,6 +4,7 @@ import Foundation
 // Writes to ~/Library/Logs/Engram/rag.log to match the format used by FileLogger in the App module
 
 private let ragLogQueue = DispatchQueue(label: "dev.balakumar.engram.intelligence.raglog", qos: .utility)
+private let debugLogQueue = DispatchQueue(label: "dev.balakumar.engram.intelligence.debuglog", qos: .utility)
 private let ragDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
@@ -20,6 +21,34 @@ public func fileRagLog(_ message: String, file: String = #file, line: Int = #lin
         let logFile = logDir.appendingPathComponent("rag.log")
 
         // Create directory if needed
+        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+
+        let timestamp = ragDateFormatter.string(from: Date())
+        let fileName = URL(fileURLWithPath: file).lastPathComponent
+        let logLine = "[\(timestamp)] [DEBUG] [\(fileName):\(line)] \(message)\n"
+
+        guard let data = logLine.data(using: .utf8) else { return }
+
+        if FileManager.default.fileExists(atPath: logFile.path) {
+            if let handle = try? FileHandle(forWritingTo: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: logFile)
+        }
+    }
+}
+
+/// Log a debug message to the shared debug log file (~/Library/Logs/Engram/debug.log)
+/// For use in the Intelligence module where FileLogger.shared is not available
+public func fileDebugLog(_ message: String, file: String = #file, line: Int = #line) {
+    debugLogQueue.async {
+        let logDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Logs/Engram")
+        let logFile = logDir.appendingPathComponent("debug.log")
+
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
 
         let timestamp = ragDateFormatter.string(from: Date())

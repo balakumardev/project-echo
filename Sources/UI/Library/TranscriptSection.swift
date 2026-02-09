@@ -151,6 +151,15 @@ struct TranscriptSection: View {
             // Content
             if viewModel.isLoadingTranscript {
                 TranscriptLoadingView()
+            } else if let error = viewModel.transcriptError {
+                TranscriptErrorView(
+                    error: error,
+                    onRegenerate: {
+                        Task {
+                            await viewModel.generateTranscript(for: recording)
+                        }
+                    }
+                )
             } else if let transcript = viewModel.transcript {
                 TranscriptContent(
                     transcript: transcript,
@@ -178,6 +187,103 @@ struct TranscriptSection: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Transcript Error View
+
+/// Error view for transcript generation failures with regenerate option
+@available(macOS 14.0, *)
+struct TranscriptErrorView: View {
+    let error: String
+    let onRegenerate: () -> Void
+
+    /// Parse the error to provide user-friendly messages and guidance
+    private var errorInfo: (message: String, guidance: String, icon: String) {
+        let lowercasedError = error.lowercased()
+
+        if lowercasedError.contains("model not loaded") || lowercasedError.contains("not configured") {
+            return (
+                message: "Transcription model is not ready",
+                guidance: "Please wait for the model to finish loading, or go to Settings to configure a transcription model.",
+                icon: "cpu"
+            )
+        } else if lowercasedError.contains("downloading") {
+            return (
+                message: "Model is downloading",
+                guidance: "Please wait for the download to complete. This may take a few minutes.",
+                icon: "arrow.down.circle"
+            )
+        } else if lowercasedError.contains("loading") {
+            return (
+                message: "Model is loading",
+                guidance: "Please wait a moment for the model to load into memory.",
+                icon: "hourglass"
+            )
+        } else if lowercasedError.contains("memory") || lowercasedError.contains("ram") {
+            return (
+                message: "Not enough memory",
+                guidance: "Try closing other applications to free up memory, or select a smaller model in Settings.",
+                icon: "memorychip"
+            )
+        } else if lowercasedError.contains("audio") || lowercasedError.contains("conversion") {
+            return (
+                message: "Audio processing failed",
+                guidance: "The audio file may be corrupted or in an unsupported format. Try recording again.",
+                icon: "waveform"
+            )
+        } else if lowercasedError.contains("gemini") || lowercasedError.contains("api") || lowercasedError.contains("key") {
+            return (
+                message: "Cloud transcription error",
+                guidance: "Check your API key and internet connection in Settings, or switch to local transcription.",
+                icon: "key"
+            )
+        } else if lowercasedError.contains("network") || lowercasedError.contains("internet") || lowercasedError.contains("connection") {
+            return (
+                message: "Network error",
+                guidance: "Please check your internet connection and try again.",
+                icon: "wifi.exclamationmark"
+            )
+        } else {
+            return (
+                message: "Transcription failed",
+                guidance: error,
+                icon: "exclamationmark.triangle"
+            )
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.lg) {
+            Image(systemName: errorInfo.icon)
+                .font(.system(size: 32, weight: .light))
+                .foregroundColor(.orange)
+
+            Text(errorInfo.message)
+                .font(Theme.Typography.headline)
+                .foregroundColor(Theme.Colors.textPrimary)
+                .multilineTextAlignment(.center)
+
+            Text(errorInfo.guidance)
+                .font(Theme.Typography.callout)
+                .foregroundColor(Theme.Colors.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            PillButton("Try Again", icon: "arrow.clockwise", style: .primary) {
+                onRegenerate()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(Theme.Spacing.xxl)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
+                .fill(Color.orange.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
+                .stroke(Color.orange.opacity(0.2), lineWidth: 1)
+        )
     }
 }
 

@@ -2,11 +2,13 @@
 // Copyright © 2024-2026 Bala Kumar. All rights reserved.
 // https://balakumar.dev
 
+import AVFoundation
 import Foundation
 import os.log
 
 /// Gemini cloud transcription client
 /// Sends audio to Google's Generative AI API for transcription with speaker diarization
+/// Supports both inline upload (< 20MB) and File API upload (up to 2GB) for large recordings
 @available(macOS 14.0, *)
 public actor GeminiTranscriber {
 
@@ -20,13 +22,15 @@ public actor GeminiTranscriber {
         case invalidResponse(String)
         case apiError(String)
         case parseError(String)
+        case fileProcessingFailed
+        case fileProcessingTimeout
 
         public var errorDescription: String? {
             switch self {
             case .missingAPIKey:
                 return "Gemini API key is not configured"
             case .audioFileTooLarge(let size):
-                return "Audio file is too large (\(size / 1_000_000)MB). Maximum is 20MB for inline upload."
+                return "Audio file is too large (\(size / 1_000_000)MB). Maximum is 2GB via File API."
             case .audioEncodingFailed:
                 return "Failed to encode audio file"
             case .networkError(let error):
@@ -37,8 +41,19 @@ public actor GeminiTranscriber {
                 return "Gemini API error: \(message)"
             case .parseError(let details):
                 return "Failed to parse transcription: \(details)"
+            case .fileProcessingFailed:
+                return "Gemini failed to process the uploaded file"
+            case .fileProcessingTimeout:
+                return "Gemini file processing timed out"
             }
         }
+    }
+
+    private struct UploadedFile {
+        let name: String
+        let uri: String
+        let mimeType: String
+        let state: String
     }
 
     // MARK: - Properties
@@ -46,21 +61,48 @@ public actor GeminiTranscriber {
     private let logger = Logger(subsystem: "dev.balakumar.engram", category: "GeminiTranscriber")
     private let maxInlineFileSize = 20 * 1024 * 1024 // 20MB
 
-    // API endpoint
-    private let baseURL = "https://generativelanguage.googleapis.com/v1beta/models"
+    // API endpoints
+    private let apiBase = "https://generativelanguage.googleapis.com"
+    private let modelsPath = "/v1beta/models"
+    private let uploadPath = "/upload/v1beta/files"
+    private let filesPath = "/v1beta/files"
+
+    // URLSession configured with SOCKS5 proxy to bypass corporate firewall
+    private let session: URLSession
+
+    private let transcriptionPrompt = """
+        Transcribe this audio with timestamps and speaker identification.
+
+        Format each segment exactly as:
+        [MM:SS-MM:SS] Speaker X: "Transcribed text"
+
+        Rules:
+        - Use "You" for the person whose voice is clearest/loudest (typically the meeting host/local user)
+        - Use "Speaker 1", "Speaker 2", etc. for other participants
+        - Include timestamps in MM:SS format (minutes:seconds)
+        - Keep segments short (1-3 sentences each)
+        - Preserve natural speech patterns but clean up filler words
+        - If speaker cannot be determined, use "Unknown"
+
+        Output ONLY the formatted transcription, no other text.
+        """
 
     // MARK: - Initialization
 
-    public init() {}
+    public init() {
+        let config = URLSessionConfiguration.default
+        config.connectionProxyDictionary = [
+            kCFNetworkProxiesSOCKSEnable: true,
+            kCFNetworkProxiesSOCKSProxy: "127.0.0.1",
+            kCFNetworkProxiesSOCKSPort: 11111
+        ]
+        self.session = URLSession(configuration: config)
+    }
 
     // MARK: - Public API
 
-    /// Transcribe an audio file using Gemini API
-    /// - Parameters:
-    ///   - audioURL: URL to the audio file
-    ///   - apiKey: Gemini API key
-    ///   - model: Gemini model to use
-    /// - Returns: Array of transcription segments with timestamps and speaker labels
+    /// Transcribe an audio/video file using Gemini API
+    /// Automatically extracts audio from video files and routes to inline or File API based on size
     public func transcribe(
         audioURL: URL,
         apiKey: String,
@@ -73,28 +115,99 @@ public actor GeminiTranscriber {
         logger.info("Starting Gemini transcription with model: \(model.rawValue)")
         fileRagLog("[Gemini] Starting transcription: \(audioURL.lastPathComponent), model: \(model.rawValue)")
 
-        // Read and encode audio file
-        let audioData = try readAudioFile(url: audioURL)
-
-        // Check file size
-        guard audioData.count <= maxInlineFileSize else {
-            throw GeminiError.audioFileTooLarge(audioData.count)
+        // Extract audio from video files to reduce upload size
+        let (fileToUpload, needsCleanup) = try await prepareAudioFile(from: audioURL)
+        defer {
+            if needsCleanup {
+                try? FileManager.default.removeItem(at: fileToUpload)
+            }
         }
 
-        // Detect MIME type
-        let mimeType = detectMimeType(for: audioURL)
+        let fileSize = try FileManager.default.attributesOfItem(atPath: fileToUpload.path)[.size] as? Int ?? 0
+        let mimeType = detectMimeType(for: fileToUpload)
+        fileRagLog("[Gemini] File ready: \(fileToUpload.lastPathComponent), \(fileSize / 1_048_576)MB, \(mimeType)")
 
-        // Build and send request
-        let request = try buildRequest(
+        if fileSize <= maxInlineFileSize {
+            return try await transcribeInline(fileURL: fileToUpload, mimeType: mimeType, apiKey: apiKey, model: model)
+        } else {
+            return try await transcribeViaFileAPI(fileURL: fileToUpload, mimeType: mimeType, apiKey: apiKey, model: model)
+        }
+    }
+
+    // MARK: - Audio Preparation
+
+    /// Extract the first audio track (microphone) from the .mov container as .m4a
+    /// The .mov files have two tracks: track 0 = mic (mono), track 1 = system audio (stereo, usually silent).
+    /// Gemini picks the wrong track when given the raw .mov, so we extract the mic track.
+    private func prepareAudioFile(from url: URL) async throws -> (URL, Bool) {
+        let asset = AVAsset(url: url)
+
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !audioTracks.isEmpty else {
+            // No audio tracks — just send the file as-is and let Gemini handle it
+            return (url, false)
+        }
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram_mic_\(UUID().uuidString).m4a")
+        try? FileManager.default.removeItem(at: outputURL)
+
+        // Use AVAssetExportSession with only the first audio track (microphone)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            fileRagLog("[Gemini] Failed to create export session, sending raw file")
+            return (url, false)
+        }
+
+        exportSession.outputFileType = .m4a
+        exportSession.outputURL = outputURL
+
+        // Only include the first audio track (microphone)
+        let micTrack = audioTracks[0]
+        let timeRange = try await asset.load(.duration)
+        let composition = AVMutableComposition()
+        if let compTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+            try compTrack.insertTimeRange(CMTimeRange(start: .zero, duration: timeRange), of: micTrack, at: .zero)
+        }
+
+        let compExport = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A)!
+        compExport.outputFileType = .m4a
+        compExport.outputURL = outputURL
+
+        await compExport.export()
+
+        guard compExport.status == .completed else {
+            let errorMsg = compExport.error?.localizedDescription ?? "Unknown"
+            fileRagLog("[Gemini] Mic extraction failed: \(errorMsg), sending raw file")
+            return (url, false)
+        }
+
+        let inputSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        let outputSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int) ?? 0
+        fileRagLog("[Gemini] Extracted mic track: \(inputSize / 1024)KB -> \(outputSize / 1024)KB m4a")
+
+        return (outputURL, true)
+    }
+
+    // MARK: - Inline Upload (< 20MB)
+
+    private func transcribeInline(
+        fileURL: URL,
+        mimeType: String,
+        apiKey: String,
+        model: GeminiModel
+    ) async throws -> [TranscriptionSegment] {
+        fileRagLog("[Gemini] Using inline upload")
+        let audioData = try readAudioFile(url: fileURL)
+
+        let request = try buildInlineRequest(
             audioData: audioData,
             mimeType: mimeType,
             apiKey: apiKey,
             model: model
         )
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
-        // Check HTTP status
         guard let httpResponse = response as? HTTPURLResponse else {
             throw GeminiError.invalidResponse("Not an HTTP response")
         }
@@ -105,12 +218,216 @@ public actor GeminiTranscriber {
             throw GeminiError.apiError("HTTP \(httpResponse.statusCode): \(errorBody)")
         }
 
-        // Parse response
         let segments = try parseResponse(data: data)
-        logger.info("Gemini transcription complete: \(segments.count) segments")
-        fileRagLog("[Gemini] Transcription complete: \(segments.count) segments")
-
+        fileRagLog("[Gemini] Inline transcription complete: \(segments.count) segments")
         return segments
+    }
+
+    // MARK: - File API Upload (> 20MB, up to 2GB)
+
+    private func transcribeViaFileAPI(
+        fileURL: URL,
+        mimeType: String,
+        apiKey: String,
+        model: GeminiModel
+    ) async throws -> [TranscriptionSegment] {
+        fileRagLog("[Gemini] Using File API upload (file too large for inline)")
+
+        // Step 1: Upload file
+        let uploaded = try await uploadFile(fileURL: fileURL, mimeType: mimeType, apiKey: apiKey)
+        fileRagLog("[Gemini] File uploaded: \(uploaded.name), state: \(uploaded.state)")
+
+        // Step 2: Wait for processing
+        let activeFile = try await waitForProcessing(fileName: uploaded.name, apiKey: apiKey)
+
+        // Step 3: Generate transcription
+        let segments: [TranscriptionSegment]
+        do {
+            segments = try await generateFromFileURI(
+                fileURI: activeFile.uri,
+                mimeType: activeFile.mimeType,
+                apiKey: apiKey,
+                model: model
+            )
+        } catch {
+            try? await deleteFile(name: activeFile.name, apiKey: apiKey)
+            throw error
+        }
+
+        // Step 4: Cleanup
+        try? await deleteFile(name: activeFile.name, apiKey: apiKey)
+
+        fileRagLog("[Gemini] File API transcription complete: \(segments.count) segments")
+        return segments
+    }
+
+    /// Resumable upload to Gemini File API
+    private func uploadFile(fileURL: URL, mimeType: String, apiKey: String) async throws -> UploadedFile {
+        let fileData = try Data(contentsOf: fileURL)
+
+        // Step 1a: Initiate resumable upload
+        var initiateRequest = URLRequest(url: URL(string: "\(apiBase)\(uploadPath)")!)
+        initiateRequest.httpMethod = "POST"
+        initiateRequest.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        initiateRequest.setValue("resumable", forHTTPHeaderField: "X-Goog-Upload-Protocol")
+        initiateRequest.setValue("start", forHTTPHeaderField: "X-Goog-Upload-Command")
+        initiateRequest.setValue("\(fileData.count)", forHTTPHeaderField: "X-Goog-Upload-Header-Content-Length")
+        initiateRequest.setValue(mimeType, forHTTPHeaderField: "X-Goog-Upload-Header-Content-Type")
+        initiateRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        initiateRequest.httpBody = try JSONSerialization.data(withJSONObject: [
+            "file": ["display_name": fileURL.lastPathComponent]
+        ])
+
+        let (_, initiateResponse) = try await session.data(for: initiateRequest)
+
+        guard let httpResponse = initiateResponse as? HTTPURLResponse,
+              let uploadURLString = httpResponse.value(forHTTPHeaderField: "X-Goog-Upload-URL") ??
+                                    httpResponse.value(forHTTPHeaderField: "x-goog-upload-url"),
+              let uploadURL = URL(string: uploadURLString) else {
+            throw GeminiError.invalidResponse("Failed to get upload URL from initiate response")
+        }
+
+        // Step 1b: Upload file bytes
+        var uploadRequest = URLRequest(url: uploadURL)
+        uploadRequest.httpMethod = "POST"
+        uploadRequest.setValue("\(fileData.count)", forHTTPHeaderField: "Content-Length")
+        uploadRequest.setValue("0", forHTTPHeaderField: "X-Goog-Upload-Offset")
+        uploadRequest.setValue("upload, finalize", forHTTPHeaderField: "X-Goog-Upload-Command")
+        uploadRequest.httpBody = fileData
+        uploadRequest.timeoutInterval = 600
+
+        let (uploadData, uploadResponse) = try await session.data(for: uploadRequest)
+
+        guard let uploadHTTP = uploadResponse as? HTTPURLResponse, uploadHTTP.statusCode == 200 else {
+            let errorBody = String(data: uploadData, encoding: .utf8) ?? "Unknown"
+            throw GeminiError.apiError("File upload failed: \(errorBody)")
+        }
+
+        return try parseFileResponse(data: uploadData)
+    }
+
+    /// Poll until file state is ACTIVE
+    private func waitForProcessing(fileName: String, apiKey: String) async throws -> UploadedFile {
+        let fileId = fileName.hasPrefix("files/") ? String(fileName.dropFirst(6)) : fileName
+        let getURL = URL(string: "\(apiBase)\(filesPath)/\(fileId)")!
+
+        let startTime = Date()
+        let maxWait: TimeInterval = 300
+
+        while true {
+            var request = URLRequest(url: getURL)
+            request.httpMethod = "GET"
+            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+
+            let (data, _) = try await session.data(for: request)
+            let file = try parseFileMetadata(data: data)
+
+            switch file.state {
+            case "ACTIVE":
+                return file
+            case "FAILED":
+                throw GeminiError.fileProcessingFailed
+            default:
+                let elapsed = Date().timeIntervalSince(startTime)
+                if elapsed > maxWait {
+                    throw GeminiError.fileProcessingTimeout
+                }
+                fileRagLog("[Gemini] File still processing... (\(Int(elapsed))s)")
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+    }
+
+    /// Call generateContent with an uploaded file URI
+    private func generateFromFileURI(
+        fileURI: String,
+        mimeType: String,
+        apiKey: String,
+        model: GeminiModel
+    ) async throws -> [TranscriptionSegment] {
+        let endpoint = "\(apiBase)\(modelsPath)/\(model.rawValue):generateContent?key=\(apiKey)"
+        guard let url = URL(string: endpoint) else {
+            throw GeminiError.invalidResponse("Invalid endpoint URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 300
+
+        let requestBody: [String: Any] = [
+            "contents": [
+                [
+                    "parts": [
+                        [
+                            "file_data": [
+                                "mime_type": mimeType,
+                                "file_uri": fileURI
+                            ]
+                        ],
+                        ["text": transcriptionPrompt]
+                    ]
+                ]
+            ],
+            "generationConfig": [
+                "temperature": 0.1,
+                "maxOutputTokens": 8192
+            ]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let errorBody = String(data: data, encoding: .utf8) ?? "No details"
+            throw GeminiError.apiError("generateContent failed: \(errorBody)")
+        }
+
+        return try parseResponse(data: data)
+    }
+
+    /// Delete an uploaded file
+    private func deleteFile(name: String, apiKey: String) async throws {
+        let fileId = name.hasPrefix("files/") ? String(name.dropFirst(6)) : name
+        let deleteURL = URL(string: "\(apiBase)\(filesPath)/\(fileId)")!
+
+        var request = URLRequest(url: deleteURL)
+        request.httpMethod = "DELETE"
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+
+        _ = try await session.data(for: request)
+        fileRagLog("[Gemini] Deleted uploaded file: \(name)")
+    }
+
+    // MARK: - File Response Parsing
+
+    private func parseFileResponse(data: Data) throws -> UploadedFile {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let fileObj = json["file"] as? [String: Any] else {
+            throw GeminiError.invalidResponse("Could not parse upload response")
+        }
+        return try extractFileInfo(from: fileObj)
+    }
+
+    private func parseFileMetadata(data: Data) throws -> UploadedFile {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GeminiError.invalidResponse("Could not parse file metadata")
+        }
+        return try extractFileInfo(from: json)
+    }
+
+    private func extractFileInfo(from dict: [String: Any]) throws -> UploadedFile {
+        guard let name = dict["name"] as? String,
+              let uri = dict["uri"] as? String else {
+            throw GeminiError.invalidResponse("Missing name or uri in file response")
+        }
+        return UploadedFile(
+            name: name,
+            uri: uri,
+            mimeType: dict["mimeType"] as? String ?? "application/octet-stream",
+            state: dict["state"] as? String ?? "ACTIVE"
+        )
     }
 
     // MARK: - Private Helpers
@@ -138,18 +455,20 @@ public actor GeminiTranscriber {
             return "audio/ogg"
         case "mp4":
             return "audio/mp4"
+        case "mov":
+            return "audio/mp4" // Engram's .mov files are audio-only containers
         default:
             return "audio/mp4"
         }
     }
 
-    private func buildRequest(
+    private func buildInlineRequest(
         audioData: Data,
         mimeType: String,
         apiKey: String,
         model: GeminiModel
     ) throws -> URLRequest {
-        let endpoint = "\(baseURL)/\(model.rawValue):generateContent?key=\(apiKey)"
+        let endpoint = "\(apiBase)\(modelsPath)/\(model.rawValue):generateContent?key=\(apiKey)"
         guard let url = URL(string: endpoint) else {
             throw GeminiError.invalidResponse("Invalid endpoint URL")
         }
@@ -158,25 +477,7 @@ public actor GeminiTranscriber {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Build request body with audio and transcription prompt
         let base64Audio = audioData.base64EncodedString()
-
-        let prompt = """
-        Transcribe this audio with timestamps and speaker identification.
-
-        Format each segment exactly as:
-        [MM:SS-MM:SS] Speaker X: "Transcribed text"
-
-        Rules:
-        - Use "You" for the person whose voice is clearest/loudest (typically the meeting host/local user)
-        - Use "Speaker 1", "Speaker 2", etc. for other participants
-        - Include timestamps in MM:SS format (minutes:seconds)
-        - Keep segments short (1-3 sentences each)
-        - Preserve natural speech patterns but clean up filler words
-        - If speaker cannot be determined, use "Unknown"
-
-        Output ONLY the formatted transcription, no other text.
-        """
 
         let requestBody: [String: Any] = [
             "contents": [
@@ -188,9 +489,7 @@ public actor GeminiTranscriber {
                                 "data": base64Audio
                             ]
                         ],
-                        [
-                            "text": prompt
-                        ]
+                        ["text": transcriptionPrompt]
                     ]
                 ]
             ],
@@ -205,7 +504,6 @@ public actor GeminiTranscriber {
     }
 
     private func parseResponse(data: Data) throws -> [TranscriptionSegment] {
-        // Parse JSON response
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let candidates = json["candidates"] as? [[String: Any]],
               let firstCandidate = candidates.first,
@@ -217,8 +515,6 @@ public actor GeminiTranscriber {
         }
 
         fileRagLog("[Gemini] Raw response text:\n\(text)")
-
-        // Parse the formatted transcription
         return parseTranscriptionText(text)
     }
 
@@ -226,8 +522,6 @@ public actor GeminiTranscriber {
     private func parseTranscriptionText(_ text: String) -> [TranscriptionSegment] {
         var segments: [TranscriptionSegment] = []
 
-        // Pattern: [MM:SS-MM:SS] Speaker: "text"
-        // Also handles [M:SS-M:SS] and [HH:MM:SS-HH:MM:SS]
         let pattern = #"\[(\d{1,2}:\d{2}(?::\d{2})?)-(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+):\s*["""]?(.+?)["""]?\s*$"#
 
         let lines = text.components(separatedBy: .newlines)
@@ -248,20 +542,17 @@ public actor GeminiTranscriber {
                 let endTime = parseTimestamp(endTimeStr)
                 let speaker = parseSpeaker(speakerStr)
 
-                // Skip empty segments
                 guard !textContent.isEmpty else { continue }
 
-                let segment = TranscriptionSegment(
+                segments.append(TranscriptionSegment(
                     start: startTime,
                     end: endTime,
                     text: textContent,
                     speaker: speaker
-                )
-                segments.append(segment)
+                ))
             }
         }
 
-        // If no segments parsed with the strict pattern, try a more lenient approach
         if segments.isEmpty {
             fileRagLog("[Gemini] Strict parsing failed, trying lenient parsing")
             return parseLenient(text)
@@ -274,9 +565,8 @@ public actor GeminiTranscriber {
     private func parseLenient(_ text: String) -> [TranscriptionSegment] {
         var segments: [TranscriptionSegment] = []
         var currentTime: TimeInterval = 0
-        let segmentDuration: TimeInterval = 5.0 // Estimate 5 seconds per segment
+        let segmentDuration: TimeInterval = 5.0
 
-        // Look for speaker patterns like "Speaker 1:", "You:", "Speaker X:" followed by text
         let speakerPattern = #"(You|Speaker\s*\d+|Unknown)[:\s]+(.+?)(?=(?:You|Speaker\s*\d+|Unknown)[:\s]|$)"#
 
         if let regex = try? NSRegularExpression(pattern: speakerPattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) {
@@ -290,25 +580,21 @@ public actor GeminiTranscriber {
 
                 guard !content.isEmpty else { continue }
 
-                let speaker = parseSpeaker(speakerStr)
-                let segment = TranscriptionSegment(
+                segments.append(TranscriptionSegment(
                     start: currentTime,
                     end: currentTime + segmentDuration,
                     text: content,
-                    speaker: speaker
-                )
-                segments.append(segment)
+                    speaker: parseSpeaker(speakerStr)
+                ))
                 currentTime += segmentDuration
             }
         }
 
-        // Fallback: if still no segments, create one segment with all text
         if segments.isEmpty && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
             segments.append(TranscriptionSegment(
                 start: 0,
                 end: 30,
-                text: cleanText,
+                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
                 speaker: .unknown
             ))
         }
@@ -316,21 +602,15 @@ public actor GeminiTranscriber {
         return segments
     }
 
-    /// Parse timestamp string (MM:SS or HH:MM:SS) to TimeInterval
     private func parseTimestamp(_ str: String) -> TimeInterval {
         let components = str.split(separator: ":").compactMap { Double($0) }
-
         switch components.count {
-        case 2: // MM:SS
-            return components[0] * 60 + components[1]
-        case 3: // HH:MM:SS
-            return components[0] * 3600 + components[1] * 60 + components[2]
-        default:
-            return 0
+        case 2: return components[0] * 60 + components[1]
+        case 3: return components[0] * 3600 + components[1] * 60 + components[2]
+        default: return 0
         }
     }
 
-    /// Parse speaker string to Speaker enum
     private func parseSpeaker(_ str: String) -> TranscriptionEngine.Speaker {
         let normalized = str.lowercased().trimmingCharacters(in: .whitespaces)
 
@@ -339,10 +619,9 @@ public actor GeminiTranscriber {
         } else if normalized == "unknown" {
             return .unknown
         } else if normalized.contains("speaker") {
-            // Extract speaker number
             let digits = normalized.filter { $0.isNumber }
             if let num = Int(digits), num > 0 {
-                return .remote(num - 1) // Convert to 0-indexed
+                return .remote(num - 1)
             }
             return .remote(0)
         }

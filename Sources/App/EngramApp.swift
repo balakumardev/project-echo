@@ -305,6 +305,73 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
 
         FileLogger.shared.debug("setupProcessingQueueAsync: Handlers configured successfully")
         logger.info("Processing queue handlers configured")
+
+        // Set up notification observers for UI requests
+        setupProcessingNotificationObservers()
+    }
+
+    /// Set up notification observers for UI-initiated processing requests
+    private func setupProcessingNotificationObservers() {
+        // Handle transcription requests from UI (e.g., "Generate Transcript" button)
+        NotificationCenter.default.addObserver(
+            forName: .transcriptionRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let userInfo = notification.userInfo,
+                  let recordingId = userInfo["recordingId"] as? Int64,
+                  let audioURL = userInfo["audioURL"] as? URL else {
+                FileLogger.shared.debug("[ProcessingQueue] Invalid transcription request notification")
+                return
+            }
+
+            FileLogger.shared.debug("[ProcessingQueue] Received transcription request for recording \(recordingId)")
+
+            Task {
+                let result = await ProcessingQueue.shared.queueTranscription(
+                    recordingId: recordingId,
+                    audioURL: audioURL
+                )
+
+                switch result {
+                case .queued:
+                    FileLogger.shared.debug("[ProcessingQueue] Transcription queued for recording \(recordingId)")
+                case .alreadyInProgress:
+                    FileLogger.shared.debug("[ProcessingQueue] Transcription already in progress for recording \(recordingId)")
+                case .alreadyQueued:
+                    FileLogger.shared.debug("[ProcessingQueue] Transcription already queued for recording \(recordingId)")
+                }
+            }
+        }
+
+        // Handle processing status requests from UI (e.g., when loading a recording)
+        NotificationCenter.default.addObserver(
+            forName: .processingStatusRequested,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let userInfo = notification.userInfo,
+                  let recordingId = userInfo["recordingId"] as? Int64 else {
+                return
+            }
+
+            Task {
+                let isTranscribing = await ProcessingQueue.shared.isTranscribingRecording(recordingId)
+
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .processingStatusResponse,
+                        object: nil,
+                        userInfo: [
+                            "recordingId": recordingId,
+                            "isTranscribing": isTranscribing
+                        ]
+                    )
+                }
+            }
+        }
+
+        FileLogger.shared.debug("Processing notification observers configured")
     }
 
     /// Resume incomplete processing tasks from a previous session.
@@ -380,15 +447,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
 
         // Transcription Engine
         transcriptionEngine = TranscriptionEngine()
+        let currentProvider = await transcriptionEngine.currentConfig.provider
+        FileLogger.shared.debug("[Init] TranscriptionEngine created, provider: \(currentProvider.rawValue)")
 
-        // Load Whisper model - we need this before resuming incomplete transcriptions
-        // Load synchronously so resume can work, but don't block the main thread
+        // Load Whisper model if using local provider
+        // Also attempt load for Gemini users as fallback
         let engine = transcriptionEngine
         let log = logger
         do {
             try await engine?.loadModel()
+            FileLogger.shared.debug("[Init] Whisper model loaded successfully")
             log.info("Whisper model loaded")
         } catch {
+            FileLogger.shared.debugError("[Init] Failed to load Whisper model", error: error)
             log.error("Failed to load Whisper model: \(error.localizedDescription)")
         }
 
@@ -579,7 +650,7 @@ App location: \(appPath)
                     )
 
                     // Queue transcription (processed serially to avoid resource conflicts)
-                    await ProcessingQueue.shared.queueTranscription(recordingId: recordingId, audioURL: url)
+                    _ = await ProcessingQueue.shared.queueTranscription(recordingId: recordingId, audioURL: url)
                 }
 
                 currentRecordingURL = nil
@@ -667,6 +738,15 @@ App location: \(appPath)
         }
     }
 
+    /// Push transcription settings from UserDefaults to the running TranscriptionEngine.
+    /// Called when the user changes transcription provider, Gemini API key, or Gemini model in settings.
+    func updateTranscriptionConfig() async {
+        let config = TranscriptionConfig.load()
+        await transcriptionEngine.setConfig(config)
+        FileLogger.shared.debug("[Settings] Transcription config pushed to engine: provider=\(config.provider.rawValue), geminiModel=\(config.geminiModel.rawValue)")
+        logger.info("Transcription config updated on running engine: provider=\(config.provider.rawValue)")
+    }
+
     private func transcribeRecording(id: Int64, url: URL) async {
         FileLogger.shared.debug("[transcribeRecording] Starting for recording \(id), url: \(url.lastPathComponent)")
         logger.info("Starting auto-transcription for recording \(id)")
@@ -728,8 +808,27 @@ App location: \(appPath)
             // Queue AI generation (processed serially to avoid LLM resource conflicts)
             await ProcessingQueue.shared.queueAIGeneration(recordingId: id)
         } catch {
-            FileLogger.shared.debugError("[transcribeRecording] FAILED for recording \(id)", error: error)
-            logger.error("Auto-transcription failed: \(error.localizedDescription)")
+            // Log detailed error info for debugging
+            let errorDetail: String
+            if let txError = error as? TranscriptionEngine.TranscriptionError {
+                switch txError {
+                case .modelNotLoaded:
+                    errorDetail = "modelNotLoaded - Whisper model not loaded. Restart the app or check Settings."
+                case .audioConversionFailed:
+                    errorDetail = "audioConversionFailed - Failed to convert audio file."
+                case .transcriptionFailed:
+                    errorDetail = "transcriptionFailed - Transcription produced no results."
+                case .configurationError(let msg):
+                    errorDetail = "configurationError - \(msg)"
+                case .geminiError(let msg):
+                    errorDetail = "geminiError - \(msg)"
+                }
+            } else {
+                errorDetail = "\(type(of: error)): \(error.localizedDescription)"
+            }
+            FileLogger.shared.debug("[transcribeRecording] FAILED for recording \(id) | \(errorDetail)")
+            logger.error("Auto-transcription failed for recording \(id): \(errorDetail)")
+
             // Notify UI that transcription completed (even on error)
             NotificationCenter.default.post(
                 name: .processingDidComplete,
@@ -1273,7 +1372,7 @@ App location: \(appPath)
             )
 
             // Queue transcription (processed serially to avoid resource conflicts)
-            await ProcessingQueue.shared.queueTranscription(recordingId: recordingId, audioURL: url)
+            _ = await ProcessingQueue.shared.queueTranscription(recordingId: recordingId, audioURL: url)
         }
 
         currentRecordingURL = nil
@@ -2252,6 +2351,13 @@ struct AISettingsView: View {
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
+                            .onChange(of: transcriptionProvider) { _, _ in
+                                Task {
+                                    if let appDelegate = NSApp.delegate as? AppDelegate {
+                                        await appDelegate.updateTranscriptionConfig()
+                                    }
+                                }
+                            }
                         }
 
                         Divider()
@@ -2306,6 +2412,13 @@ struct AISettingsView: View {
 
                                     SecureField("Enter your Gemini API key", text: $geminiAPIKey)
                                         .textFieldStyle(.roundedBorder)
+                                        .onChange(of: geminiAPIKey) { _, _ in
+                                            Task {
+                                                if let appDelegate = NSApp.delegate as? AppDelegate {
+                                                    await appDelegate.updateTranscriptionConfig()
+                                                }
+                                            }
+                                        }
 
                                     Link("Get API key from Google AI Studio",
                                          destination: URL(string: "https://aistudio.google.com/app/apikey")!)
@@ -2322,10 +2435,17 @@ struct AISettingsView: View {
                                     Picker("", selection: $geminiModel) {
                                         Text("Gemini 3 Pro (Best quality)").tag("gemini-3-pro-preview")
                                         Text("Gemini 3 Flash (Recommended)").tag("gemini-3-flash-preview")
-                                        Text("Gemini 2.5 Flash Lite (Fastest)").tag("gemini-2.5-flash-lite")
-                                        Text("Gemini 2.0 Flash (Stable)").tag("gemini-2.0-flash")
+                                        Text("Gemini 2.5 Flash (Balanced)").tag("gemini-2.5-flash")
+                                        Text("Gemini 2.5 Flash Lite (Cheapest)").tag("gemini-2.5-flash-lite")
                                     }
                                     .labelsHidden()
+                                    .onChange(of: geminiModel) { _, _ in
+                                        Task {
+                                            if let appDelegate = NSApp.delegate as? AppDelegate {
+                                                await appDelegate.updateTranscriptionConfig()
+                                            }
+                                        }
+                                    }
 
                                     Text(geminiModelDescription)
                                         .font(.system(size: 11))
@@ -3341,10 +3461,10 @@ struct AISettingsView: View {
             return "Highest accuracy, advanced reasoning. Best for complex meetings."
         case "gemini-3-flash-preview":
             return "Good balance of speed and quality. Recommended for most use cases."
+        case "gemini-2.5-flash":
+            return "Stable release with good quality. Reliable for everyday use."
         case "gemini-2.5-flash-lite":
-            return "Fastest and lowest cost. Good for simple conversations."
-        case "gemini-2.0-flash":
-            return "Stable release. Reliable fallback option."
+            return "Fastest and lowest cost ($0.30/M audio tokens). Great for most meetings."
         default:
             return "Select a model for cloud transcription."
         }

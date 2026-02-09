@@ -147,30 +147,37 @@ public actor TranscriptionEngine {
     }
        
     // MARK: - Model Management
-    
+
     /// Load the Whisper model (call once at app startup)
     public func loadModel() async throws {
-        guard !isModelLoaded else { return }
-        
+        guard !isModelLoaded else {
+            fileDebugLog("[TranscriptionEngine] Model already loaded, skipping")
+            return
+        }
+
+        fileDebugLog("[TranscriptionEngine] Loading Whisper model: \(self.modelVariant)")
         logger.info("Loading Whisper model: \(self.modelVariant)")
         let startTime = Date()
-        
+
         whisperKit = try await WhisperKit(model: modelVariant)
-        
+
         isModelLoaded = true
         let loadTime = Date().timeIntervalSince(startTime)
+        fileDebugLog("[TranscriptionEngine] Whisper model loaded in \(String(format: "%.1f", loadTime))s")
         logger.info("Whisper model loaded in \(loadTime)s")
     }
-    
+
     /// Unload model to free memory
     public func unloadModel() {
         whisperKit = nil
         isModelLoaded = false
+        fileDebugLog("[TranscriptionEngine] Whisper model unloaded")
         logger.info("Whisper model unloaded")
     }
 
     /// Reload the model with current settings (call when user changes model in settings)
     public func reloadModel() async throws {
+        fileDebugLog("[TranscriptionEngine] Reloading Whisper model...")
         logger.info("Reloading Whisper model...")
         unloadModel()
         try await loadModel()
@@ -179,6 +186,11 @@ public actor TranscriptionEngine {
     /// Get the currently configured model variant
     public var currentModelVariant: String {
         modelVariant
+    }
+
+    /// Check if the model is ready for transcription
+    public var isReady: Bool {
+        isModelLoaded && whisperKit != nil
     }
     
     // MARK: - Transcription
@@ -193,9 +205,21 @@ public actor TranscriptionEngine {
         enableDiarization: Bool = true,
         diarizationOptions: SpeakerDiarizationEngine.DiarizationOptions = .meetings
     ) async throws -> TranscriptionResult {
+        fileDebugLog("[TranscriptionEngine] transcribe called: provider=\(config.provider.rawValue), file=\(audioURL.lastPathComponent)")
+
         // Route to appropriate provider
         switch config.provider {
         case .local:
+            // Auto-load model if not loaded (handles startup race conditions and recovery from failures)
+            if !isModelLoaded || whisperKit == nil {
+                fileDebugLog("[TranscriptionEngine] Model not loaded, attempting auto-load...")
+                do {
+                    try await loadModel()
+                } catch {
+                    fileDebugLog("[TranscriptionEngine] Auto-load FAILED: \(error.localizedDescription)")
+                    throw TranscriptionError.modelNotLoaded
+                }
+            }
             return try await transcribeWithWhisperKit(
                 audioURL: audioURL,
                 enableDiarization: enableDiarization,
@@ -209,9 +233,11 @@ public actor TranscriptionEngine {
     /// Transcribe using Gemini cloud API
     private func transcribeWithGemini(audioURL: URL) async throws -> TranscriptionResult {
         guard !config.geminiAPIKey.isEmpty else {
+            fileDebugLog("[TranscriptionEngine] Gemini API key is not configured")
             throw TranscriptionError.configurationError("Gemini API key is not configured")
         }
 
+        fileDebugLog("[TranscriptionEngine] Starting Gemini transcription: \(audioURL.lastPathComponent), model: \(config.geminiModel.rawValue)")
         logger.info("Starting Gemini transcription: \(audioURL.lastPathComponent)")
         let startTime = Date()
 
@@ -221,6 +247,7 @@ public actor TranscriptionEngine {
         }
 
         guard let transcriber = geminiTranscriber else {
+            fileDebugLog("[TranscriptionEngine] Failed to initialize GeminiTranscriber")
             throw TranscriptionError.transcriptionFailed
         }
 
@@ -236,6 +263,7 @@ public actor TranscriptionEngine {
             let fullText = segments.map { $0.text }.joined(separator: " ")
             let processingTime = Date().timeIntervalSince(startTime)
 
+            fileDebugLog("[TranscriptionEngine] Gemini transcription complete: \(segments.count) segments in \(String(format: "%.1f", processingTime))s")
             logger.info("Gemini transcription complete: \(segments.count) segments in \(processingTime)s")
 
             return TranscriptionResult(
@@ -245,8 +273,10 @@ public actor TranscriptionEngine {
                 processingTime: processingTime
             )
         } catch let error as GeminiTranscriber.GeminiError {
+            fileDebugLog("[TranscriptionEngine] Gemini error: \(error.localizedDescription)")
             throw TranscriptionError.geminiError(error.localizedDescription)
         } catch {
+            fileDebugLog("[TranscriptionEngine] Gemini unexpected error: \(error.localizedDescription)")
             throw TranscriptionError.geminiError(error.localizedDescription)
         }
     }
@@ -258,9 +288,11 @@ public actor TranscriptionEngine {
         diarizationOptions: SpeakerDiarizationEngine.DiarizationOptions
     ) async throws -> TranscriptionResult {
         guard isModelLoaded, let kit = whisperKit else {
+            fileDebugLog("[TranscriptionEngine] WhisperKit model not loaded! isModelLoaded=\(isModelLoaded), whisperKit=\(whisperKit == nil ? "nil" : "set")")
             throw TranscriptionError.modelNotLoaded
         }
 
+        fileDebugLog("[TranscriptionEngine] Starting WhisperKit transcription: \(audioURL.lastPathComponent), model: \(modelVariant)")
         logger.info("Starting WhisperKit transcription: \(audioURL.lastPathComponent)")
         let startTime = Date()
 

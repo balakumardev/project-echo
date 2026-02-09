@@ -36,6 +36,18 @@ public extension Notification.Name {
     /// Posted to request opening a recording at a specific timestamp (e.g., from citation tap)
     /// userInfo: ["recordingId": Int64, "timestamp": TimeInterval]
     static let openRecordingAtTimestamp = Notification.Name("Engram.openRecordingAtTimestamp")
+
+    /// Posted by UI to request transcription through ProcessingQueue
+    /// userInfo: ["recordingId": Int64, "audioURL": URL]
+    static let transcriptionRequested = Notification.Name("Engram.transcriptionRequested")
+
+    /// Posted by UI to request current processing status for a recording
+    /// userInfo: ["recordingId": Int64]
+    static let processingStatusRequested = Notification.Name("Engram.processingStatusRequested")
+
+    /// Posted by ProcessingQueue in response to status request
+    /// userInfo: ["recordingId": Int64, "isTranscribing": Bool]
+    static let processingStatusResponse = Notification.Name("Engram.processingStatusResponse")
 }
 
 // MARK: - Processing Status Types
@@ -184,6 +196,7 @@ class RecordingDetailViewModel: ObservableObject {
     @Published var transcript: Transcript?
     @Published var segments: [TranscriptSegment] = []
     @Published var isLoadingTranscript = false
+    @Published var transcriptError: String?
     @Published var audioPlayer: AVAudioPlayer?
 
     // Summary state
@@ -195,6 +208,11 @@ class RecordingDetailViewModel: ObservableObject {
     @Published var actionItems: String?
     @Published var isLoadingActionItems = false
     @Published var actionItemsError: String?
+
+    // Title generation state
+    @Published var generatedTitle: String?
+    @Published var isLoadingTitle = false
+    @Published var titleError: String?
 
     // Pagination state for segments
     @Published var totalSegmentCount: Int = 0
@@ -211,6 +229,7 @@ class RecordingDetailViewModel: ObservableObject {
     private let transcriptionEngine: TranscriptionEngine
     private var summaryTask: Task<Void, Never>?
     private var actionItemsTask: Task<Void, Never>?
+    private var titleTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     private var currentRecordingId: Int64?
 
@@ -235,6 +254,58 @@ class RecordingDetailViewModel: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self = self, let recordingId = self.currentRecordingId else { return }
                     await self.reloadRecordingContent(recordingId: recordingId)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Observe transcription start (from ProcessingQueue background transcription)
+        NotificationCenter.default.publisher(for: .processingDidStart)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let userInfo = notification.userInfo,
+                      let recordingId = userInfo["recordingId"] as? Int64,
+                      let type = userInfo["type"] as? String,
+                      recordingId == self.currentRecordingId,
+                      type == ProcessingType.transcription.rawValue else {
+                    return
+                }
+                self.isLoadingTranscript = true
+                self.transcriptError = nil
+            }
+            .store(in: &cancellables)
+
+        // Observe transcription complete
+        NotificationCenter.default.publisher(for: .processingDidComplete)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let userInfo = notification.userInfo,
+                      let recordingId = userInfo["recordingId"] as? Int64,
+                      let type = userInfo["type"] as? String,
+                      recordingId == self.currentRecordingId,
+                      type == ProcessingType.transcription.rawValue else {
+                    return
+                }
+                self.isLoadingTranscript = false
+                // Transcript data will be loaded via .recordingContentDidUpdate notification
+            }
+            .store(in: &cancellables)
+
+        // Observe processing status response (for initial state check)
+        NotificationCenter.default.publisher(for: .processingStatusResponse)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let userInfo = notification.userInfo,
+                      let recordingId = userInfo["recordingId"] as? Int64,
+                      let isTranscribing = userInfo["isTranscribing"] as? Bool,
+                      recordingId == self.currentRecordingId else {
+                    return
+                }
+                if isTranscribing {
+                    self.isLoadingTranscript = true
+                    self.transcriptError = nil
                 }
             }
             .store(in: &cancellables)
@@ -346,7 +417,9 @@ class RecordingDetailViewModel: ObservableObject {
         audioPlayer?.stop()
         audioPlayer = nil
         transcript = nil
+        transcriptError = nil
         segments = []
+        isLoadingTranscript = false
 
         // Reset pagination state
         currentSegmentOffset = 0
@@ -366,6 +439,21 @@ class RecordingDetailViewModel: ObservableObject {
         actionItems = nil
         isLoadingActionItems = false
         actionItemsError = nil
+
+        // Reset title generation state
+        titleTask?.cancel()
+        titleTask = nil
+        generatedTitle = nil
+        isLoadingTitle = false
+        titleError = nil
+
+        // Request current processing status for this recording
+        // ProcessingQueue (in App module) will respond with .processingStatusResponse
+        NotificationCenter.default.post(
+            name: .processingStatusRequested,
+            object: nil,
+            userInfo: ["recordingId": recording.id]
+        )
 
         // Load persisted summary and action items from fresh database fetch
         // (the recording object passed in may have stale/cached values)
@@ -520,56 +608,23 @@ class RecordingDetailViewModel: ObservableObject {
     }
     
     func generateTranscript(for recording: Recording) async {
+        // Route through ProcessingQueue for unified state tracking
+        // Post notification to request transcription - App module handles this
         isLoadingTranscript = true
-        defer { isLoadingTranscript = false }
+        transcriptError = nil
 
-        do {
-            // Load model if needed
-            try await transcriptionEngine.loadModel()
+        NotificationCenter.default.post(
+            name: .transcriptionRequested,
+            object: nil,
+            userInfo: [
+                "recordingId": recording.id,
+                "audioURL": recording.fileURL
+            ]
+        )
 
-            // Transcribe
-            let result = try await transcriptionEngine.transcribe(audioURL: recording.fileURL)
-
-            // Save to database
-            let dbSegments = result.segments.map { segment in
-                TranscriptSegment(
-                    id: 0,
-                    transcriptId: 0,
-                    startTime: segment.start,
-                    endTime: segment.end,
-                    text: segment.text,
-                    speaker: segment.speaker.displayName,
-                    confidence: segment.confidence
-                )
-            }
-
-            let db = try await getDatabase()
-            let transcriptId = try await db.saveTranscript(
-                recordingId: recording.id,
-                fullText: result.text,
-                language: result.language,
-                processingTime: result.processingTime,
-                segments: dbSegments
-            )
-
-            // Reload
-            await loadTranscript(for: recording)
-
-            // Notify UI that transcript is available
-            NotificationCenter.default.post(
-                name: .recordingContentDidUpdate,
-                object: nil,
-                userInfo: ["recordingId": recording.id, "type": "transcript"]
-            )
-
-            // Auto-index if enabled (defaults to true if not set)
-            let autoIndex = UserDefaults.standard.object(forKey: "autoIndexTranscripts") as? Bool ?? true
-            if autoIndex {
-                await autoIndexTranscript(recording: recording, transcriptId: transcriptId)
-            }
-        } catch {
-            print("Failed to generate transcript: \(error)")
-        }
+        // ProcessingQueue will handle the actual transcription.
+        // State updates will come via .processingDidStart/.processingDidComplete notifications.
+        // Transcript data will be loaded via .recordingContentDidUpdate notification.
     }
 
     /// Automatically index a transcript for RAG search
@@ -761,6 +816,136 @@ class RecordingDetailViewModel: ObservableObject {
         actionItemsTask?.cancel()
         actionItemsTask = nil
         isLoadingActionItems = false
+    }
+
+    /// Generate AI title for the recording's transcript
+    func generateTitle(for recording: Recording) {
+        // Cancel any existing title task
+        titleTask?.cancel()
+
+        isLoadingTitle = true
+        generatedTitle = nil
+        titleError = nil
+
+        titleTask = Task {
+            do {
+                // Use the agentic chat with a title generation request
+                let stream = await AIService.shared.agentChat(
+                    query: """
+                    Generate a short, descriptive title for this meeting/recording based on its transcript.
+
+                    REQUIREMENTS:
+                    - Maximum 8 words
+                    - No quotes or special characters
+                    - Be specific about the topic discussed
+                    - Use title case (capitalize main words)
+                    - Do NOT include prefixes like "Meeting:", "Title:", etc.
+                    - Output ONLY the title, nothing else
+
+                    EXAMPLES OF GOOD TITLES:
+                    - Q4 Budget Review and Planning
+                    - Engineering Team Sprint Retrospective
+                    - Customer Onboarding Process Discussion
+                    - Product Launch Marketing Strategy
+                    """,
+                    sessionId: "title-\(recording.id)-\(Date().timeIntervalSince1970)",
+                    recordingFilter: recording.id
+                )
+
+                var fullTitle = ""
+                for try await token in stream {
+                    guard !Task.isCancelled else { return }
+                    fullTitle += token
+                }
+
+                // Clean up the title
+                let cleanedTitle = self.cleanTitleResponse(fullTitle)
+
+                await MainActor.run {
+                    self.isLoadingTitle = false
+                    if let title = cleanedTitle {
+                        self.generatedTitle = title
+                    } else {
+                        self.titleError = "Could not generate a suitable title."
+                    }
+                }
+
+                // Persist to database after generation completes
+                if let cleanedTitle = cleanedTitle {
+                    do {
+                        let db = try await self.getDatabase()
+                        try await db.updateTitle(recordingId: recording.id, newTitle: cleanedTitle)
+
+                        // Notify UI that recording was updated
+                        NotificationCenter.default.post(
+                            name: .recordingContentDidUpdate,
+                            object: nil,
+                            userInfo: ["recordingId": recording.id, "type": "title"]
+                        )
+                    } catch {
+                        print("Failed to save title: \(error)")
+                    }
+                }
+
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.titleError = error.localizedDescription
+                    self.isLoadingTitle = false
+                }
+                print("Failed to generate title: \(error)")
+            }
+        }
+    }
+
+    /// Clean up AI response to extract just the title
+    private func cleanTitleResponse(_ response: String) -> String? {
+        // Strip thinking patterns
+        var cleaned = ResponseProcessor.stripThinkingPatterns(response)
+
+        // Remove <think>...</think> blocks
+        let thinkBlockPattern = #"<think>[\s\S]*?</think>"#
+        if let regex = try? NSRegularExpression(pattern: thinkBlockPattern, options: []) {
+            cleaned = regex.stringByReplacingMatches(
+                in: cleaned,
+                options: [],
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Remove common prefixes
+        let prefixes = ["Title:", "title:", "TITLE:", "Meeting:", "meeting:"]
+        for prefix in prefixes {
+            if cleaned.hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+            }
+        }
+
+        // Remove quotes if present
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`"))
+
+        // Trim whitespace
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Take only the first line (in case AI added explanation)
+        if let firstLine = cleaned.components(separatedBy: .newlines).first {
+            cleaned = firstLine.trimmingCharacters(in: .whitespaces)
+        }
+
+        // Return nil if empty or too long
+        if cleaned.isEmpty || cleaned.count > 100 {
+            return nil
+        }
+
+        return cleaned
+    }
+
+    /// Cancel any ongoing title generation
+    func cancelTitle() {
+        titleTask?.cancel()
+        titleTask = nil
+        isLoadingTitle = false
     }
 
     func deleteRecording(_ recording: Recording) async {

@@ -86,8 +86,28 @@ public actor ProcessingQueue {
 
     // MARK: - Public API
 
-    /// Queue a transcription task
-    public func queueTranscription(recordingId: Int64, audioURL: URL) {
+    /// Result of attempting to queue a transcription task
+    public enum QueueResult: Sendable {
+        case queued
+        case alreadyInProgress
+        case alreadyQueued
+    }
+
+    /// Queue a transcription task. Returns status indicating if it was queued or already exists.
+    public func queueTranscription(recordingId: Int64, audioURL: URL) -> QueueResult {
+        // Check if already being transcribed
+        if currentTranscriptionId == recordingId {
+            FileLogger.shared.debug("[ProcessingQueue] Recording \(recordingId) already in progress")
+            return .alreadyInProgress
+        }
+
+        // Check if already queued
+        if transcriptionQueue.contains(where: { $0.recordingId == recordingId }) {
+            FileLogger.shared.debug("[ProcessingQueue] Recording \(recordingId) already queued")
+            return .alreadyQueued
+        }
+
+        // Queue the task
         let task = QueuedTask(
             id: UUID(),
             recordingId: recordingId,
@@ -107,6 +127,14 @@ public actor ProcessingQueue {
         Task {
             await processTranscriptionQueue()
         }
+
+        return .queued
+    }
+
+    /// Check if a specific recording is currently being transcribed or queued
+    public func isTranscribingRecording(_ recordingId: Int64) -> Bool {
+        return currentTranscriptionId == recordingId ||
+               transcriptionQueue.contains { $0.recordingId == recordingId }
     }
 
     /// Queue an AI generation task (summary + action items)
@@ -194,13 +222,12 @@ public actor ProcessingQueue {
                 let needsTranscription = try await database.getRecordingsNeedingTranscription()
                 FileLogger.shared.debug("[ProcessingQueue] Found \(needsTranscription.count) recordings needing transcription")
                 for recording in needsTranscription {
-                    // Skip if already queued
-                    guard !transcriptionQueue.contains(where: { $0.recordingId == recording.id }) else {
-                        FileLogger.shared.debug("[ProcessingQueue] Recording \(recording.id) already in queue, skipping")
-                        continue
+                    let result = queueTranscription(recordingId: recording.id, audioURL: recording.fileURL)
+                    if result == .queued {
+                        transcriptionsQueued += 1
+                    } else {
+                        FileLogger.shared.debug("[ProcessingQueue] Recording \(recording.id) not queued: \(result)")
                     }
-                    queueTranscription(recordingId: recording.id, audioURL: recording.fileURL)
-                    transcriptionsQueued += 1
                 }
             } catch {
                 FileLogger.shared.debugError("[ProcessingQueue] Failed to query recordings needing transcription", error: error)
