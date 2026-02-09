@@ -25,6 +25,8 @@ public actor LLMEngine {
         case mlx
         /// OpenAI-compatible API backend
         case openAI(apiKey: String, baseURL: URL?, model: String, temperature: Float)
+        /// Google Gemini API backend
+        case gemini(apiKey: String, model: String, temperature: Float)
     }
 
     /// Errors that can occur during LLM operations
@@ -114,13 +116,16 @@ public actor LLMEngine {
         switch _currentBackend {
         case .mlx:
             return true
-        case .openAI, .none:
+        case .openAI, .gemini, .none:
             return false
         }
     }
 
     /// URLSession for OpenAI API requests
     private let urlSession: URLSession
+
+    /// URLSession for Gemini API requests (with SOCKS5 proxy)
+    private let geminiSession: URLSession
 
     /// Low power mode - throttles inference to reduce CPU/GPU usage
     /// When enabled, adds small delays between token generations to prevent sustained high load
@@ -137,6 +142,16 @@ public actor LLMEngine {
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 300
         self.urlSession = URLSession(configuration: config)
+
+        let geminiConfig = URLSessionConfiguration.default
+        geminiConfig.timeoutIntervalForRequest = 60
+        geminiConfig.timeoutIntervalForResource = 300
+        geminiConfig.connectionProxyDictionary = [
+            kCFNetworkProxiesSOCKSEnable: true,
+            kCFNetworkProxiesSOCKSProxy: "127.0.0.1",
+            kCFNetworkProxiesSOCKSPort: 11111
+        ]
+        self.geminiSession = URLSession(configuration: geminiConfig)
     }
 
     /// Enable or disable low power mode
@@ -167,6 +182,18 @@ public actor LLMEngine {
         self._currentBackend = .openAI(apiKey: apiKey, baseURL: baseURL, model: model, temperature: temperature)
         self.isModelLoaded = true
         logger.info("OpenAI backend configured with model: \(model), temperature: \(temperature)")
+    }
+
+    /// Set Google Gemini API backend
+    public func setGeminiBackend(apiKey: String, model: String, temperature: Float = 0.3) {
+        unload()
+        guard !apiKey.isEmpty else {
+            logger.error("Cannot configure Gemini backend: API key is empty")
+            return
+        }
+        self._currentBackend = .gemini(apiKey: apiKey, model: model, temperature: temperature)
+        self.isModelLoaded = true
+        logger.info("Gemini backend configured with model: \(model), temperature: \(temperature)")
     }
 
     /// Unload the current backend
@@ -230,6 +257,24 @@ public actor LLMEngine {
                             baseURL: baseURL,
                             model: model,
                             parameters: openAIParameters,
+                            continuation: continuation
+                        )
+
+                    case .gemini(let apiKey, let model, let temperature):
+                        let geminiParameters = GenerationParameters(
+                            maxTokens: parameters.maxTokens,
+                            temperature: temperature,
+                            topP: parameters.topP,
+                            stopSequences: parameters.stopSequences
+                        )
+                        try await generateGeminiStream(
+                            prompt: prompt,
+                            context: context,
+                            systemPrompt: systemPrompt,
+                            conversationHistory: conversationHistory,
+                            apiKey: apiKey,
+                            model: model,
+                            parameters: geminiParameters,
                             continuation: continuation
                         )
                     }
@@ -449,6 +494,140 @@ public actor LLMEngine {
         logger.debug("OpenAI stream complete, length: \(generatedText.count)")
     }
 
+    // MARK: - Private: Gemini Generation
+
+    private func generateGeminiStream(
+        prompt: String,
+        context: String,
+        systemPrompt: String?,
+        conversationHistory: [Message],
+        apiKey: String,
+        model: String,
+        parameters: GenerationParameters,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async throws {
+        let endpoint = "https://generativelanguage.googleapis.com/v1beta/models/\(model):streamGenerateContent?alt=sse&key=\(apiKey)"
+
+        guard let url = URL(string: endpoint) else {
+            throw LLMError.invalidConfiguration("Invalid Gemini endpoint URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = buildGeminiRequestBody(
+            prompt: prompt,
+            context: context,
+            systemPrompt: systemPrompt,
+            conversationHistory: conversationHistory,
+            parameters: parameters
+        )
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        logger.debug("Starting Gemini stream request to model: \(model)")
+
+        let (asyncBytes, response) = try await geminiSession.bytes(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LLMError.networkError("Invalid response type")
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            // Try to read error body
+            var errorBody = ""
+            for try await line in asyncBytes.lines {
+                errorBody += line
+                if errorBody.count > 500 { break }
+            }
+            throw LLMError.networkError("Gemini HTTP \(httpResponse.statusCode): \(errorBody)")
+        }
+
+        var generatedText = ""
+
+        for try await line in asyncBytes.lines {
+            // Gemini SSE format: "data: {json}"
+            guard !line.isEmpty, line.hasPrefix("data: ") else {
+                continue
+            }
+
+            let data = String(line.dropFirst(6))
+
+            guard let jsonData = data.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                  let candidates = json["candidates"] as? [[String: Any]],
+                  let firstCandidate = candidates.first,
+                  let content = firstCandidate["content"] as? [String: Any],
+                  let parts = content["parts"] as? [[String: Any]],
+                  let firstPart = parts.first,
+                  let text = firstPart["text"] as? String else {
+                continue
+            }
+
+            generatedText += text
+
+            if shouldStop(text: generatedText, stopSequences: parameters.stopSequences) {
+                break
+            }
+
+            continuation.yield(text)
+        }
+
+        logger.debug("Gemini stream complete, length: \(generatedText.count)")
+    }
+
+    private func buildGeminiRequestBody(
+        prompt: String,
+        context: String,
+        systemPrompt: String?,
+        conversationHistory: [Message],
+        parameters: GenerationParameters
+    ) -> [String: Any] {
+        // System instruction
+        var systemContent = systemPrompt ?? defaultSystemPrompt
+        if !context.isEmpty {
+            systemContent += "\n\nRelevant context from the meeting transcript:\n\(context)"
+        }
+
+        // Build contents array (conversation history + current prompt)
+        var contents: [[String: Any]] = []
+
+        for message in conversationHistory {
+            let role: String = message.role == .assistant ? "model" : "user"
+            contents.append([
+                "role": role,
+                "parts": [["text": message.content]]
+            ])
+        }
+
+        // Current user query
+        contents.append([
+            "role": "user",
+            "parts": [["text": prompt]]
+        ])
+
+        var body: [String: Any] = [
+            "systemInstruction": [
+                "parts": [["text": systemContent]]
+            ],
+            "contents": contents,
+            "generationConfig": [
+                "temperature": parameters.temperature,
+                "maxOutputTokens": parameters.maxTokens,
+                "topP": parameters.topP
+            ]
+        ]
+
+        if !parameters.stopSequences.isEmpty {
+            var genConfig = body["generationConfig"] as! [String: Any]
+            genConfig["stopSequences"] = parameters.stopSequences
+            body["generationConfig"] = genConfig
+        }
+
+        return body
+    }
+
     // MARK: - Private: Prompt Building
 
     private func buildMLXPrompt(
@@ -529,6 +708,8 @@ extension LLMEngine.Backend: CustomStringConvertible {
         case .openAI(_, let baseURL, let model, _):
             let host = baseURL?.host ?? "api.openai.com"
             return "OpenAI(\(model)@\(host))"
+        case .gemini(_, let model, _):
+            return "Gemini(\(model))"
         }
     }
 }

@@ -30,6 +30,11 @@ public class AIServiceObservable: ObservableObject {
     @Published public var openAIModel: String = "gpt-4o-mini"
     @Published public var openAITemperature: Float = 1.0
 
+    // Gemini config bindings
+    @Published public var geminiKey: String = ""
+    @Published public var geminiAIModel: String = GeminiAIModel.gemini25FlashLite.rawValue
+    @Published public var geminiTemperature: Float = 0.3
+
     // Connection test state
     @Published public var isTestingConnection: Bool = false
     @Published public var connectionTestResult: ConnectionTestResult?
@@ -97,6 +102,13 @@ public class AIServiceObservable: ObservableObject {
         if self.openAIModel != config.openAIModel {
             self.openAIModel = config.openAIModel
         }
+        // Sync Gemini settings
+        if self.geminiKey != config.geminiKey {
+            self.geminiKey = config.geminiKey
+        }
+        if self.geminiAIModel != config.geminiAIModel {
+            self.geminiAIModel = config.geminiAIModel
+        }
 
         // Update initialization state
         let initialized = await service.isInitialized
@@ -122,9 +134,29 @@ public class AIServiceObservable: ObservableObject {
                 self.openAIBaseURL = config.openAIBaseURL
                 self.openAIModel = config.openAIModel
                 self.openAITemperature = config.openAITemperature
+                self.geminiKey = config.geminiKey
+                self.geminiAIModel = config.geminiAIModel
+                self.geminiTemperature = config.geminiTemperature
                 self.provider = config.provider
                 self.autoUnloadEnabled = config.autoUnloadEnabled
                 self.autoUnloadMinutes = config.autoUnloadMinutes
+            }
+
+            // Auto-trigger Gemini setup if provider is gemini and key is set but not ready
+            if config.provider == .gemini,
+               case .notConfigured = currentStatus,
+               !config.geminiKey.isEmpty {
+                print("[AIServiceObservable] Auto-triggering Gemini setup")
+                do {
+                    try await AIService.shared.configureGemini(
+                        apiKey: config.geminiKey,
+                        model: config.geminiAIModel,
+                        temperature: config.geminiTemperature
+                    )
+                    print("[AIServiceObservable] Gemini auto-configured successfully")
+                } catch {
+                    print("[AIServiceObservable] Failed to auto-configure Gemini: \(error)")
+                }
             }
 
             // Auto-trigger model setup if model is cached but not loaded
@@ -263,6 +295,97 @@ public class AIServiceObservable: ObservableObject {
             } catch {
                 // Error is reflected in status
             }
+        }
+    }
+
+    /// Configure Gemini backend
+    public func configureGemini() {
+        guard !geminiKey.isEmpty else { return }
+        Task {
+            do {
+                try await AIService.shared.configureGemini(
+                    apiKey: geminiKey,
+                    model: geminiAIModel,
+                    temperature: geminiTemperature
+                )
+            } catch {
+                // Error is reflected in status
+            }
+        }
+    }
+
+    /// Test Gemini API connection by listing available models
+    public func testGeminiConnectionWith(apiKey: String) {
+        guard !apiKey.isEmpty else {
+            connectionTestResult = .failure(message: "API key is required")
+            return
+        }
+
+        isTestingConnection = true
+        connectionTestResult = nil
+
+        Task {
+            do {
+                let result = try await performGeminiConnectionTest(apiKey: apiKey)
+                await MainActor.run {
+                    self.connectionTestResult = result
+                    self.isTestingConnection = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.connectionTestResult = .failure(message: error.localizedDescription)
+                    self.isTestingConnection = false
+                }
+            }
+        }
+    }
+
+    /// Perform Gemini connection test by listing models
+    private func performGeminiConnectionTest(apiKey: String) async throws -> ConnectionTestResult {
+        let urlString = "https://generativelanguage.googleapis.com/v1beta/models?key=\(apiKey)"
+        guard let url = URL(string: urlString) else {
+            return .failure(message: "Invalid URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+
+        // Use a session with SOCKS5 proxy (same as Gemini transcriber)
+        let proxyConfig = URLSessionConfiguration.default
+        proxyConfig.connectionProxyDictionary = [
+            kCFNetworkProxiesSOCKSEnable: true,
+            kCFNetworkProxiesSOCKSProxy: "127.0.0.1",
+            kCFNetworkProxiesSOCKSPort: 11111
+        ]
+        let session = URLSession(configuration: proxyConfig)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return .failure(message: "Invalid response type")
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let models = json["models"] as? [[String: Any]] {
+                return .success(modelCount: models.count)
+            }
+            return .success(modelCount: 0)
+        case 400:
+            return .failure(message: "Invalid API key (400 Bad Request)")
+        case 403:
+            return .failure(message: "Access denied (403 Forbidden)")
+        case 429:
+            return .failure(message: "Rate limited (429). Try again later.")
+        default:
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = json["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                return .failure(message: message)
+            }
+            return .failure(message: "HTTP \(httpResponse.statusCode)")
         }
     }
 
