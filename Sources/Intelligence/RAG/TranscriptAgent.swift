@@ -94,12 +94,13 @@ public actor TranscriptAgent {
                     // Execute strategy
                     switch strategy {
                     case .ragSearch:
-                        fileAgentLog("Executing RAG search (no recording selected)...")
+                        fileAgentLog("Executing cross-recording search (no recording selected)...")
                         try await self.executeRAGSearch(
                             query: query,
                             recordingId: recordingId,
                             ragPipeline: ragPipeline,
                             sessionId: sessionId,
+                            conversationHistory: conversationHistory,
                             continuation: continuation
                         )
 
@@ -196,12 +197,14 @@ public actor TranscriptAgent {
         recordingId: Int64?,
         ragPipeline: RAGPipeline,
         sessionId: String,
+        conversationHistory: [LLMEngine.Message],
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
-        let stream = await ragPipeline.chat(
+        // Use cross-recording search for better multi-recording results
+        let stream = await ragPipeline.crossRecordingSearch(
             query: query,
             sessionId: sessionId,
-            recordingFilter: recordingId
+            conversationHistory: conversationHistory
         )
 
         for try await token in stream {

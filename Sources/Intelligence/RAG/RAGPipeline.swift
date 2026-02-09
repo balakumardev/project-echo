@@ -2,6 +2,7 @@ import Foundation
 import VecturaKit
 import VecturaNLKit
 import NaturalLanguage
+import Accelerate
 import os.log
 import Database
 
@@ -121,6 +122,9 @@ public actor RAGPipeline {
     /// Tracks which recordings have been indexed
     private var indexedRecordings: Set<Int64> = []
 
+    /// In-memory cache of recording-level embeddings for cross-recording search
+    private var recordingEmbeddings: [Int64: [Float]] = [:]
+
     /// Whether the pipeline has been initialized
     private var isInitialized = false
 
@@ -134,6 +138,14 @@ public actor RAGPipeline {
         When referencing information, cite the speaker and timestamp.
         If the context doesn't contain relevant information, say so honestly.
         Be concise and focus on extracting actionable insights, key decisions, and important details.
+        """
+
+    /// System prompt for cross-recording search (multiple meetings)
+    private let multiRecordingSystemPrompt = """
+        You are an intelligent meeting assistant with access to transcripts from multiple recorded meetings.
+        When answering, cite which recording your information comes from using the recording title.
+        If information comes from multiple meetings, synthesize across them and note the source.
+        Be concise and accurate. If the context doesn't contain enough information, say so.
         """
 
     // MARK: - Initialization
@@ -210,6 +222,9 @@ public actor RAGPipeline {
             // Load indexed recordings from the database
             await loadIndexedRecordingsFromDB()
 
+            // Load recording-level embeddings into memory for cross-recording search
+            await loadRecordingEmbeddings()
+
             isInitialized = true
 
             let initTime = Date().timeIntervalSince(startTime)
@@ -227,6 +242,7 @@ public actor RAGPipeline {
         documentToSegment.removeAll()
         segmentToDocument.removeAll()
         indexedRecordings.removeAll()
+        recordingEmbeddings.removeAll()
         isInitialized = false
         logger.info("RAG pipeline shut down")
     }
@@ -295,6 +311,13 @@ public actor RAGPipeline {
                         vector: embedding,
                         model: "NLContextualEmbedder"
                     )
+
+                    // Populate FTS5 segment_search table for keyword search
+                    try await databaseManager.insertSegmentSearchEntry(
+                        segmentId: segment.id,
+                        recordingId: recording.id,
+                        text: segment.text
+                    )
                 }
             }
 
@@ -345,6 +368,13 @@ public actor RAGPipeline {
 
             // Remove from indexed set
             indexedRecordings.remove(recordingId)
+
+            // Remove recording-level embedding
+            try await databaseManager.deleteRecordingEmbedding(recordingId: recordingId)
+            recordingEmbeddings.removeValue(forKey: recordingId)
+
+            // Remove FTS5 segment search entries
+            try await databaseManager.deleteSegmentSearchEntries(recordingId: recordingId)
 
             logger.info("Removed recording \(recordingId) from index")
 
@@ -435,7 +465,9 @@ public actor RAGPipeline {
 
         do {
             // Search using text query (VecturaKit handles embedding internally)
-            let topK = recordingFilter == nil ? limit * 2 : limit  // Get more results if filtering
+            // When filtering by recording, fetch many more results since VecturaKit returns
+            // globally ranked results and we filter post-hoc (most will be from other recordings)
+            let topK = recordingFilter != nil ? max(limit * 10, 100) : limit * 2
             fileRagLog("[Search] Calling vectorDB.search with topK=\(topK), threshold=\(Self.minimumSimilarityScore)")
             let vectorResults = try await vectorDB.search(
                 query: .text(trimmedQuery),
@@ -697,6 +729,409 @@ public actor RAGPipeline {
                 }
             }
         }
+    }
+
+    // MARK: - Recording-Level Indexing
+
+    /// Index a recording's summary/metadata for cross-recording search
+    /// Call this after summary or action items are generated
+    public func indexRecordingSummary(recordingId: Int64) async throws {
+        // Note: No isInitialized guard — this only needs the embedding engine,
+        // which is loaded before RAGPipeline.initialize() completes.
+        // This allows backfilling during init before isInitialized is set.
+
+        let recording = try await databaseManager.getRecording(id: recordingId)
+
+        // Build embedding text from available metadata
+        var parts: [String] = [recording.title]
+
+        if let summary = recording.summary, !summary.isEmpty, !summary.hasPrefix("[No summary") {
+            parts.append(summary)
+        } else {
+            // Fallback: use first 500 chars of transcript
+            if let transcript = try await databaseManager.getTranscript(forRecording: recordingId) {
+                let prefix = String(transcript.fullText.prefix(500))
+                if !prefix.isEmpty {
+                    parts.append(prefix)
+                }
+            }
+        }
+
+        if let actionItems = recording.actionItems, !actionItems.isEmpty, !actionItems.hasPrefix("[No action") {
+            parts.append(actionItems)
+        }
+
+        let embeddingText = parts.joined(separator: "\n")
+
+        // Generate embedding
+        let vector = try await embeddingEngine.embed(embeddingText)
+
+        // Save to database
+        try await databaseManager.saveRecordingEmbedding(
+            recordingId: recordingId,
+            text: embeddingText,
+            vector: vector,
+            model: "NLContextualEmbedder"
+        )
+
+        // Update in-memory cache
+        recordingEmbeddings[recordingId] = vector
+
+        fileRagLog("[CrossRecordingSearch] Indexed recording \(recordingId) summary (\(embeddingText.count) chars)")
+    }
+
+    /// Load all recording embeddings into memory on startup
+    /// Also backfills FTS5 segment_search and recording embeddings for existing data
+    private func loadRecordingEmbeddings() async {
+        do {
+            // Load existing recording embeddings
+            let embeddings = try await databaseManager.getAllRecordingEmbeddings()
+            for entry in embeddings {
+                recordingEmbeddings[entry.recordingId] = entry.vector
+            }
+            fileRagLog("[Init] Loaded \(embeddings.count) recording-level embeddings into memory")
+
+            let recordings = try await databaseManager.getAllRecordings()
+            let transcribedRecordings = recordings.filter { $0.hasTranscript }
+
+            // Backfill recording-level embeddings for recordings with summaries but no embedding
+            var newlyIndexedEmbeddings = 0
+            for recording in transcribedRecordings {
+                if recordingEmbeddings[recording.id] == nil {
+                    if recording.summary != nil || recording.actionItems != nil {
+                        do {
+                            try await indexRecordingSummary(recordingId: recording.id)
+                            newlyIndexedEmbeddings += 1
+                        } catch {
+                            fileRagLog("[Init] Failed to index recording \(recording.id) summary: \(error.localizedDescription)")
+                        }
+                    }
+                }
+            }
+            if newlyIndexedEmbeddings > 0 {
+                fileRagLog("[Init] Indexed \(newlyIndexedEmbeddings) new recording-level embeddings")
+            }
+
+            // Backfill FTS5 segment_search if empty
+            let ftsCount = try await databaseManager.segmentSearchCount()
+            if ftsCount == 0 && !transcribedRecordings.isEmpty {
+                fileRagLog("[Init] FTS5 segment_search is empty, backfilling all segments...")
+                var totalFTS = 0
+                for recording in transcribedRecordings {
+                    if let transcript = try await databaseManager.getTranscript(forRecording: recording.id) {
+                        let segments = try await databaseManager.getSegments(forTranscriptId: transcript.id)
+                        for segment in segments {
+                            try await databaseManager.insertSegmentSearchEntry(
+                                segmentId: segment.id,
+                                recordingId: recording.id,
+                                text: segment.text
+                            )
+                            totalFTS += 1
+                        }
+                    }
+                }
+                fileRagLog("[Init] Backfilled \(totalFTS) segments into FTS5 segment_search")
+            } else {
+                fileRagLog("[Init] FTS5 segment_search has \(ftsCount) entries")
+            }
+        } catch {
+            fileRagLog("[Init] Failed to load recording embeddings: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Cross-Recording Search
+
+    /// Two-stage cross-recording search: find relevant recordings, then extract rich context
+    /// - Parameters:
+    ///   - query: The user's question
+    ///   - sessionId: Chat session identifier
+    ///   - conversationHistory: Previous conversation messages
+    /// - Returns: AsyncThrowingStream of response tokens and cited segment IDs
+    public func crossRecordingSearch(
+        query: String,
+        sessionId: String,
+        conversationHistory: [LLMEngine.Message]
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    guard self.isInitialized else {
+                        throw RAGError.notInitialized
+                    }
+
+                    guard await self.llmEngine.isModelLoaded else {
+                        throw RAGError.llmError("LLM model not loaded")
+                    }
+
+                    fileRagLog("[CrossRecordingSearch] Query: '\(query)', Recording embeddings: \(self.recordingEmbeddings.count)")
+
+                    // === Stage 1: Recording Discovery ===
+                    let rankedRecordings = try await self.discoverRelevantRecordings(query: query)
+
+                    if rankedRecordings.isEmpty {
+                        fileRagLog("[CrossRecordingSearch] No relevant recordings found")
+                        // Fall back to basic RAG search
+                        let fallbackStream = self.chat(
+                            query: query,
+                            sessionId: sessionId,
+                            recordingFilter: nil
+                        )
+                        for try await token in fallbackStream {
+                            continuation.yield(token)
+                        }
+                        continuation.finish()
+                        return
+                    }
+
+                    // === Stage 2: Context Extraction ===
+                    // MLX has ~2K token context; cloud providers can handle ~40K
+                    let isMLX = await self.llmEngine.isMLXBackend
+                    let tokenBudget: Int
+                    let searchRecordings: [RankedRecording]
+                    if isMLX {
+                        tokenBudget = 1500  // Leave room for system prompt + generation
+                        searchRecordings = Array(rankedRecordings.prefix(2))
+                        fileRagLog("[CrossRecordingSearch] MLX backend — compact context, \(searchRecordings.count) recordings, \(tokenBudget) token budget")
+                    } else {
+                        tokenBudget = 40000
+                        searchRecordings = rankedRecordings
+                    }
+                    let context = try await self.buildMultiRecordingContext(
+                        rankedRecordings: searchRecordings,
+                        query: query,
+                        tokenBudget: tokenBudget
+                    )
+
+                    fileRagLog("[CrossRecordingSearch] Built context: \(context.count) chars from \(searchRecordings.count) recordings")
+
+                    // Collect segment IDs for citations
+                    var citedSegmentIds: [Int64] = []
+                    for rec in searchRecordings {
+                        citedSegmentIds.append(contentsOf: rec.segmentIds)
+                    }
+
+                    // === Generate response ===
+                    // Note: message persistence is handled by agentChat() caller
+
+                    let stream = await self.llmEngine.generateStream(
+                        prompt: query,
+                        context: context,
+                        systemPrompt: self.multiRecordingSystemPrompt,
+                        conversationHistory: conversationHistory
+                    )
+
+                    for try await token in stream {
+                        continuation.yield(token)
+                    }
+
+                    continuation.finish()
+
+                } catch {
+                    self.logger.error("Cross-recording search error: \(error.localizedDescription)")
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Stage 1: Discover relevant recordings using hybrid semantic + keyword search
+    private struct RankedRecording {
+        let recordingId: Int64
+        let score: Float
+        var segmentIds: [Int64] = []
+    }
+
+    private func discoverRelevantRecordings(query: String, limit: Int = 5) async throws -> [RankedRecording] {
+        // Stage 1a: Semantic search against recording embeddings
+        var semanticScores: [(recordingId: Int64, score: Float)] = []
+
+        if !recordingEmbeddings.isEmpty {
+            let queryVector = try await embeddingEngine.embed(query)
+
+            for (recordingId, vector) in recordingEmbeddings {
+                let score = cosineSimilarity(queryVector, vector)
+                if score > 0.05 {  // Very permissive threshold
+                    semanticScores.append((recordingId: recordingId, score: score))
+                }
+            }
+            semanticScores.sort { $0.score > $1.score }
+            semanticScores = Array(semanticScores.prefix(10))
+        }
+
+        fileRagLog("[CrossRecordingSearch] Stage 1a - Semantic: \(semanticScores.count) recordings")
+        for (i, s) in semanticScores.prefix(3).enumerated() {
+            fileRagLog("[CrossRecordingSearch]   \(i+1). Recording \(s.recordingId): score=\(String(format: "%.4f", s.score))")
+        }
+
+        // Stage 1b: Keyword search via FTS5
+        let keywordResults = try await databaseManager.keywordSearchRecordings(query: query, limit: 10)
+
+        fileRagLog("[CrossRecordingSearch] Stage 1b - Keyword: \(keywordResults.count) recordings")
+        for (i, k) in keywordResults.prefix(3).enumerated() {
+            fileRagLog("[CrossRecordingSearch]   \(i+1). Recording \(k.recordingId): matches=\(k.matchCount)")
+        }
+
+        // Merge: combine semantic (raw cosine, already 0-1) with normalized keyword
+        // DON'T normalize semantic — raw cosine similarity is already 0-1,
+        // normalizing would make a weak 0.25 look like a perfect 1.0
+        let rawSemantic: [Int64: Float] = Dictionary(
+            uniqueKeysWithValues: semanticScores.map {
+                ($0.recordingId, $0.score)
+            }
+        )
+
+        // Normalize keyword scores to [0,1] (counts vary widely)
+        let maxKeyword = Float(keywordResults.first?.matchCount ?? 1)
+        let normalizedKeyword: [Int64: Float] = Dictionary(
+            uniqueKeysWithValues: keywordResults.map {
+                ($0.recordingId, maxKeyword > 0 ? Float($0.matchCount) / maxKeyword : 0)
+            }
+        )
+
+        // Combine all recording IDs
+        var allRecordingIds = Set(rawSemantic.keys)
+        allRecordingIds.formUnion(normalizedKeyword.keys)
+
+        var mergedScores: [RankedRecording] = []
+        for recId in allRecordingIds {
+            let semScore = rawSemantic[recId] ?? 0
+            let kwScore = normalizedKeyword[recId] ?? 0
+
+            var combined = 0.7 * semScore + 0.3 * kwScore
+
+            // Boost recordings found in both lists
+            if semScore > 0 && kwScore > 0 {
+                combined *= 1.3
+            }
+
+            mergedScores.append(RankedRecording(recordingId: recId, score: combined))
+        }
+
+        mergedScores.sort { $0.score > $1.score }
+        let topRecordings = Array(mergedScores.prefix(limit))
+
+        fileRagLog("[CrossRecordingSearch] Merged: \(topRecordings.count) recordings selected")
+        for (i, r) in topRecordings.enumerated() {
+            fileRagLog("[CrossRecordingSearch]   \(i+1). Recording \(r.recordingId): combined=\(String(format: "%.4f", r.score))")
+        }
+
+        return topRecordings
+    }
+
+    /// Stage 2: Build rich multi-recording context from ranked recordings
+    private func buildMultiRecordingContext(
+        rankedRecordings: [RankedRecording],
+        query: String,
+        tokenBudget: Int
+    ) async throws -> String {
+        guard !rankedRecordings.isEmpty else { return "No relevant meeting content found." }
+
+        // Allocate token budget: top recording gets max(40%, proportional share)
+        let totalScore = rankedRecordings.reduce(Float(0)) { $0 + $1.score }
+        var budgets: [Int] = []
+
+        for (i, rec) in rankedRecordings.enumerated() {
+            let proportional = totalScore > 0 ? Double(rec.score) / Double(totalScore) : 1.0 / Double(rankedRecordings.count)
+            let share: Double
+            if i == 0 {
+                share = max(0.4, proportional)
+            } else {
+                share = proportional
+            }
+            budgets.append(Int(Double(tokenBudget) * share))
+        }
+
+        // Normalize budgets to not exceed total
+        let budgetSum = budgets.reduce(0, +)
+        if budgetSum > tokenBudget {
+            let scale = Double(tokenBudget) / Double(budgetSum)
+            budgets = budgets.map { Int(Double($0) * scale) }
+        }
+
+        var contextParts: [String] = []
+        var updatedRecordings = rankedRecordings
+
+        for (i, rec) in rankedRecordings.enumerated() {
+            let recording: DatabaseManager.Recording
+            do {
+                recording = try await databaseManager.getRecording(id: rec.recordingId)
+            } catch {
+                continue
+            }
+
+            let budgetTokens = budgets[i]
+            // Rough approximation: 1 token ≈ 4 chars
+            let budgetChars = budgetTokens * 4
+
+            var recordingContext = ""
+
+            // Header
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            let dateStr = dateFormatter.string(from: recording.date)
+            let appStr = recording.appName ?? "Unknown"
+            recordingContext += "=== Meeting: \"\(recording.title)\" (\(dateStr), \(appStr)) ===\n"
+
+            // Include summary if available
+            if let summary = recording.summary, !summary.isEmpty, !summary.hasPrefix("[No summary") {
+                let truncatedSummary = String(summary.prefix(budgetChars / 3))
+                recordingContext += "Summary: \(truncatedSummary)\n\n"
+            }
+
+            // Search for relevant segments within this recording
+            let remainingBudget = budgetChars - recordingContext.count
+            var segmentIds: [Int64] = []
+
+            if remainingBudget > 100 {
+                do {
+                    let segmentResults = try await self.search(
+                        query: query,
+                        limit: 15,
+                        recordingFilter: rec.recordingId
+                    )
+
+                    if !segmentResults.isEmpty {
+                        recordingContext += "Key segments:\n"
+                        var segmentChars = 0
+                        for result in segmentResults {
+                            let timestamp = formatTimestamp(result.segment.startTime)
+                            let segmentLine = "[\(result.segment.speaker)] [\(timestamp)] \(result.segment.text)\n"
+                            if segmentChars + segmentLine.count > remainingBudget {
+                                break
+                            }
+                            recordingContext += segmentLine
+                            segmentChars += segmentLine.count
+                            segmentIds.append(result.segment.id)
+                        }
+                    }
+                } catch {
+                    fileRagLog("[CrossRecordingSearch] Segment search failed for recording \(rec.recordingId): \(error.localizedDescription)")
+                }
+            }
+
+            updatedRecordings[i].segmentIds = segmentIds
+            contextParts.append(recordingContext)
+        }
+
+        return contextParts.joined(separator: "\n\n")
+    }
+
+    /// Cosine similarity between two vectors using Accelerate framework (vDSP)
+    private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
+        guard a.count == b.count, !a.isEmpty else { return 0.0 }
+
+        var dotProduct: Float = 0
+        var normA: Float = 0
+        var normB: Float = 0
+
+        vDSP_dotpr(a, 1, b, 1, &dotProduct, vDSP_Length(a.count))
+        vDSP_dotpr(a, 1, a, 1, &normA, vDSP_Length(a.count))
+        vDSP_dotpr(b, 1, b, 1, &normB, vDSP_Length(b.count))
+
+        let denominator = sqrt(normA) * sqrt(normB)
+        guard denominator > 0 else { return 0.0 }
+
+        return dotProduct / denominator
     }
 
     // MARK: - Private Helpers

@@ -197,6 +197,12 @@ public actor DatabaseManager {
     private let content = Expression<String>("content")
     private let citations = Expression<String?>("citations")
     private let timestamp = Expression<Date>("timestamp")
+
+    // Column definitions - Recording Embeddings
+    private let recEmbRecordingId = Expression<Int64>("recording_id")
+    private let recEmbText = Expression<String>("embedding_text")
+    private let recEmbVector = Expression<Data>("embedding_vector")
+    private let recEmbModel = Expression<String>("embedding_model")
     
     // MARK: - Initialization
     
@@ -298,6 +304,24 @@ public actor DatabaseManager {
         // Index for fast session lookups
         try db.execute("CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_history(chat_session_id)")
 
+        // Recording-level embeddings table - stores summary embeddings for cross-recording search
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS recording_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recording_id INTEGER NOT NULL UNIQUE REFERENCES recordings(id) ON DELETE CASCADE,
+                embedding_text TEXT NOT NULL,
+                embedding_vector BLOB NOT NULL,
+                embedding_model TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        // Segment-level FTS5 search index for keyword search across recordings
+        try db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS segment_search
+            USING fts5(text, recording_id UNINDEXED, segment_id UNINDEXED)
+        """)
+
         logger.info("Database schema created successfully")
     }
 
@@ -341,6 +365,36 @@ public actor DatabaseManager {
         if !hasActionItemsColumn {
             try db.execute("ALTER TABLE recordings ADD COLUMN action_items TEXT")
             logger.info("Migration: Added action_items column to recordings table")
+        }
+
+        // Migrate: Create recording_embeddings table if missing
+        let hasRecordingEmbeddings = try db.scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='recording_embeddings'"
+        ) as! Int64 > 0
+        if !hasRecordingEmbeddings {
+            try db.execute("""
+                CREATE TABLE IF NOT EXISTS recording_embeddings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recording_id INTEGER NOT NULL UNIQUE REFERENCES recordings(id) ON DELETE CASCADE,
+                    embedding_text TEXT NOT NULL,
+                    embedding_vector BLOB NOT NULL,
+                    embedding_model TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            logger.info("Migration: Created recording_embeddings table")
+        }
+
+        // Migrate: Create segment_search FTS5 table if missing
+        let hasSegmentSearch = try db.scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='segment_search'"
+        ) as! Int64 > 0
+        if !hasSegmentSearch {
+            try db.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS segment_search
+                USING fts5(text, recording_id UNINDEXED, segment_id UNINDEXED)
+            """)
+            logger.info("Migration: Created segment_search FTS5 table")
         }
     }
 
@@ -1033,5 +1087,156 @@ public actor DatabaseManager {
         }
 
         return nil
+    }
+
+    // MARK: - Recording Embedding Operations
+
+    /// Upsert a recording-level embedding (for cross-recording search)
+    public func saveRecordingEmbedding(recordingId: Int64, text: String, vector: [Float], model: String) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let vectorData = vector.withUnsafeBufferPointer { buffer in
+            Data(buffer: buffer)
+        }
+
+        // Use INSERT OR REPLACE for upsert (recording_id has UNIQUE constraint)
+        try db.run("""
+            INSERT INTO recording_embeddings (recording_id, embedding_text, embedding_vector, embedding_model, created_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(recording_id) DO UPDATE SET
+                embedding_text = excluded.embedding_text,
+                embedding_vector = excluded.embedding_vector,
+                embedding_model = excluded.embedding_model,
+                created_at = datetime('now')
+        """, recordingId, text, vectorData.datatypeValue, model)
+
+        logger.info("Recording embedding saved for recording \(recordingId)")
+    }
+
+    /// Get the embedding for a specific recording
+    public func getRecordingEmbedding(recordingId: Int64) async throws -> (text: String, vector: [Float])? {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let stmt = try db.prepare("SELECT embedding_text, embedding_vector FROM recording_embeddings WHERE recording_id = ?", recordingId)
+
+        for row in stmt {
+            guard let text = row[0] as? String,
+                  let vectorBlob = row[1] as? Blob else { continue }
+
+            let vectorData = Data(bytes: vectorBlob.bytes, count: vectorBlob.bytes.count)
+            let vector = vectorData.withUnsafeBytes { buffer in
+                Array(buffer.bindMemory(to: Float.self))
+            }
+            return (text: text, vector: vector)
+        }
+
+        return nil
+    }
+
+    /// Get all recording embeddings (for loading into memory on startup)
+    public func getAllRecordingEmbeddings() async throws -> [(recordingId: Int64, vector: [Float])] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        var results: [(recordingId: Int64, vector: [Float])] = []
+        let stmt = try db.prepare("SELECT recording_id, embedding_vector FROM recording_embeddings")
+
+        for row in stmt {
+            guard let recId = row[0] as? Int64,
+                  let vectorBlob = row[1] as? Blob else { continue }
+
+            let vectorData = Data(bytes: vectorBlob.bytes, count: vectorBlob.bytes.count)
+            let vector = vectorData.withUnsafeBytes { buffer in
+                Array(buffer.bindMemory(to: Float.self))
+            }
+            results.append((recordingId: recId, vector: vector))
+        }
+
+        return results
+    }
+
+    /// Delete the recording embedding for a specific recording
+    public func deleteRecordingEmbedding(recordingId: Int64) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        try db.run("DELETE FROM recording_embeddings WHERE recording_id = ?", recordingId)
+        logger.info("Recording embedding deleted for recording \(recordingId)")
+    }
+
+    // MARK: - Segment Search (FTS5) Operations
+
+    /// Insert a segment into the FTS5 search index
+    public func insertSegmentSearchEntry(segmentId: Int64, recordingId: Int64, text: String) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        try db.run(
+            "INSERT INTO segment_search (text, recording_id, segment_id) VALUES (?, ?, ?)",
+            text, recordingId, segmentId
+        )
+    }
+
+    /// Check if the segment_search FTS5 table has any entries
+    public func segmentSearchCount() async throws -> Int {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        let count = try db.scalar("SELECT count(*) FROM segment_search") as! Int64
+        return Int(count)
+    }
+
+    /// Delete all FTS5 entries for a recording
+    public func deleteSegmentSearchEntries(recordingId: Int64) async throws {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        try db.run("DELETE FROM segment_search WHERE recording_id = ?", recordingId)
+        logger.info("Segment search entries deleted for recording \(recordingId)")
+    }
+
+    /// Keyword search across recordings using FTS5 MATCH with BM25 ranking.
+    /// BM25 naturally downweights common terms (like "what", "the") that appear across many segments,
+    /// so no hardcoded stop word list is needed.
+    public func keywordSearchRecordings(query: String, limit: Int = 10) async throws -> [(recordingId: Int64, matchCount: Int)] {
+        guard let db = db else { throw DatabaseError.initializationFailed }
+
+        // Strip non-alphanumeric chars to produce clean FTS5 tokens
+        let tokens = query.unicodeScalars
+            .map { CharacterSet.alphanumerics.contains($0) || $0 == " " ? Character($0) : Character(" ") }
+            .split(separator: " ")
+            .map { String($0).lowercased() }
+            .filter { $0.count > 1 }
+
+        guard !tokens.isEmpty else { return [] }
+
+        let ftsQuery = tokens.joined(separator: " OR ")
+
+        // Use bm25() to rank by relevance instead of raw count.
+        // BM25 applies TF-IDF weighting: terms appearing in fewer segments score higher,
+        // so ubiquitous words like "the"/"was" contribute near-zero to the score.
+        // We sum per-segment BM25 scores within each recording for the final ranking.
+        let sql = """
+            SELECT CAST(recording_id AS INTEGER) as rec_id,
+                   SUM(-bm25(segment_search)) as relevance
+            FROM segment_search
+            WHERE segment_search MATCH ?
+            GROUP BY recording_id
+            ORDER BY relevance DESC
+            LIMIT ?
+        """
+
+        var results: [(recordingId: Int64, matchCount: Int)] = []
+
+        do {
+            let stmt = try db.prepare(sql, ftsQuery, limit)
+            // Use failableNext() instead of for-in to avoid force-unwrap trap in SQLite.swift's
+            // FailableIterator.next() — FTS5 can throw during row iteration, not just prepare.
+            while let row = try stmt.failableNext() {
+                if let recId = row[0] as? Int64,
+                   let score = row[1] as? Double {
+                    results.append((recordingId: recId, matchCount: max(1, Int(score * 1000))))
+                }
+            }
+        } catch {
+            logger.warning("FTS5 keyword search failed for query '\(query)': \(error.localizedDescription)")
+        }
+
+        return results
     }
 }

@@ -1005,6 +1005,10 @@ App location: \(appPath)
                 if !summary.isEmpty {
                     try await database.saveSummary(recordingId: recordingId, summary: summary)
                     logger.info("Auto-generated summary for recording \(recordingId)")
+
+                    // Index recording-level embedding for cross-recording search
+                    try? await AIService.shared.indexRecordingSummary(recordingId: recordingId)
+
                     FileLogger.shared.debug("[AutoGen] Summary saved for recording \(recordingId), calling generateTitleFromSummary...")
 
                     // Generate a meaningful title from the summary if current title is generic
@@ -1076,6 +1080,9 @@ App location: \(appPath)
                 if let cleanedActionItems = cleanActionItemsResponse(actionItems) {
                     try await database.saveActionItems(recordingId: recordingId, actionItems: cleanedActionItems)
                     logger.info("Auto-generated action items for recording \(recordingId)")
+
+                    // Re-index recording-level embedding to include action items
+                    try? await AIService.shared.indexRecordingSummary(recordingId: recordingId)
 
                     // Notify UI that action items are available
                     NotificationCenter.default.post(

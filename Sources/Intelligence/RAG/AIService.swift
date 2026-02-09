@@ -944,6 +944,15 @@ public actor AIService {
         await refreshIndexingStatus()
     }
 
+    /// Index a recording's summary for cross-recording search
+    public func indexRecordingSummary(recordingId: Int64) async throws {
+        guard let pipeline = ragPipeline else {
+            logToFile("[AIService] indexRecordingSummary: ragPipeline is nil, skipping")
+            return
+        }
+        try await pipeline.indexRecordingSummary(recordingId: recordingId)
+    }
+
     /// Rebuild entire index
     public func rebuildIndex() async throws {
         logToFile("[AIService] rebuildIndex called, isInitialized: \(isInitialized), ragPipeline: \(ragPipeline != nil)")
