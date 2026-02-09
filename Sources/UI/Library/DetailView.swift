@@ -175,10 +175,10 @@ struct DetailHeader: View {
     }
 
     var body: some View {
-        GlassCard(padding: Theme.Spacing.xl) {
+        SurfaceCard(padding: Theme.Spacing.xl) {
             HStack(spacing: Theme.Spacing.lg) {
                 // App icon
-                AppIconBadge(appName: recording.appName, size: 64)
+                AppIconBadge(appName: recording.appName, size: 44)
 
                 // Info
                 VStack(alignment: .leading, spacing: Theme.Spacing.sm) {

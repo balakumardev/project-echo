@@ -201,6 +201,56 @@ public enum RecordingSort: String, CaseIterable, Identifiable {
     }
 }
 
+/// Compact icon-only sort button for inline use
+@available(macOS 14.0, *)
+public struct SortIconMenu: View {
+    @Binding var selectedSort: RecordingSort
+
+    @State private var isHovered = false
+
+    public init(selectedSort: Binding<RecordingSort>) {
+        self._selectedSort = selectedSort
+    }
+
+    public var body: some View {
+        Menu {
+            ForEach(RecordingSort.allCases) { sort in
+                Button {
+                    selectedSort = sort
+                } label: {
+                    HStack {
+                        Image(systemName: sort.icon)
+                        Text(sort.rawValue)
+                        if selectedSort == sort {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(isHovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary)
+                .frame(width: 28, height: 28)
+                .background(
+                    Circle()
+                        .fill(isHovered ? Theme.Colors.surfaceHover : Theme.Colors.surfaceElevated)
+                )
+                .overlay(
+                    Circle()
+                        .stroke(Theme.Colors.borderSubtle, lineWidth: 1)
+                )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help("Sort: \(selectedSort.rawValue)")
+    }
+}
+
 /// Sort dropdown menu
 @available(macOS 14.0, *)
 public struct SortMenu: View {

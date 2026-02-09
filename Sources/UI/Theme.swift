@@ -21,9 +21,9 @@ public enum Theme {
         public static let borderSubtle = Color(hex: "222228")
 
         // Accent colors
-        public static let primary = Color(hex: "7C3AED")
-        public static let primaryHover = Color(hex: "8B5CF6")
-        public static let primaryMuted = Color(hex: "7C3AED").opacity(0.15)
+        public static let primary = Color(hex: "2563EB")
+        public static let primaryHover = Color(hex: "3B82F6")
+        public static let primaryMuted = Color(hex: "2563EB").opacity(0.12)
         public static let secondary = Color(hex: "06B6D4")
         public static let secondaryMuted = Color(hex: "06B6D4").opacity(0.15)
 
@@ -43,7 +43,7 @@ public enum Theme {
         public static let textInverse = Color(hex: "0D0D0F")
 
         // Waveform colors
-        public static let waveformPlayed = Color(hex: "7C3AED")
+        public static let waveformPlayed = Color(hex: "2563EB")
         public static let waveformUnplayed = Color(hex: "3F3F46")
         public static let waveformBackground = Color(hex: "18181B")
 
@@ -79,29 +79,29 @@ public enum Theme {
         )
 
         public static let defaultAppGradient = LinearGradient(
-            colors: [Color(hex: "7C3AED"), Color(hex: "5B21B6")],
+            colors: [Color(hex: "2563EB"), Color(hex: "1D4ED8")],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
 
         // Speaker gradient colors (10 distinct colors for speakers)
         public static let speakerColors: [Color] = [
-            Color(hex: "7C3AED"), // Purple
+            Color(hex: "F97316"), // Orange
             Color(hex: "06B6D4"), // Cyan
             Color(hex: "F59E0B"), // Amber
             Color(hex: "10B981"), // Emerald
             Color(hex: "EC4899"), // Pink
             Color(hex: "3B82F6"), // Blue
             Color(hex: "EF4444"), // Red
-            Color(hex: "8B5CF6"), // Violet
+            Color(hex: "A855F7"), // Purple
             Color(hex: "14B8A6"), // Teal
-            Color(hex: "F97316"), // Orange
+            Color(hex: "84CC16"), // Lime
         ]
 
         public static func speakerColor(for name: String) -> Color {
             // Give "You" a distinct, consistent color
             if name == "You" {
-                return Color(hex: "3B82F6")  // Blue - stands out as the user
+                return Color(hex: "06B6D4")  // Teal - distinctive from primary blue
             }
             let hash = abs(name.hashValue)
             return speakerColors[hash % speakerColors.count]
@@ -151,6 +151,9 @@ public enum Theme {
         // Monospace
         public static let monoSmall = Font.system(size: 11, weight: .medium, design: .monospaced)
         public static let monoBody = Font.system(size: 13, weight: .regular, design: .monospaced)
+
+        // UI elements
+        public static let countBadge = Font.system(size: 12, weight: .medium, design: .monospaced)
     }
 
     // MARK: - Spacing
@@ -183,7 +186,7 @@ public enum Theme {
         public static let sm = ShadowStyle(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
         public static let md = ShadowStyle(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
         public static let lg = ShadowStyle(color: .black.opacity(0.3), radius: 16, x: 0, y: 8)
-        public static let glow = ShadowStyle(color: Colors.primary.opacity(0.4), radius: 12, x: 0, y: 0)
+        public static let glow = ShadowStyle(color: Colors.primary.opacity(0.3), radius: 12, x: 0, y: 0)
     }
 
     // MARK: - Animation

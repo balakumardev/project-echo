@@ -56,7 +56,7 @@ public struct LibraryView: View {
                 customStartDate: $customStartDate,
                 customEndDate: $customEndDate
             )
-            .frame(width: 340)
+            .frame(width: 380)
 
             // Divider
             Rectangle()

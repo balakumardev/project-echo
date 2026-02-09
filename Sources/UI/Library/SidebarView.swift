@@ -16,7 +16,7 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Header — title + search
             SidebarHeader(
                 searchText: $searchText,
                 onSearch: { query in
@@ -31,27 +31,20 @@ struct SidebarView: View {
                 }
             )
 
-            // Filters
-            VStack(spacing: Theme.Spacing.sm) {
-                FilterChips(
-                    selectedFilter: $selectedFilter,
-                    customStartDate: $customStartDate,
-                    customEndDate: $customEndDate
-                )
-                    .onChange(of: selectedFilter) { _, _ in
-                        // Filter will be applied in filteredRecordings
-                    }
+            // Filter chips — full width
+            FilterChips(
+                selectedFilter: $selectedFilter,
+                customStartDate: $customStartDate,
+                customEndDate: $customEndDate
+            )
+            .onChange(of: selectedFilter) { _, _ in }
+            .padding(.bottom, Theme.Spacing.sm)
 
-                HStack {
-                    Spacer()
-                    SortMenu(selectedSort: $selectedSort)
-                }
-                .padding(.horizontal, Theme.Spacing.md)
-            }
-            .padding(.vertical, Theme.Spacing.sm)
-
-            Divider()
-                .background(Theme.Colors.border)
+            // Info bar — recording count + sort control
+            SortInfoBar(
+                recordingCount: filteredRecordings.count,
+                selectedSort: $selectedSort
+            )
 
             // Recording list
             if viewModel.isLoading {
@@ -83,9 +76,6 @@ struct SidebarView: View {
                     }
                 )
             }
-
-            // Footer with branding
-            SidebarFooter()
         }
         .background(Theme.Colors.surface)
     }
@@ -104,7 +94,6 @@ struct SidebarView: View {
             let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
             recordings = recordings.filter { $0.date >= weekAgo }
         case .custom:
-            // Custom date range filter
             if let start = customStartDate {
                 recordings = recordings.filter { $0.date >= start }
             }
@@ -172,47 +161,23 @@ struct SidebarHeader: View {
     let onSearch: (String) -> Void
     let onRefresh: () -> Void
 
-    @AppStorage("aiEnabled") private var aiEnabled = true
-    @Environment(\.openWindow) private var openWindow
-
     var body: some View {
         VStack(spacing: Theme.Spacing.md) {
-            // Title row with AI controls
+            // Title row
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "waveform.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(Theme.Colors.primary)
-
-                        Text("Engram")
-                            .font(Theme.Typography.title2)
-                            .foregroundColor(Theme.Colors.textPrimary)
-                    }
-                    Text("Your meeting recordings")
-                        .font(Theme.Typography.caption)
-                        .foregroundColor(Theme.Colors.textMuted)
-                }
+                Text("Recordings")
+                    .font(Theme.Typography.title3)
+                    .foregroundColor(Theme.Colors.textPrimary)
 
                 Spacer()
 
-                // AI Status and Controls
                 HStack(spacing: Theme.Spacing.sm) {
-                    // AI Status Indicator
                     AIStatusIndicator(style: .headerBar)
 
-                    // AI Chat Button
-                    IconButton(icon: "bubble.left.and.bubble.right", size: 28, style: .ghost) {
-                        openWindow(id: "ai-chat")
-                    }
-                    .help("Open AI Chat")
-                    .disabled(!aiEnabled)
-                    .opacity(aiEnabled ? 1.0 : 0.5)
-
-                    // Refresh Button
-                    IconButton(icon: "arrow.clockwise", size: 28, style: .ghost) {
+                    IconButton(icon: "arrow.clockwise", size: 26, style: .ghost) {
                         onRefresh()
                     }
+                    .help("Refresh")
                 }
             }
 
@@ -224,7 +189,34 @@ struct SidebarHeader: View {
                 onSearch(newValue)
             }
         }
-        .padding(Theme.Spacing.lg)
+        .padding(.horizontal, Theme.Spacing.lg)
+        .padding(.top, Theme.Spacing.lg)
+        .padding(.bottom, Theme.Spacing.sm)
+    }
+}
+
+// MARK: - Sort Info Bar
+
+/// Shows recording count on the left and a sort dropdown on the right.
+/// Sits between filters and the recording list for easy discoverability.
+@available(macOS 14.0, *)
+struct SortInfoBar: View {
+    let recordingCount: Int
+    @Binding var selectedSort: RecordingSort
+
+    var body: some View {
+        HStack {
+            Text("\(recordingCount) recording\(recordingCount == 1 ? "" : "s")")
+                .font(Theme.Typography.subheadline)
+                .foregroundColor(Theme.Colors.textMuted)
+
+            Spacer()
+
+            SortMenu(selectedSort: $selectedSort)
+        }
+        .padding(.horizontal, Theme.Spacing.lg)
+        .padding(.vertical, Theme.Spacing.sm)
+        .background(Theme.Colors.background.opacity(0.5))
     }
 }
 
@@ -246,7 +238,7 @@ struct RecordingList: View {
                 isSelected: selectedRecording?.id == recording.id
             )
             .tag(recording)
-            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+            .listRowInsets(EdgeInsets(top: 2, leading: Theme.Spacing.sm, bottom: 2, trailing: Theme.Spacing.sm))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .contextMenu {
@@ -295,42 +287,10 @@ struct RecordingList: View {
     }
 }
 
-// MARK: - Status Indicators
-
-/// Compact icon-based status indicators for recording metadata
-/// Shows transcript and video status as small, subtle icons
-@available(macOS 14.0, *)
-struct StatusIndicators: View {
-    let hasTranscript: Bool
-    let hasVideo: Bool
-    let isHovered: Bool
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            if hasTranscript {
-                Image(systemName: "text.quote")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.Colors.success)
-                    .opacity(isHovered ? 1.0 : 0.5)
-                    .help("Transcribed")
-            }
-
-            if hasVideo {
-                Image(systemName: "video.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.Colors.primary)
-                    .opacity(isHovered ? 1.0 : 0.5)
-                    .help("Has video")
-            }
-        }
-        .animation(Theme.Animation.fast, value: isHovered)
-    }
-}
-
 // MARK: - Recording Row
 
-/// A single recording item in the sidebar list
-/// Displays: selection indicator, app icon, title, relative date, duration, status icons, favorite star, file size
+/// A single recording item in the sidebar list.
+/// Features: colored left accent bar, app icon, title, metadata, colorful status badges.
 @available(macOS 14.0, *)
 struct RecordingRow: View {
     let recording: Recording
@@ -339,69 +299,74 @@ struct RecordingRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            // Selection indicator - purple bar on left when selected
+        HStack(spacing: 0) {
+            // Colored left accent bar based on meeting app
             RoundedRectangle(cornerRadius: 2)
-                .fill(isSelected ? Theme.Colors.primary : .clear)
+                .fill(accentColor)
                 .frame(width: 3)
+                .padding(.vertical, Theme.Spacing.xs)
 
-            // App icon badge (reduced size for compact look)
-            AppIconBadge(appName: recording.appName, size: 36)
+            HStack(spacing: Theme.Spacing.md) {
+                // App icon badge
+                AppIconBadge(appName: recording.appName, size: 34)
 
-            // Main content - title and metadata
-            VStack(alignment: .leading, spacing: 3) {
-                // Title row
-                Text(recording.title)
-                    .font(Theme.Typography.headline)
-                    .foregroundColor(Theme.Colors.textPrimary)
-                    .lineLimit(1)
+                // Main content
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    // Title row
+                    HStack(spacing: Theme.Spacing.xs) {
+                        Text(recording.title)
+                            .font(Theme.Typography.headline)
+                            .foregroundColor(isSelected ? .white : Theme.Colors.textPrimary)
+                            .lineLimit(2)
 
-                // Metadata row - relative date and duration
-                HStack(spacing: Theme.Spacing.xs) {
-                    // Relative date - tooltip shows full date/time on hover
-                    Text(Formatters.formatRelativeDate(recording.date, expanded: false))
-                        .help(Formatters.formatRelativeDate(recording.date, expanded: true))
+                        if recording.isFavorite {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(.yellow)
+                        }
+                    }
 
-                    Text("•")
-                        .foregroundColor(Theme.Colors.textMuted.opacity(0.5))
+                    // Metadata row — date and duration
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Text(Formatters.formatRelativeDate(recording.date, expanded: false))
+                            .help(Formatters.formatRelativeDate(recording.date, expanded: true))
 
-                    // Duration with monospaced font for alignment
-                    Text(Formatters.formatDuration(recording.duration))
-                        .fontDesign(.monospaced)
+                        Text("\u{00B7}")
+                            .foregroundColor(Theme.Colors.textMuted.opacity(0.4))
+
+                        Text(Formatters.formatDuration(recording.duration))
+                            .fontDesign(.monospaced)
+                    }
+                    .font(Theme.Typography.subheadline)
+                    .foregroundColor(isSelected ? .white.opacity(0.7) : Theme.Colors.textMuted)
+
+                    // Colorful status badges
+                    if recording.hasTranscript || recording.hasVideo {
+                        HStack(spacing: Theme.Spacing.xs) {
+                            if recording.hasTranscript {
+                                StatusBadge("Transcribed", color: Theme.Colors.success, icon: "text.quote")
+                            }
+                            if recording.hasVideo {
+                                StatusBadge("Video", color: Theme.Colors.secondary, icon: "video.fill")
+                            }
+                        }
+                    }
                 }
-                .font(Theme.Typography.caption)
-                .foregroundColor(Theme.Colors.textMuted)
+
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: Theme.Spacing.sm)
-
-            // Status indicators (transcript, video) - subtle icons
-            StatusIndicators(
-                hasTranscript: recording.hasTranscript,
-                hasVideo: recording.hasVideo,
-                isHovered: isHovered
-            )
-
-            // Favorite star - trailing position
-            if recording.isFavorite {
-                Image(systemName: "star.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.yellow)
-            }
-
-            // File size - muted, more visible on hover
-            Text(Formatters.formatFileSize(recording.fileSize))
-                .font(Theme.Typography.caption)
-                .foregroundColor(Theme.Colors.textMuted)
-                .opacity(isHovered ? 1.0 : 0.7)
+            .padding(.leading, Theme.Spacing.sm)
         }
-        .padding(.vertical, Theme.Spacing.sm)
         .padding(.trailing, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.sm)
         .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.sm)
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
                 .fill(backgroundColor)
         )
-        .scaleEffect(isHovered && !isSelected ? 1.005 : 1.0)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.md)
+                .stroke(isSelected ? Theme.Colors.primary.opacity(0.4) : Color.clear, lineWidth: 1)
+        )
         .animation(Theme.Animation.fast, value: isHovered)
         .contentShape(Rectangle())
         .onHover { hovering in
@@ -409,55 +374,24 @@ struct RecordingRow: View {
         }
     }
 
-    /// Background color based on selection and hover state
+    /// App-based accent color for the left bar
+    private var accentColor: Color {
+        guard let app = recording.appName?.lowercased() else { return Theme.Colors.primary }
+        if app.contains("zoom") { return Color(hex: "2D8CFF") }
+        if app.contains("teams") { return Color(hex: "5B5FC7") }
+        if app.contains("meet") || app.contains("chrome") { return Color(hex: "00AC47") }
+        if app.contains("slack") { return Color(hex: "E01E5A") }
+        if app.contains("discord") { return Color(hex: "5865F2") }
+        return Theme.Colors.primary
+    }
+
     private var backgroundColor: Color {
         if isSelected {
-            return Theme.Colors.primaryMuted
+            return Theme.Colors.primary.opacity(0.2)
         }
         if isHovered {
             return Theme.Colors.surfaceHover
         }
-        return .clear
-    }
-}
-
-// MARK: - Sidebar Footer
-
-@available(macOS 14.0, *)
-struct SidebarFooter: View {
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            Image(systemName: "waveform.circle.fill")
-                .font(.system(size: 12))
-                .foregroundColor(Theme.Colors.primary.opacity(0.6))
-
-            Text("Engram")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Theme.Colors.textMuted)
-
-            Text("•")
-                .foregroundColor(Theme.Colors.textMuted.opacity(0.4))
-
-            Text("by Bala Kumar")
-                .font(.system(size: 11))
-                .foregroundColor(Theme.Colors.textMuted.opacity(0.7))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, Theme.Spacing.sm)
-        .background(Theme.Colors.surface.opacity(0.5))
-        .opacity(isHovered ? 1.0 : 0.8)
-        .onHover { hovering in
-            withAnimation(Theme.Animation.fast) {
-                isHovered = hovering
-            }
-        }
-        .onTapGesture {
-            if let url = URL(string: "https://balakumar.dev") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-        .help("Visit balakumar.dev")
+        return Theme.Colors.background.opacity(0.3)
     }
 }

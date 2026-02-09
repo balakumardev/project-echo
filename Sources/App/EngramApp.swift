@@ -146,11 +146,24 @@ struct EngramApp: App {
 
         // Settings window
         Settings {
-            SettingsView()
-                .onAppear {
-                    // Also register here in case settings opens first
-                    registerWindowActions()
-                }
+            TabView {
+                GeneralSettingsView()
+                    .tabItem { Label("General", systemImage: "gear") }
+                    .frame(width: 600, height: 750)
+                TranscriptionSettingsView()
+                    .tabItem { Label("Transcription", systemImage: "waveform") }
+                    .frame(width: 600, height: 750)
+                AISettingsView()
+                    .tabItem { Label("AI", systemImage: "sparkles") }
+                    .frame(width: 600, height: 750)
+                AboutSettingsView()
+                    .tabItem { Label("About", systemImage: "info.circle") }
+                    .frame(width: 600, height: 750)
+            }
+            .onAppear {
+                // Also register here in case settings opens first
+                registerWindowActions()
+            }
         }
     }
 
@@ -1620,105 +1633,6 @@ enum MeetingDetectorError: Error {
     case delegateNotAvailable
 }
 
-// MARK: - Settings View
-
-struct SettingsView: View {
-    @State private var selectedTab = 0
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Custom tab bar - centered
-            SettingsTabBar(selectedTab: $selectedTab)
-
-            Divider()
-                .foregroundColor(Theme.Colors.border)
-
-            // Content area
-            Group {
-                switch selectedTab {
-                case 0:
-                    GeneralSettingsView()
-                case 1:
-                    AISettingsView()
-                case 2:
-                    PrivacySettingsView()
-                case 3:
-                    AdvancedSettingsView()
-                case 4:
-                    AboutSettingsView()
-                default:
-                    GeneralSettingsView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-        .frame(width: 560, height: 520)
-        .background(Theme.Colors.background)
-    }
-}
-
-struct SettingsTabBar: View {
-    @Binding var selectedTab: Int
-
-    private let tabs = [
-        ("General", "gear"),
-        ("AI", "sparkles"),
-        ("Privacy", "hand.raised.fill"),
-        ("Advanced", "slider.horizontal.3"),
-        ("About", "info.circle")
-    ]
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            ForEach(0..<tabs.count, id: \.self) { index in
-                SettingsTabButton(
-                    title: tabs[index].0,
-                    icon: tabs[index].1,
-                    isSelected: selectedTab == index
-                ) {
-                    withAnimation(Theme.Animation.fast) {
-                        selectedTab = index
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, Theme.Spacing.md)
-        .background(Theme.Colors.surface)
-    }
-}
-
-struct SettingsTabButton: View {
-    let title: String
-    let icon: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .foregroundColor(isSelected ? .white : (isHovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(
-                Capsule()
-                    .fill(isSelected ? Theme.Colors.primary : (isHovered ? Theme.Colors.surfaceHover : .clear))
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-    }
-}
-
 struct GeneralSettingsView: View {
     @AppStorage("autoRecord") private var autoRecord = true
     @AppStorage("autoTranscribe") private var autoTranscribe = true
@@ -1726,6 +1640,8 @@ struct GeneralSettingsView: View {
     @AppStorage("autoRecordOnWake") private var autoRecordOnWake: Bool = true
     @AppStorage("recordVideoEnabled") private var recordVideoEnabled: Bool = false
     @AppStorage("windowSelectionMode") private var windowSelectionMode: String = "smart"
+    @AppStorage("sampleRate") private var sampleRate = 48000
+    @AppStorage("audioQuality") private var audioQuality = "high"
 
     // Login item state
     @State private var launchAtLogin: Bool = false
@@ -1802,7 +1718,7 @@ struct GeneralSettingsView: View {
                             isOn: $autoRecord
                         )
 
-                        Divider().padding(.vertical, 8)
+                        Divider().padding(.vertical, Theme.Spacing.sm)
 
                         SettingsToggle(
                             title: "Auto-transcribe recordings",
@@ -1810,7 +1726,7 @@ struct GeneralSettingsView: View {
                             isOn: $autoTranscribe
                         )
 
-                        Divider().padding(.vertical, 8)
+                        Divider().padding(.vertical, Theme.Spacing.sm)
 
                         SettingsToggle(
                             title: "Resume on wake",
@@ -1818,7 +1734,7 @@ struct GeneralSettingsView: View {
                             isOn: $autoRecordOnWake
                         )
 
-                        Divider().padding(.vertical, 8)
+                        Divider().padding(.vertical, Theme.Spacing.sm)
 
                         SettingsToggle(
                             title: "Record screen video",
@@ -1827,7 +1743,7 @@ struct GeneralSettingsView: View {
                         )
 
                         if recordVideoEnabled {
-                            Divider().padding(.vertical, 8)
+                            Divider().padding(.vertical, Theme.Spacing.sm)
 
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Window selection")
@@ -1864,6 +1780,44 @@ struct GeneralSettingsView: View {
                     }
                 }
 
+                // Audio Quality Section
+                SettingsSection(title: "Audio Quality", icon: "waveform.badge.plus") {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sample Rate")
+                                .font(.system(size: 13))
+                                .foregroundColor(Theme.Colors.textPrimary)
+
+                            Picker("", selection: $sampleRate) {
+                                Text("44.1 kHz").tag(44100)
+                                Text("48 kHz").tag(48000)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Quality Preset")
+                                .font(.system(size: 13))
+                                .foregroundColor(Theme.Colors.textPrimary)
+
+                            Picker("", selection: $audioQuality) {
+                                Text("Standard").tag("standard")
+                                Text("High").tag("high")
+                                Text("Maximum").tag("maximum")
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            Text("Higher quality uses more disk space")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.Colors.textMuted)
+                        }
+                    }
+                }
+
                 // Storage Section
                 SettingsSection(title: "Storage", icon: "folder") {
                     HStack(spacing: 12) {
@@ -1893,7 +1847,7 @@ struct GeneralSettingsView: View {
                     }
                 }
             }
-            .padding(20)
+            .padding(Theme.Spacing.xl)
         }
         .background(Theme.Colors.background)
     }
@@ -1985,83 +1939,173 @@ struct GeneralSettingsView: View {
     }
 }
 
-struct PrivacySettingsView: View {
+// MARK: - Transcription Settings View
+
+@available(macOS 14.0, *)
+struct TranscriptionSettingsView: View {
+    @AppStorage("transcriptionProvider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("geminiAPIKey") private var geminiAPIKey = ""
+    @AppStorage("geminiModel") private var geminiModel = "gemini-3-flash-preview"
+    @AppStorage("whisperModel") private var whisperModel = "small.en"
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .center, spacing: 24) {
-                // Privacy hero
-                VStack(spacing: 16) {
-                    ZStack {
-                        Circle()
-                            .fill(Theme.Colors.successMuted)
-                            .frame(width: 72, height: 72)
+            VStack(alignment: .leading, spacing: 20) {
+                // Provider Selection
+                SettingsSection(title: "Provider", icon: "text.quote") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Choose how your recordings are transcribed")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.Colors.textMuted)
 
-                        Image(systemName: "lock.shield.fill")
-                            .font(.system(size: 32))
-                            .foregroundColor(Theme.Colors.success)
-                    }
-
-                    VStack(spacing: 8) {
-                        Text("Privacy First")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(Theme.Colors.textPrimary)
-
-                        Text("Engram processes all audio locally on your device.\nNo data is ever sent to external servers.")
-                            .font(.system(size: 13))
-                            .foregroundColor(Theme.Colors.textSecondary)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Picker("", selection: $transcriptionProvider) {
+                            Text("Local (WhisperKit)").tag("whisperkit")
+                            Text("Gemini Cloud").tag("gemini-cloud")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .onChange(of: transcriptionProvider) { _, _ in
+                            Task {
+                                if let appDelegate = NSApp.delegate as? AppDelegate {
+                                    await appDelegate.updateTranscriptionConfig()
+                                }
+                            }
+                        }
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 16)
 
-                // Privacy features
-                VStack(alignment: .leading, spacing: 0) {
-                    PrivacyFeatureRow(
-                        icon: "internaldrive.fill",
-                        title: "Audio stored locally",
-                        description: "All recordings are saved only on your Mac"
-                    )
+                // Local Provider Settings
+                if transcriptionProvider == "whisperkit" {
+                    SettingsSection(title: "WhisperKit Model", icon: "cpu") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Picker("", selection: $whisperModel) {
+                                Text("Tiny").tag("tiny.en")
+                                Text("Base").tag("base.en")
+                                Text("Small (Recommended)").tag("small.en")
+                                Text("Medium").tag("medium.en")
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .onChange(of: whisperModel) { oldValue, newValue in
+                                Task {
+                                    if let appDelegate = NSApp.delegate as? AppDelegate {
+                                        await appDelegate.reloadWhisperModel()
+                                    }
+                                }
+                            }
 
-                    Divider().padding(.vertical, 10)
+                            Text("Larger models are more accurate but use more resources.")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.Colors.textMuted)
 
-                    PrivacyFeatureRow(
-                        icon: "cpu.fill",
-                        title: "On-device AI transcription",
-                        description: "WhisperKit runs entirely on your hardware"
-                    )
-
-                    Divider().padding(.vertical, 10)
-
-                    PrivacyFeatureRow(
-                        icon: "icloud.slash.fill",
-                        title: "No cloud uploads",
-                        description: "Your audio never leaves your device"
-                    )
-
-                    Divider().padding(.vertical, 10)
-
-                    PrivacyFeatureRow(
-                        icon: "chart.bar.xaxis",
-                        title: "No analytics or tracking",
-                        description: "Zero telemetry, no usage data collected"
-                    )
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.shield.fill")
+                                    .foregroundColor(Theme.Colors.success)
+                                    .font(.system(size: 11))
+                                Text("Private: Audio never leaves your device")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+                        }
+                    }
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Theme.Colors.surface)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Theme.Colors.borderSubtle, lineWidth: 1)
-                )
+
+                // Gemini Cloud Settings
+                if transcriptionProvider == "gemini-cloud" {
+                    SettingsSection(title: "Gemini Cloud", icon: "cloud") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            // API Key
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("API Key")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                SecureField("Enter your Gemini API key", text: $geminiAPIKey)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onChange(of: geminiAPIKey) { _, _ in
+                                        Task {
+                                            if let appDelegate = NSApp.delegate as? AppDelegate {
+                                                await appDelegate.updateTranscriptionConfig()
+                                            }
+                                        }
+                                    }
+
+                                Link("Get API key from Google AI Studio",
+                                     destination: URL(string: "https://aistudio.google.com/app/apikey")!)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.primary)
+                            }
+
+                            Divider()
+
+                            // Model Selection
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Model")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.Colors.textPrimary)
+
+                                Picker("", selection: $geminiModel) {
+                                    Text("Gemini 3 Pro (Best quality)").tag("gemini-3-pro-preview")
+                                    Text("Gemini 3 Flash (Recommended)").tag("gemini-3-flash-preview")
+                                    Text("Gemini 2.5 Flash (Balanced)").tag("gemini-2.5-flash")
+                                    Text("Gemini 2.5 Flash Lite (Cheapest)").tag("gemini-2.5-flash-lite")
+                                }
+                                .labelsHidden()
+                                .onChange(of: geminiModel) { _, _ in
+                                    Task {
+                                        if let appDelegate = NSApp.delegate as? AppDelegate {
+                                            await appDelegate.updateTranscriptionConfig()
+                                        }
+                                    }
+                                }
+
+                                Text(geminiModelDescription)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+
+                            Divider()
+
+                            // Privacy Warning
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.system(size: 14))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Cloud Processing")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(.orange)
+                                    Text("Audio will be sent to Google's servers for transcription. Requires internet connection and may incur API usage fees.")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.Colors.textMuted)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(8)
+                        }
+                    }
+                }
             }
-            .padding(20)
+            .padding(Theme.Spacing.xl)
         }
         .background(Theme.Colors.background)
+    }
+
+    private var geminiModelDescription: String {
+        switch geminiModel {
+        case "gemini-3-pro-preview":
+            return "Highest accuracy, advanced reasoning. Best for complex meetings."
+        case "gemini-3-flash-preview":
+            return "Good balance of speed and quality. Recommended for most use cases."
+        case "gemini-2.5-flash":
+            return "Stable release with good quality. Reliable for everyday use."
+        case "gemini-2.5-flash-lite":
+            return "Fastest and lowest cost ($0.30/M audio tokens). Great for most meetings."
+        default:
+            return "Select a model for cloud transcription."
+        }
     }
 }
 
@@ -2096,112 +2140,6 @@ struct PrivacyFeatureRow: View {
     }
 }
 
-struct AdvancedSettingsView: View {
-    @AppStorage("sampleRate") private var sampleRate = 48000
-    @AppStorage("audioQuality") private var audioQuality = "high"
-    @State private var showResetConfirmation = false
-
-    var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 20) {
-                // Audio Quality Section
-                SettingsSection(title: "Audio Quality", icon: "waveform.badge.plus") {
-                    VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Sample Rate")
-                                .font(.system(size: 13))
-                                .foregroundColor(Theme.Colors.textPrimary)
-
-                            Picker("", selection: $sampleRate) {
-                                Text("44.1 kHz").tag(44100)
-                                Text("48 kHz").tag(48000)
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                        }
-
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Quality Preset")
-                                .font(.system(size: 13))
-                                .foregroundColor(Theme.Colors.textPrimary)
-
-                            Picker("", selection: $audioQuality) {
-                                Text("Standard").tag("standard")
-                                Text("High").tag("high")
-                                Text("Maximum").tag("maximum")
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-
-                            Text("Higher quality uses more disk space")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.Colors.textMuted)
-                        }
-                    }
-                }
-
-                // Reset Section
-                SettingsSection(title: "Reset", icon: "arrow.counterclockwise") {
-                    HStack(alignment: .center) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Reset All Settings")
-                                .font(.system(size: 13))
-                                .foregroundColor(Theme.Colors.textPrimary)
-                            Text("Restore all settings to their defaults")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.Colors.textMuted)
-                        }
-
-                        Spacer()
-
-                        Button("Reset") {
-                            showResetConfirmation = true
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .tint(Theme.Colors.error)
-                    }
-                }
-            }
-            .padding(20)
-        }
-        .background(Theme.Colors.background)
-        .alert("Reset All Settings?", isPresented: $showResetConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Reset", role: .destructive) {
-                resetAllSettings()
-            }
-        } message: {
-            Text("This will restore all settings to their defaults. This cannot be undone.")
-        }
-    }
-
-    private func resetAllSettings() {
-        // Reset all AppStorage values to defaults
-        UserDefaults.standard.removeObject(forKey: "autoRecord")
-        UserDefaults.standard.removeObject(forKey: "autoTranscribe")
-        UserDefaults.standard.removeObject(forKey: "storageLocation")
-        UserDefaults.standard.removeObject(forKey: "autoRecordOnWake")
-        UserDefaults.standard.removeObject(forKey: "recordVideoEnabled")
-        UserDefaults.standard.removeObject(forKey: "sampleRate")
-        UserDefaults.standard.removeObject(forKey: "audioQuality")
-        UserDefaults.standard.removeObject(forKey: "enabledMeetingApps")
-        UserDefaults.standard.removeObject(forKey: "customMeetingApps")
-        UserDefaults.standard.removeObject(forKey: "autoGenerateSummary")
-        UserDefaults.standard.removeObject(forKey: "autoGenerateActionItems")
-
-        // Reload custom apps manager to reflect cleared state
-        CustomMeetingAppsManager.shared.loadCustomApps()
-
-        // Unregister login item if registered
-        let status = SMAppService.mainApp.status
-        if status == .enabled || status == .requiresApproval {
-            try? SMAppService.mainApp.unregister()
-        }
-    }
-}
 
 // MARK: - AI Settings View
 
@@ -2213,12 +2151,8 @@ struct AISettingsView: View {
     @AppStorage("autoGenerateSummary") private var autoGenerateSummary = true
     @AppStorage("autoGenerateActionItems") private var autoGenerateActionItems = true
     @State private var isRebuildingIndex = false
-
-    // Transcription provider settings
-    @AppStorage("transcriptionProvider") private var transcriptionProvider = "whisperkit"
-    @AppStorage("geminiAPIKey") private var geminiAPIKey = ""
-    @AppStorage("geminiModel") private var geminiModel = "gemini-3-flash-preview"
-    @AppStorage("whisperModel") private var whisperModel = "small.en"
+    @State private var rebuildError: String?
+    @State private var clearModelsError: String?
 
     // MARK: - Pending State (unified apply)
     /// Pending provider selection (nil means no change from current)
@@ -2308,168 +2242,45 @@ struct AISettingsView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 20) {
-                // Master AI Toggle
+                // AI Features & Status
                 SettingsSection(title: "AI Features", icon: "sparkles") {
-                    Toggle(isOn: $aiEnabled) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Enable AI Features")
-                                .font(Theme.Typography.body)
-                            Text("Turn off to disable all AI functionality including chat, summaries, and indexing")
-                                .font(Theme.Typography.caption)
-                                .foregroundColor(Theme.Colors.textSecondary)
-                        }
-                    }
-                    .toggleStyle(.switch)
-
-                    if !aiEnabled {
-                        HStack(spacing: Theme.Spacing.sm) {
-                            Image(systemName: "info.circle")
-                                .foregroundColor(Theme.Colors.warning)
-                            Text("AI is disabled. Model is not loaded and no AI features are available.")
-                                .font(Theme.Typography.caption)
-                                .foregroundColor(Theme.Colors.warning)
-                        }
-                        .padding(.top, Theme.Spacing.xs)
-                    }
-                }
-
-                // Status Section - Shows current AI state
-                statusSection
-
-                // Transcription Section
-                SettingsSection(title: "Transcription", icon: "text.quote") {
                     VStack(alignment: .leading, spacing: 12) {
-                        // Provider Selection
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Provider")
-                                .font(.system(size: 13))
-                                .foregroundColor(Theme.Colors.textPrimary)
-
-                            Picker("", selection: $transcriptionProvider) {
-                                Text("Local (WhisperKit)").tag("whisperkit")
-                                Text("Gemini Cloud").tag("gemini-cloud")
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                            .onChange(of: transcriptionProvider) { _, _ in
-                                Task {
-                                    if let appDelegate = NSApp.delegate as? AppDelegate {
-                                        await appDelegate.updateTranscriptionConfig()
-                                    }
-                                }
-                            }
-                        }
-
-                        Divider()
-
-                        // Local Provider Settings
-                        if transcriptionProvider == "whisperkit" {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Whisper Model")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(Theme.Colors.textPrimary)
-
-                                Picker("", selection: $whisperModel) {
-                                    Text("Tiny").tag("tiny.en")
-                                    Text("Base").tag("base.en")
-                                    Text("Small (Recommended)").tag("small.en")
-                                    Text("Medium").tag("medium.en")
-                                }
-                                .pickerStyle(.segmented)
-                                .labelsHidden()
-                                .onChange(of: whisperModel) { oldValue, newValue in
-                                    Task {
-                                        if let appDelegate = NSApp.delegate as? AppDelegate {
-                                            await appDelegate.reloadWhisperModel()
-                                        }
-                                    }
-                                }
-
-                                Text("Larger models are more accurate but use more resources.")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(Theme.Colors.textMuted)
-
-                                // Local benefits
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Enable AI Features")
+                                    .font(Theme.Typography.body)
                                 HStack(spacing: 6) {
-                                    Image(systemName: "checkmark.shield.fill")
-                                        .foregroundColor(.green)
-                                        .font(.system(size: 11))
-                                    Text("Private: Audio never leaves your device")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(Theme.Colors.textMuted)
+                                    Circle()
+                                        .fill(aiService.statusColor)
+                                        .frame(width: 8, height: 8)
+                                    Text(aiService.statusText)
+                                        .font(Theme.Typography.caption)
+                                        .foregroundColor(Theme.Colors.textSecondary)
                                 }
                             }
+
+                            Spacer()
+
+                            if case .error = aiService.status {
+                                Button("Retry") {
+                                    aiService.setupModel(aiService.selectedModelId)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+
+                            Toggle("", isOn: $aiEnabled)
+                                .toggleStyle(.switch)
+                                .labelsHidden()
                         }
 
-                        // Gemini Cloud Settings
-                        if transcriptionProvider == "gemini-cloud" {
-                            VStack(alignment: .leading, spacing: 12) {
-                                // API Key
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("API Key")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(Theme.Colors.textPrimary)
-
-                                    SecureField("Enter your Gemini API key", text: $geminiAPIKey)
-                                        .textFieldStyle(.roundedBorder)
-                                        .onChange(of: geminiAPIKey) { _, _ in
-                                            Task {
-                                                if let appDelegate = NSApp.delegate as? AppDelegate {
-                                                    await appDelegate.updateTranscriptionConfig()
-                                                }
-                                            }
-                                        }
-
-                                    Link("Get API key from Google AI Studio",
-                                         destination: URL(string: "https://aistudio.google.com/app/apikey")!)
-                                        .font(.system(size: 11))
-                                        .foregroundColor(Theme.Colors.primary)
-                                }
-
-                                // Model Selection
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Model")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(Theme.Colors.textPrimary)
-
-                                    Picker("", selection: $geminiModel) {
-                                        Text("Gemini 3 Pro (Best quality)").tag("gemini-3-pro-preview")
-                                        Text("Gemini 3 Flash (Recommended)").tag("gemini-3-flash-preview")
-                                        Text("Gemini 2.5 Flash (Balanced)").tag("gemini-2.5-flash")
-                                        Text("Gemini 2.5 Flash Lite (Cheapest)").tag("gemini-2.5-flash-lite")
-                                    }
-                                    .labelsHidden()
-                                    .onChange(of: geminiModel) { _, _ in
-                                        Task {
-                                            if let appDelegate = NSApp.delegate as? AppDelegate {
-                                                await appDelegate.updateTranscriptionConfig()
-                                            }
-                                        }
-                                    }
-
-                                    Text(geminiModelDescription)
-                                        .font(.system(size: 11))
-                                        .foregroundColor(Theme.Colors.textMuted)
-                                }
-
-                                // Privacy Warning
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundColor(.orange)
-                                        .font(.system(size: 14))
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Cloud Processing")
-                                            .font(.system(size: 12, weight: .medium))
-                                            .foregroundColor(.orange)
-                                        Text("Audio will be sent to Google's servers for transcription. Requires internet connection and may incur API usage fees.")
-                                            .font(.system(size: 11))
-                                            .foregroundColor(Theme.Colors.textMuted)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                                .padding(10)
-                                .background(Color.orange.opacity(0.1))
-                                .cornerRadius(8)
+                        if !aiEnabled {
+                            HStack(spacing: Theme.Spacing.sm) {
+                                Image(systemName: "info.circle")
+                                    .foregroundColor(Theme.Colors.warning)
+                                Text("AI is disabled. Model is not loaded and no AI features are available.")
+                                    .font(Theme.Typography.caption)
+                                    .foregroundColor(Theme.Colors.warning)
                             }
                         }
                     }
@@ -2607,29 +2418,22 @@ struct AISettingsView: View {
                         Text(providerDescription)
                             .font(.system(size: 11))
                             .foregroundColor(Theme.Colors.textMuted)
+
+                        if effectiveSelectedProvider == .localMLX {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(Theme.Colors.success)
+                                    .font(.system(size: 11))
+                                Text("Using built-in macOS embeddings — no download needed")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.Colors.textMuted)
+                            }
+                        }
                     }
                 }
 
                 // Model Selection Section (for local provider)
                 if effectiveSelectedProvider == .localMLX {
-                    // Embedding info section
-                    SettingsSection(title: "Embeddings", icon: "text.magnifyingglass") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(Theme.Colors.success)
-                                    .font(.system(size: 14))
-                                Text("Built-in macOS Embeddings")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(Theme.Colors.textPrimary)
-                            }
-                            Text("Uses Apple's NaturalLanguage framework for text embeddings. No download required.")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.Colors.textMuted)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
                     // Chat Model Section
                     SettingsSection(title: "Chat Model", icon: "sparkles") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -2770,9 +2574,10 @@ struct AISettingsView: View {
                     }
                 }
 
-                // Indexing Section
-                SettingsSection(title: "Indexing", icon: "doc.text.magnifyingglass") {
+                // Data & Storage
+                SettingsSection(title: "Data & Storage", icon: "internaldrive") {
                     VStack(alignment: .leading, spacing: 12) {
+                        // Indexing toggles
                         SettingsToggle(
                             title: "Auto-index new transcripts",
                             subtitle: "Automatically index transcripts for AI search when created",
@@ -2797,6 +2602,7 @@ struct AISettingsView: View {
 
                         Divider()
 
+                        // Indexed recordings + rebuild
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Indexed Recordings")
@@ -2833,18 +2639,10 @@ struct AISettingsView: View {
                             .controlSize(.small)
                             .disabled(isRebuildingIndex)
                         }
-                    }
-                }
 
-                // Memory Management Section (only for local MLX)
-                if effectiveSelectedProvider == .localMLX {
-                    memoryManagementSection
-                }
+                        Divider()
 
-                // Storage Section
-                SettingsSection(title: "Model Storage", icon: "internaldrive") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        // Storage location
+                        // Model storage location
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Storage Location")
@@ -2868,7 +2666,7 @@ struct AISettingsView: View {
 
                         Divider()
 
-                        // Clear models row
+                        // Downloaded models + clear
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Downloaded Models")
@@ -2908,10 +2706,17 @@ struct AISettingsView: View {
                                     .foregroundColor(Theme.Colors.success)
                             }
                         }
+
+                        // Memory management (only for local MLX)
+                        if effectiveSelectedProvider == .localMLX {
+                            Divider()
+
+                            memoryManagementContent
+                        }
                     }
                 }
             }
-            .padding(20)
+            .padding(Theme.Spacing.xl)
         }
         .background(Theme.Colors.background)
         .alert("Clear All AI Models?", isPresented: $showClearModelsConfirmation) {
@@ -2946,6 +2751,22 @@ struct AISettingsView: View {
                 pendingOpenAITemperature = newValue
             }
         }
+        .alert("Rebuild Failed", isPresented: Binding(
+            get: { rebuildError != nil },
+            set: { if !$0 { rebuildError = nil } }
+        )) {
+            Button("OK", role: .cancel) { rebuildError = nil }
+        } message: {
+            Text(rebuildError ?? "An unknown error occurred while rebuilding the index.")
+        }
+        .alert("Clear Models Failed", isPresented: Binding(
+            get: { clearModelsError != nil },
+            set: { if !$0 { clearModelsError = nil } }
+        )) {
+            Button("OK", role: .cancel) { clearModelsError = nil }
+        } message: {
+            Text(clearModelsError ?? "An unknown error occurred while clearing models.")
+        }
     }
 
     // MARK: - Temperature Slider
@@ -2975,9 +2796,8 @@ struct AISettingsView: View {
     // MARK: - Memory Management Section
 
     @ViewBuilder
-    private var memoryManagementSection: some View {
-        SettingsSection(title: "Memory Management", icon: "memorychip") {
-            VStack(alignment: .leading, spacing: 12) {
+    private var memoryManagementContent: some View {
+        Group {
                 // Auto-unload toggle
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -3061,58 +2881,6 @@ struct AISettingsView: View {
                 }
             }
         }
-    }
-
-    // MARK: - Status Section
-
-    @ViewBuilder
-    private var statusSection: some View {
-        SettingsSection(title: "Status", icon: "info.circle") {
-            HStack(spacing: 12) {
-                // Status indicator
-                Circle()
-                    .fill(aiService.statusColor)
-                    .frame(width: 10, height: 10)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(statusTitle)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Theme.Colors.textPrimary)
-                    Text(aiService.statusText)
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.Colors.textMuted)
-                }
-
-                Spacer()
-
-                // Action button based on status
-                if case .error = aiService.status {
-                    Button("Retry") {
-                        aiService.setupModel(aiService.selectedModelId)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            }
-        }
-    }
-
-    private var statusTitle: String {
-        switch aiService.status {
-        case .notConfigured:
-            return "Not Configured"
-        case .unloadedToSaveMemory:
-            return "Sleeping"
-        case .downloading:
-            return "Downloading"
-        case .loading:
-            return "Loading"
-        case .ready:
-            return "Ready"
-        case .error:
-            return "Error"
-        }
-    }
 
     // MARK: - Legend Item
 
@@ -3455,21 +3223,6 @@ struct AISettingsView: View {
         }
     }
 
-    private var geminiModelDescription: String {
-        switch geminiModel {
-        case "gemini-3-pro-preview":
-            return "Highest accuracy, advanced reasoning. Best for complex meetings."
-        case "gemini-3-flash-preview":
-            return "Good balance of speed and quality. Recommended for most use cases."
-        case "gemini-2.5-flash":
-            return "Stable release with good quality. Reliable for everyday use."
-        case "gemini-2.5-flash-lite":
-            return "Fastest and lowest cost ($0.30/M audio tokens). Great for most meetings."
-        default:
-            return "Select a model for cloud transcription."
-        }
-    }
-
     private var modelStoragePath: String {
         // MLX models are cached in ~/.cache/huggingface/hub
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -3664,7 +3417,9 @@ struct AISettingsView: View {
                 logToFile("[Settings] Rebuild completed successfully")
             } catch {
                 logToFile("[Settings] Rebuild failed: \(error.localizedDescription)")
-                print("Failed to rebuild index: \(error.localizedDescription)")
+                await MainActor.run {
+                    rebuildError = error.localizedDescription
+                }
             }
             await MainActor.run {
                 isRebuildingIndex = false
@@ -3711,6 +3466,9 @@ struct AISettingsView: View {
                 }
                 logToFile("[Settings] Cleared \(bytesCleared) bytes of AI models")
             } catch {
+                await MainActor.run {
+                    clearModelsError = error.localizedDescription
+                }
                 logToFile("[Settings] Failed to clear models: \(error.localizedDescription)")
             }
         }
@@ -3718,107 +3476,191 @@ struct AISettingsView: View {
 }
 
 struct AboutSettingsView: View {
+    @State private var showResetConfirmation = false
+
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            // App icon and name
-            VStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(
-                            LinearGradient(
-                                colors: [Theme.Colors.primary, Theme.Colors.secondary],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 20) {
+                // App icon and name
+                VStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 18)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Theme.Colors.primary, Theme.Colors.secondary],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
                             )
-                        )
-                        .frame(width: 72, height: 72)
+                            .frame(width: 64, height: 64)
 
-                    Image(systemName: "waveform.circle.fill")
-                        .font(.system(size: 40))
-                        .foregroundColor(.white)
-                }
-                .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 10, y: 3)
+                        Image(systemName: "waveform.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundColor(.white)
+                    }
+                    .shadow(color: Theme.Colors.primary.opacity(0.3), radius: 10, y: 3)
 
-                VStack(spacing: 4) {
-                    Text("Engram")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(Theme.Colors.textPrimary)
+                    VStack(spacing: 4) {
+                        Text("Engram")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(Theme.Colors.textPrimary)
 
-                    Text("Version \(appVersion)")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.Colors.textMuted)
-                }
-            }
+                        Text("Version \(appVersion)")
+                            .font(.system(size: 12))
+                            .foregroundColor(Theme.Colors.textMuted)
+                    }
 
-            Spacer().frame(height: 20)
-
-            // Description
-            VStack(spacing: 6) {
-                Text("Your meetings, remembered.")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(Theme.Colors.textSecondary)
-                    .italic()
-
-                Text("Privacy-first meeting recorder with\nlocal AI transcription")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.Colors.textMuted)
-                    .multilineTextAlignment(.center)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-
-            Spacer().frame(height: 24)
-
-            // Links
-            HStack(spacing: 16) {
-                AboutLink(title: "Website", icon: "globe", urlString: "https://balakumar.dev")
-                AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right", urlString: "https://github.com/nickkumara")
-            }
-
-            Spacer()
-
-            // Developer attribution - more prominent
-            VStack(spacing: 8) {
-                HStack(spacing: 4) {
-                    Text("Crafted by")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.Colors.textMuted)
-
-                    Text("Bala Kumar")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text("Your meetings, remembered.")
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundColor(Theme.Colors.textSecondary)
+                        .italic()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+
+                // Links
+                HStack(spacing: 16) {
+                    AboutLink(title: "Website", icon: "globe", urlString: "https://balakumar.dev")
+                    AboutLink(title: "GitHub", icon: "chevron.left.forwardslash.chevron.right", urlString: "https://github.com/nickkumara")
                 }
 
-                Button(action: {
-                    if let url = URL(string: "https://balakumar.dev") {
-                        NSWorkspace.shared.open(url)
+                // Privacy section
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Theme.Colors.success)
+                        Text("PRIVACY")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Theme.Colors.textMuted)
+                            .tracking(0.5)
                     }
-                }) {
+                    .padding(.bottom, Theme.Spacing.md)
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        PrivacyFeatureRow(
+                            icon: "internaldrive.fill",
+                            title: "Audio stored locally",
+                            description: "All recordings are saved only on your Mac"
+                        )
+
+                        Divider().padding(.vertical, 8)
+
+                        PrivacyFeatureRow(
+                            icon: "cpu.fill",
+                            title: "On-device AI transcription",
+                            description: "WhisperKit runs entirely on your hardware"
+                        )
+
+                        Divider().padding(.vertical, 8)
+
+                        PrivacyFeatureRow(
+                            icon: "icloud.slash.fill",
+                            title: "No cloud uploads",
+                            description: "Your audio never leaves your device"
+                        )
+
+                        Divider().padding(.vertical, 8)
+
+                        PrivacyFeatureRow(
+                            icon: "chart.bar.xaxis",
+                            title: "No analytics or tracking",
+                            description: "Zero telemetry, no usage data collected"
+                        )
+                    }
+                    .padding(Theme.Spacing.lg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Theme.Colors.surface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Theme.Colors.borderSubtle, lineWidth: 1)
+                    )
+                }
+
+                // Reset section
+                SettingsSection(title: "Reset", icon: "arrow.counterclockwise") {
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Reset All Settings")
+                                .font(.system(size: 13))
+                                .foregroundColor(Theme.Colors.textPrimary)
+                            Text("Restore all settings to their defaults")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.Colors.textMuted)
+                        }
+
+                        Spacer()
+
+                        Button("Reset") {
+                            showResetConfirmation = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(Theme.Colors.error)
+                    }
+                }
+
+                // Footer
+                VStack(spacing: 6) {
                     HStack(spacing: 4) {
-                        Image(systemName: "globe")
-                            .font(.system(size: 10))
-                        Text("balakumar.dev")
-                            .font(.system(size: 11, weight: .medium))
+                        Text("Crafted by")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.Colors.textMuted)
+                        Button("Bala Kumar") {
+                            if let url = URL(string: "https://balakumar.dev") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(.plain)
+                        .foregroundColor(Theme.Colors.primary)
                     }
-                    .foregroundColor(Theme.Colors.primary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.bottom, 12)
 
-            // Footer
-            Text("© 2024-2026 Bala Kumar. All rights reserved.")
-                .font(.system(size: 10))
-                .foregroundColor(Theme.Colors.textMuted)
-                .padding(.bottom, 16)
+                    Text("\u{00A9} 2024-2026 Bala Kumar. All rights reserved.")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.Colors.textMuted)
+                }
+                .padding(.top, 4)
+            }
+            .padding(Theme.Spacing.xl)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.Colors.background)
+        .alert("Reset All Settings?", isPresented: $showResetConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset", role: .destructive) {
+                resetAllSettings()
+            }
+        } message: {
+            Text("This will restore all settings to their defaults. This cannot be undone.")
+        }
+    }
+
+    private func resetAllSettings() {
+        UserDefaults.standard.removeObject(forKey: "autoRecord")
+        UserDefaults.standard.removeObject(forKey: "autoTranscribe")
+        UserDefaults.standard.removeObject(forKey: "storageLocation")
+        UserDefaults.standard.removeObject(forKey: "autoRecordOnWake")
+        UserDefaults.standard.removeObject(forKey: "recordVideoEnabled")
+        UserDefaults.standard.removeObject(forKey: "sampleRate")
+        UserDefaults.standard.removeObject(forKey: "audioQuality")
+        UserDefaults.standard.removeObject(forKey: "enabledMeetingApps")
+        UserDefaults.standard.removeObject(forKey: "customMeetingApps")
+        UserDefaults.standard.removeObject(forKey: "autoGenerateSummary")
+        UserDefaults.standard.removeObject(forKey: "autoGenerateActionItems")
+
+        CustomMeetingAppsManager.shared.loadCustomApps()
+
+        let status = SMAppService.mainApp.status
+        if status == .enabled || status == .requiresApproval {
+            try? SMAppService.mainApp.unregister()
+        }
     }
 }
 
@@ -3875,9 +3717,9 @@ struct SettingsSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             // Section header
-            HStack(spacing: 6) {
+            HStack(spacing: Theme.Spacing.sm) {
                 Image(systemName: icon)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Theme.Colors.primary)
@@ -3889,7 +3731,7 @@ struct SettingsSection<Content: View>: View {
 
             // Section content
             content
-                .padding(14)
+                .padding(Theme.Spacing.lg)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 10)

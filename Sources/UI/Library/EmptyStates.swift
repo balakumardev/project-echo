@@ -5,74 +5,43 @@ import SwiftUI
 /// Displayed when no recording is selected in the detail pane
 @available(macOS 14.0, *)
 public struct EmptyDetailView: View {
-    @State private var animationPhase: CGFloat = 0
-
     public init() {}
 
     public var body: some View {
-        VStack(spacing: Theme.Spacing.xl) {
+        VStack(spacing: Theme.Spacing.lg) {
             Spacer()
 
-            // Animated waveform icon
             ZStack {
                 Circle()
                     .fill(Theme.Colors.primaryMuted)
-                    .frame(width: 120, height: 120)
+                    .frame(width: 80, height: 80)
 
                 Image(systemName: "waveform")
-                    .font(.system(size: 48, weight: .light))
+                    .font(.system(size: 32, weight: .light))
                     .foregroundColor(Theme.Colors.primary)
-                    .scaleEffect(1 + sin(animationPhase) * 0.05)
             }
 
             VStack(spacing: Theme.Spacing.sm) {
                 Text("Select a Recording")
-                    .font(Theme.Typography.title2)
+                    .font(Theme.Typography.title3)
                     .foregroundColor(Theme.Colors.textPrimary)
 
-                Text("Choose a recording from the sidebar to view details and play audio")
-                    .font(Theme.Typography.body)
+                Text("Choose a recording from the sidebar to view details")
+                    .font(Theme.Typography.callout)
                     .foregroundColor(Theme.Colors.textMuted)
                     .multilineTextAlignment(.center)
             }
 
             Spacer()
-
-            // Subtle branding
-            VStack(spacing: 4) {
-                HStack(spacing: 6) {
-                    Image(systemName: "waveform.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(Theme.Colors.primary.opacity(0.5))
-
-                    Text("Engram")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Theme.Colors.textMuted.opacity(0.6))
-                }
-
-                Text("Your meetings, remembered")
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(Theme.Colors.textMuted.opacity(0.4))
-                    .italic()
-            }
-            .padding(.bottom, Theme.Spacing.xl)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.Colors.background)
-        // Placeholder toolbar to match RecordingDetailView's toolbar height
-        // This ensures consistent title bar height regardless of selection state
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                // Hidden placeholder button matching the AI chat button size
                 Button {} label: {
                     Image(systemName: "bubble.left.and.bubble.right")
                 }
                 .hidden()
-            }
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 2).repeatForever(autoreverses: true)) {
-                animationPhase = .pi
             }
         }
     }
@@ -109,14 +78,6 @@ public struct EmptyStateView: View {
                 .multilineTextAlignment(.center)
 
             Spacer()
-
-            // Subtle tagline when no recordings
-            if !hasSearch {
-                Text("Capture every insight")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.Colors.textMuted.opacity(0.4))
-                    .padding(.bottom, Theme.Spacing.lg)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
