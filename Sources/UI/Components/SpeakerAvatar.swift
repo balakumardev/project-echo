@@ -173,3 +173,33 @@ public struct StatusBadge: View {
     }
 }
 
+/// Animated processing badge with spinner for active operations
+@available(macOS 14.0, *)
+public struct ProcessingBadge: View {
+    let text: String
+    let color: Color
+
+    public init(_ text: String, color: Color = Theme.Colors.primary) {
+        self.text = text
+        self.color = color
+    }
+
+    public var body: some View {
+        HStack(spacing: 4) {
+            ProgressView()
+                .scaleEffect(0.4)
+                .frame(width: 10, height: 10)
+            Text(text)
+                .font(Theme.Typography.caption)
+                .fontWeight(.medium)
+        }
+        .foregroundColor(color)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(
+            Capsule()
+                .fill(color.opacity(0.15))
+        )
+    }
+}
+

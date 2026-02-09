@@ -297,6 +297,7 @@ struct RecordingRow: View {
     let isSelected: Bool
 
     @State private var isHovered = false
+    @ObservedObject private var processingTracker = ProcessingTracker.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -340,10 +341,23 @@ struct RecordingRow: View {
                     .font(Theme.Typography.subheadline)
                     .foregroundColor(isSelected ? .white.opacity(0.7) : Theme.Colors.textMuted)
 
-                    // Colorful status badges
-                    if recording.hasTranscript || recording.hasVideo {
+                    // Status badges — processing + static
+                    let activeTypes = processingTracker.processingTypes(for: recording.id)
+                    if !activeTypes.isEmpty || recording.hasTranscript || recording.hasVideo {
                         HStack(spacing: Theme.Spacing.xs) {
-                            if recording.hasTranscript {
+                            // Active processing badges (animated)
+                            if activeTypes.contains(.transcription) {
+                                ProcessingBadge("Transcribing", color: .blue)
+                            }
+                            if activeTypes.contains(.summary) {
+                                ProcessingBadge("Summarizing", color: Theme.Colors.primary)
+                            }
+                            if activeTypes.contains(.actionItems) {
+                                ProcessingBadge("Extracting", color: Theme.Colors.secondary)
+                            }
+
+                            // Static badges (only show if not currently processing that type)
+                            if recording.hasTranscript && !activeTypes.contains(.transcription) {
                                 StatusBadge("Transcribed", color: Theme.Colors.success, icon: "text.quote")
                             }
                             if recording.hasVideo {

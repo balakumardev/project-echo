@@ -69,6 +69,65 @@ public enum ProcessingType: String {
     }
 }
 
+// MARK: - Processing Tracker (Shared State)
+
+/// Singleton that tracks which recordings have active processing.
+/// Observed by both sidebar rows and detail views for a single source of truth.
+@MainActor
+@available(macOS 14.0, *)
+public class ProcessingTracker: ObservableObject {
+    public static let shared = ProcessingTracker()
+
+    public struct ProcessingEntry: Hashable {
+        public let recordingId: Int64
+        public let type: ProcessingType
+    }
+
+    @Published public private(set) var activeProcessing: Set<ProcessingEntry> = []
+
+    private var cancellables = Set<AnyCancellable>()
+
+    private init() {
+        setupObservers()
+    }
+
+    private func setupObservers() {
+        NotificationCenter.default.publisher(for: .processingDidStart)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let recordingId = notification.userInfo?["recordingId"] as? Int64,
+                      let typeStr = notification.userInfo?["type"] as? String,
+                      let type = ProcessingType(rawValue: typeStr) else { return }
+                self.activeProcessing.insert(ProcessingEntry(recordingId: recordingId, type: type))
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .processingDidComplete)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let recordingId = notification.userInfo?["recordingId"] as? Int64,
+                      let typeStr = notification.userInfo?["type"] as? String,
+                      let type = ProcessingType(rawValue: typeStr) else { return }
+                self.activeProcessing.remove(ProcessingEntry(recordingId: recordingId, type: type))
+            }
+            .store(in: &cancellables)
+    }
+
+    public func isProcessing(_ recordingId: Int64) -> Bool {
+        activeProcessing.contains { $0.recordingId == recordingId }
+    }
+
+    public func isProcessing(_ recordingId: Int64, type: ProcessingType) -> Bool {
+        activeProcessing.contains(ProcessingEntry(recordingId: recordingId, type: type))
+    }
+
+    public func processingTypes(for recordingId: Int64) -> Set<ProcessingType> {
+        Set(activeProcessing.filter { $0.recordingId == recordingId }.map { $0.type })
+    }
+}
+
 // MARK: - Library View Model
 
 @MainActor
@@ -258,37 +317,55 @@ class RecordingDetailViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Observe transcription start (from ProcessingQueue background transcription)
+        // Observe processing start (transcription, summary, action items)
         NotificationCenter.default.publisher(for: .processingDidStart)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 guard let self = self,
                       let userInfo = notification.userInfo,
                       let recordingId = userInfo["recordingId"] as? Int64,
-                      let type = userInfo["type"] as? String,
-                      recordingId == self.currentRecordingId,
-                      type == ProcessingType.transcription.rawValue else {
+                      let typeStr = userInfo["type"] as? String,
+                      recordingId == self.currentRecordingId else {
                     return
                 }
-                self.isLoadingTranscript = true
-                self.transcriptError = nil
+                switch typeStr {
+                case ProcessingType.transcription.rawValue:
+                    self.isLoadingTranscript = true
+                    self.transcriptError = nil
+                case ProcessingType.summary.rawValue:
+                    self.isLoadingSummary = true
+                    self.summaryError = nil
+                case ProcessingType.actionItems.rawValue:
+                    self.isLoadingActionItems = true
+                    self.actionItemsError = nil
+                default:
+                    break
+                }
             }
             .store(in: &cancellables)
 
-        // Observe transcription complete
+        // Observe processing complete (transcription, summary, action items)
         NotificationCenter.default.publisher(for: .processingDidComplete)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 guard let self = self,
                       let userInfo = notification.userInfo,
                       let recordingId = userInfo["recordingId"] as? Int64,
-                      let type = userInfo["type"] as? String,
-                      recordingId == self.currentRecordingId,
-                      type == ProcessingType.transcription.rawValue else {
+                      let typeStr = userInfo["type"] as? String,
+                      recordingId == self.currentRecordingId else {
                     return
                 }
-                self.isLoadingTranscript = false
-                // Transcript data will be loaded via .recordingContentDidUpdate notification
+                switch typeStr {
+                case ProcessingType.transcription.rawValue:
+                    self.isLoadingTranscript = false
+                    // Transcript data will be loaded via .recordingContentDidUpdate notification
+                case ProcessingType.summary.rawValue:
+                    self.isLoadingSummary = false
+                case ProcessingType.actionItems.rawValue:
+                    self.isLoadingActionItems = false
+                default:
+                    break
+                }
             }
             .store(in: &cancellables)
 
@@ -426,14 +503,28 @@ class RecordingDetailViewModel: ObservableObject {
         totalSegmentCount = 0
         isLoadingMoreSegments = false
 
-        // Reset summary state
+        // Reset summary state — notify tracker if cancelling active work
+        if isLoadingSummary, let prevId = currentRecordingId {
+            NotificationCenter.default.post(
+                name: .processingDidComplete,
+                object: nil,
+                userInfo: ["recordingId": prevId, "type": ProcessingType.summary.rawValue]
+            )
+        }
         summaryTask?.cancel()
         summaryTask = nil
         summary = nil
         isLoadingSummary = false
         summaryError = nil
 
-        // Reset action items state
+        // Reset action items state — notify tracker if cancelling active work
+        if isLoadingActionItems, let prevId = currentRecordingId {
+            NotificationCenter.default.post(
+                name: .processingDidComplete,
+                object: nil,
+                userInfo: ["recordingId": prevId, "type": ProcessingType.actionItems.rawValue]
+            )
+        }
         actionItemsTask?.cancel()
         actionItemsTask = nil
         actionItems = nil
@@ -447,8 +538,22 @@ class RecordingDetailViewModel: ObservableObject {
         isLoadingTitle = false
         titleError = nil
 
-        // Request current processing status for this recording
-        // ProcessingQueue (in App module) will respond with .processingStatusResponse
+        // Restore loading state from shared ProcessingTracker
+        let activeTypes = ProcessingTracker.shared.processingTypes(for: recording.id)
+        if activeTypes.contains(.transcription) {
+            isLoadingTranscript = true
+            transcriptError = nil
+        }
+        if activeTypes.contains(.summary) {
+            isLoadingSummary = true
+            summaryError = nil
+        }
+        if activeTypes.contains(.actionItems) {
+            isLoadingActionItems = true
+            actionItemsError = nil
+        }
+
+        // Also request processing status from ProcessingQueue (for transcriptions queued before tracker existed)
         NotificationCenter.default.post(
             name: .processingStatusRequested,
             object: nil,
@@ -654,6 +759,13 @@ class RecordingDetailViewModel: ObservableObject {
         summary = nil
         summaryError = nil
 
+        // Notify shared tracker that summary generation started
+        NotificationCenter.default.post(
+            name: .processingDidStart,
+            object: nil,
+            userInfo: ["recordingId": recording.id, "type": ProcessingType.summary.rawValue]
+        )
+
         summaryTask = Task {
             do {
                 // Use the agentic chat with a summarize request
@@ -682,6 +794,13 @@ class RecordingDetailViewModel: ObservableObject {
                     self.isLoadingSummary = false
                 }
 
+                // Notify shared tracker that summary generation completed
+                NotificationCenter.default.post(
+                    name: .processingDidComplete,
+                    object: nil,
+                    userInfo: ["recordingId": recording.id, "type": ProcessingType.summary.rawValue]
+                )
+
                 // Persist to database after streaming completes
                 if !cleanedSummary.isEmpty {
                     do {
@@ -705,6 +824,12 @@ class RecordingDetailViewModel: ObservableObject {
                     self.summaryError = error.localizedDescription
                     self.isLoadingSummary = false
                 }
+                // Notify shared tracker that summary generation completed (on error)
+                NotificationCenter.default.post(
+                    name: .processingDidComplete,
+                    object: nil,
+                    userInfo: ["recordingId": recording.id, "type": ProcessingType.summary.rawValue]
+                )
                 print("Failed to generate summary: \(error)")
             }
         }
@@ -718,6 +843,13 @@ class RecordingDetailViewModel: ObservableObject {
         isLoadingActionItems = true
         actionItems = nil
         actionItemsError = nil
+
+        // Notify shared tracker that action items extraction started
+        NotificationCenter.default.post(
+            name: .processingDidStart,
+            object: nil,
+            userInfo: ["recordingId": recording.id, "type": ProcessingType.actionItems.rawValue]
+        )
 
         actionItemsTask = Task {
             do {
@@ -776,6 +908,13 @@ class RecordingDetailViewModel: ObservableObject {
                     }
                 }
 
+                // Notify shared tracker that action items extraction completed
+                NotificationCenter.default.post(
+                    name: .processingDidComplete,
+                    object: nil,
+                    userInfo: ["recordingId": recording.id, "type": ProcessingType.actionItems.rawValue]
+                )
+
                 // Persist to database after streaming completes (only if there are valid action items)
                 if let cleanedActionItems = cleanedActionItems {
                     do {
@@ -799,6 +938,12 @@ class RecordingDetailViewModel: ObservableObject {
                     self.actionItemsError = error.localizedDescription
                     self.isLoadingActionItems = false
                 }
+                // Notify shared tracker that action items extraction completed (on error)
+                NotificationCenter.default.post(
+                    name: .processingDidComplete,
+                    object: nil,
+                    userInfo: ["recordingId": recording.id, "type": ProcessingType.actionItems.rawValue]
+                )
                 print("Failed to generate action items: \(error)")
             }
         }
@@ -806,16 +951,36 @@ class RecordingDetailViewModel: ObservableObject {
 
     /// Cancel any ongoing summary generation
     func cancelSummary() {
+        let wasLoading = isLoadingSummary
         summaryTask?.cancel()
         summaryTask = nil
         isLoadingSummary = false
+
+        // Notify shared tracker if we were actually loading
+        if wasLoading, let recordingId = currentRecordingId {
+            NotificationCenter.default.post(
+                name: .processingDidComplete,
+                object: nil,
+                userInfo: ["recordingId": recordingId, "type": ProcessingType.summary.rawValue]
+            )
+        }
     }
 
     /// Cancel any ongoing action items generation
     func cancelActionItems() {
+        let wasLoading = isLoadingActionItems
         actionItemsTask?.cancel()
         actionItemsTask = nil
         isLoadingActionItems = false
+
+        // Notify shared tracker if we were actually loading
+        if wasLoading, let recordingId = currentRecordingId {
+            NotificationCenter.default.post(
+                name: .processingDidComplete,
+                object: nil,
+                userInfo: ["recordingId": recordingId, "type": ProcessingType.actionItems.rawValue]
+            )
+        }
     }
 
     /// Generate AI title for the recording's transcript
