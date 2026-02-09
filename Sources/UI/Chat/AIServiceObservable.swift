@@ -4,15 +4,17 @@ import Combine
 import Intelligence
 
 /// Observable wrapper for AIService to use in SwiftUI views
-/// Polls the AIService actor for status updates
+/// Polls the AIService actor for status updates (display-only values).
+/// Config values are now read directly from AIService.shared.currentConfig in settings views.
 @available(macOS 14.0, *)
 @MainActor
 public class AIServiceObservable: ObservableObject {
 
-    // MARK: - Published State
+    // MARK: - Published State (display-only, polled from AIService)
 
     @Published public var status: AIService.Status = .notConfigured
     @Published public var provider: AIService.Provider = .localMLX
+    @Published public var selectedModelId: String
     @Published public var indexedCount: Int = 0
     @Published public var totalIndexable: Int = 0
     @Published public var isIndexingLoading: Bool = true
@@ -22,18 +24,6 @@ public class AIServiceObservable: ObservableObject {
 
     /// Whether the AIService has completed initialization
     @Published public var isInitialized: Bool = false
-
-    // Config bindings
-    @Published public var selectedModelId: String
-    @Published public var openAIKey: String = ""
-    @Published public var openAIBaseURL: String = ""
-    @Published public var openAIModel: String = "gpt-4o-mini"
-    @Published public var openAITemperature: Float = 1.0
-
-    // Gemini config bindings
-    @Published public var geminiKey: String = ""
-    @Published public var geminiAIModel: String = GeminiAIModel.gemini25FlashLite.rawValue
-    @Published public var geminiTemperature: Float = 0.3
 
     // Connection test state
     @Published public var isTestingConnection: Bool = false
@@ -90,24 +80,10 @@ public class AIServiceObservable: ObservableObject {
         self.provider = await service.provider
         self.indexedCount = await service.indexedRecordingsCount
 
-        // Update model selection from service config (important for Apply Changes to work correctly)
+        // Update model selection from service (needed for model row display)
         let config = await service.currentConfig
         if self.selectedModelId != config.selectedModelId {
             self.selectedModelId = config.selectedModelId
-        }
-        // Also sync OpenAI settings
-        if self.openAIKey != config.openAIKey {
-            self.openAIKey = config.openAIKey
-        }
-        if self.openAIModel != config.openAIModel {
-            self.openAIModel = config.openAIModel
-        }
-        // Sync Gemini settings
-        if self.geminiKey != config.geminiKey {
-            self.geminiKey = config.geminiKey
-        }
-        if self.geminiAIModel != config.geminiAIModel {
-            self.geminiAIModel = config.geminiAIModel
         }
 
         // Update initialization state
@@ -115,8 +91,8 @@ public class AIServiceObservable: ObservableObject {
         let initializing = await service.isInitializing
         self.isInitialized = initialized
         self.isInitializing = initializing
-        // Indexing is loading if the service hasn't initialized yet or is currently initializing
         self.isIndexingLoading = !initialized || initializing
+
         // Update cached models size (only if not currently clearing)
         if !isClearingModels {
             self.cachedModelsSize = AIService.shared.calculateCachedModelsSizeSync()
@@ -130,13 +106,6 @@ public class AIServiceObservable: ObservableObject {
 
             await MainActor.run {
                 self.selectedModelId = config.selectedModelId
-                self.openAIKey = config.openAIKey
-                self.openAIBaseURL = config.openAIBaseURL
-                self.openAIModel = config.openAIModel
-                self.openAITemperature = config.openAITemperature
-                self.geminiKey = config.geminiKey
-                self.geminiAIModel = config.geminiAIModel
-                self.geminiTemperature = config.geminiTemperature
                 self.provider = config.provider
                 self.autoUnloadEnabled = config.autoUnloadEnabled
                 self.autoUnloadMinutes = config.autoUnloadMinutes
@@ -146,30 +115,29 @@ public class AIServiceObservable: ObservableObject {
             if config.provider == .gemini,
                case .notConfigured = currentStatus,
                !config.geminiKey.isEmpty {
-                print("[AIServiceObservable] Auto-triggering Gemini setup")
+                fileRagLog("[AIServiceObservable] Auto-triggering Gemini setup")
                 do {
                     try await AIService.shared.configureGemini(
                         apiKey: config.geminiKey,
                         model: config.geminiAIModel,
                         temperature: config.geminiTemperature
                     )
-                    print("[AIServiceObservable] Gemini auto-configured successfully")
+                    fileRagLog("[AIServiceObservable] Gemini auto-configured successfully")
                 } catch {
-                    print("[AIServiceObservable] Failed to auto-configure Gemini: \(error)")
+                    fileRagLog("[AIServiceObservable] Failed to auto-configure Gemini: \(error)")
                 }
             }
 
             // Auto-trigger model setup if model is cached but not loaded
-            // This handles the race condition where AIService.initialize() hasn't completed yet
             if config.provider == .localMLX,
                case .notConfigured = currentStatus,
                AIService.shared.isModelCachedSync(config.selectedModelId) {
-                print("[AIServiceObservable] Auto-triggering setup for cached model: \(config.selectedModelId)")
+                fileRagLog("[AIServiceObservable] Auto-triggering setup for cached model: \(config.selectedModelId)")
                 do {
                     try await AIService.shared.setupModel(config.selectedModelId)
-                    print("[AIServiceObservable] Cached model auto-loaded successfully")
+                    fileRagLog("[AIServiceObservable] Cached model auto-loaded successfully")
                 } catch {
-                    print("[AIServiceObservable] Failed to auto-load cached model: \(error)")
+                    fileRagLog("[AIServiceObservable] Failed to auto-load cached model: \(error)")
                 }
             }
         }
@@ -240,38 +208,16 @@ public class AIServiceObservable: ObservableObject {
 
     /// Setup a model (downloads if needed, then loads)
     public func setupModel(_ modelId: String) {
-        print("[AIServiceObservable] setupModel called for: \(modelId)")
-        logToFile("[AIServiceObservable] setupModel called for: \(modelId)")
+        fileRagLog("[AIServiceObservable] setupModel called for: \(modelId)")
         selectedModelId = modelId
         Task {
             do {
-                print("[AIServiceObservable] Calling AIService.shared.setupModel...")
-                logToFile("[AIServiceObservable] Calling AIService.shared.setupModel...")
+                fileRagLog("[AIServiceObservable] Calling AIService.shared.setupModel...")
                 try await AIService.shared.setupModel(modelId)
-                print("[AIServiceObservable] setupModel completed successfully")
-                logToFile("[AIServiceObservable] setupModel completed successfully")
+                fileRagLog("[AIServiceObservable] setupModel completed successfully")
             } catch {
-                print("[AIServiceObservable] setupModel failed: \(error)")
-                logToFile("[AIServiceObservable] setupModel failed: \(error)")
+                fileRagLog("[AIServiceObservable] setupModel failed: \(error)")
                 // Error is reflected in status
-            }
-        }
-    }
-
-    /// Write to debug log file
-    private func logToFile(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(timestamp)] \(message)\n"
-        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("engram_rag.log")
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logURL.path) {
-                if let handle = try? FileHandle(forWritingTo: logURL) {
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                    handle.closeFile()
-                }
-            } else {
-                try? data.write(to: logURL)
             }
         }
     }
@@ -279,39 +225,6 @@ public class AIServiceObservable: ObservableObject {
     /// Setup the default model
     public func setupDefaultModel() {
         setupModel(ModelRegistry.defaultModel.id)
-    }
-
-    /// Configure OpenAI backend
-    public func configureOpenAI() {
-        guard !openAIKey.isEmpty else { return }
-        Task {
-            do {
-                try await AIService.shared.configureOpenAI(
-                    apiKey: openAIKey,
-                    baseURL: openAIBaseURL.isEmpty ? nil : openAIBaseURL,
-                    model: openAIModel,
-                    temperature: openAITemperature
-                )
-            } catch {
-                // Error is reflected in status
-            }
-        }
-    }
-
-    /// Configure Gemini backend
-    public func configureGemini() {
-        guard !geminiKey.isEmpty else { return }
-        Task {
-            do {
-                try await AIService.shared.configureGemini(
-                    apiKey: geminiKey,
-                    model: geminiAIModel,
-                    temperature: geminiTemperature
-                )
-            } catch {
-                // Error is reflected in status
-            }
-        }
     }
 
     /// Test Gemini API connection by listing available models
@@ -389,13 +302,7 @@ public class AIServiceObservable: ObservableObject {
         }
     }
 
-    /// Test OpenAI API connection by listing available models (uses stored properties)
-    public func testOpenAIConnection() {
-        testOpenAIConnectionWith(apiKey: openAIKey, baseURL: openAIBaseURL)
-    }
-
     /// Test OpenAI API connection with specific values (does not modify stored properties)
-    /// Use this method to test connection with pending/unsaved values
     public func testOpenAIConnectionWith(apiKey: String, baseURL: String) {
         guard !apiKey.isEmpty else {
             connectionTestResult = .failure(message: "API key is required")
@@ -439,7 +346,7 @@ public class AIServiceObservable: ObservableObject {
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 15 // 15 second timeout
+        request.timeoutInterval = 15
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -449,7 +356,6 @@ public class AIServiceObservable: ObservableObject {
 
         switch httpResponse.statusCode {
         case 200:
-            // Try to parse models count from response
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let models = json["data"] as? [[String: Any]] {
                 return .success(modelCount: models.count)
@@ -466,7 +372,6 @@ public class AIServiceObservable: ObservableObject {
         case 500...599:
             return .failure(message: "Server error (\(httpResponse.statusCode))")
         default:
-            // Try to get error message from response
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let error = json["error"] as? [String: Any],
                let message = error["message"] as? String {
@@ -524,7 +429,6 @@ public class AIServiceObservable: ObservableObject {
         defer {
             Task { @MainActor in
                 self.isClearingModels = false
-                // Refresh size after clearing
                 self.cachedModelsSize = AIService.shared.calculateCachedModelsSizeSync()
             }
         }
