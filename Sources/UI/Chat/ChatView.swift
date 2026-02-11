@@ -5,7 +5,7 @@ import Intelligence
 @available(macOS 14.0, *)
 public struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
-    @StateObject private var aiService = AIServiceObservable()
+    @EnvironmentObject private var aiService: AIServiceObservable
 
     /// Callback when a citation is tapped
     var onCitationTap: ((Citation) -> Void)?
@@ -735,6 +735,7 @@ public struct UIRectCorner: OptionSet {
 struct ChatView_Previews: PreviewProvider {
     static var previews: some View {
         ChatView(viewModel: ChatViewModel(ragPipeline: MockRAGPipeline()))
+            .environmentObject(AIServiceObservable())
             .frame(width: 600, height: 800)
     }
 }

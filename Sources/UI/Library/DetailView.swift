@@ -126,7 +126,7 @@ struct DetailHeader: View {
     @ObservedObject var viewModel: RecordingDetailViewModel
     let onDelete: () -> Void
     @AppStorage("aiEnabled") private var aiEnabled = true
-    @StateObject private var aiService = AIServiceObservable()
+    @EnvironmentObject private var aiService: AIServiceObservable
 
     /// Whether AI can be used (ready or sleeping - sleeping will auto-reload)
     private var canUseAI: Bool {
@@ -136,24 +136,6 @@ struct DetailHeader: View {
     /// Whether AI is currently loading or downloading
     private var isAILoading: Bool {
         aiService.isLoading
-    }
-
-    /// User-friendly help text explaining why AI buttons might be disabled
-    private var aiStatusHelpText: String {
-        switch aiService.status {
-        case .notConfigured:
-            return "AI model not configured. Go to Settings to set up an AI model."
-        case .unloadedToSaveMemory(let name):
-            return "\(name) is sleeping to save memory. It will reload when you use AI features."
-        case .downloading(let progress, let name):
-            return "Downloading \(name)... \(Int(progress * 100))%. Please wait."
-        case .loading(let name):
-            return "Loading \(name)... Please wait a moment."
-        case .ready:
-            return "AI is ready"
-        case .error(let message):
-            return "AI error: \(message). Try restarting the app or check Settings."
-        }
     }
 
     /// The display title - shows generated title if available, otherwise recording title
@@ -192,8 +174,8 @@ struct DetailHeader: View {
                                 .buttonStyle(.plain)
                                 .disabled(!canUseAI)
                                 .help(viewModel.generatedTitle != nil
-                                    ? (canUseAI ? "Regenerate title with AI" : aiStatusHelpText)
-                                    : (canUseAI ? "Generate title with AI" : aiStatusHelpText))
+                                    ? (canUseAI ? "Regenerate title with AI" : aiService.aiStatusHelpText)
+                                    : (canUseAI ? "Generate title with AI" : aiService.aiStatusHelpText))
                             }
                         }
                     }

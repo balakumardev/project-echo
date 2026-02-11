@@ -446,6 +446,24 @@ public class AIServiceObservable: ObservableObject {
         return formatter.string(fromByteCount: cachedModelsSize)
     }
 
+    /// User-friendly help text explaining why AI buttons might be disabled
+    public var aiStatusHelpText: String {
+        switch status {
+        case .notConfigured:
+            return "AI model not configured. Go to Settings to set up an AI model."
+        case .unloadedToSaveMemory(let name):
+            return "\(name) is sleeping to save memory. It will reload when you use AI features."
+        case .downloading(let progress, let name):
+            return "Downloading \(name)... \(Int(progress * 100))%. Please wait."
+        case .loading(let name):
+            return "Loading \(name)... Please wait a moment."
+        case .ready:
+            return "AI is ready"
+        case .error(let message):
+            return "AI error: \(message). Try restarting the app or check Settings."
+        }
+    }
+
     // MARK: - Model Info Helpers
 
     public func modelInfo(for id: String) -> ModelRegistry.ModelInfo? {

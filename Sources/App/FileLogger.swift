@@ -1,5 +1,6 @@
 import Foundation
 import os.log
+import UI
 
 /// Hybrid file logger that writes to persistent log files alongside OSLog.
 /// Provides separate log files for debug and RAG operations with automatic rotation.
@@ -23,8 +24,8 @@ public final class FileLogger: @unchecked Sendable {
 
     // MARK: - Properties
 
-    private let debugLogger = Logger(subsystem: "dev.balakumar.engram", category: "Debug")
-    private let ragLogger = Logger(subsystem: "dev.balakumar.engram", category: "RAG")
+    private let debugLogger = Logger(subsystem: AppConstants.loggerSubsystem, category: "Debug")
+    private let ragLogger = Logger(subsystem: AppConstants.loggerSubsystem, category: "RAG")
 
     private let logDirectory: URL
     private let debugLogURL: URL
@@ -309,19 +310,14 @@ public final class FileLogger: @unchecked Sendable {
     }
 
     private func writeToLog(_ logLine: String, category: Category) {
-        let handle: FileHandle?
         let url: URL
 
         switch category {
         case .debug:
-            handle = debugFileHandle
             url = debugLogURL
         case .rag:
-            handle = ragFileHandle
             url = ragLogURL
         }
-
-        guard let fileHandle = handle else { return }
 
         do {
             // Check file size and trim if needed
@@ -330,12 +326,30 @@ public final class FileLogger: @unchecked Sendable {
                 trimLog(at: url, category: category)
             }
 
-            // Write log entry
-            if let data = logLine.data(using: .utf8) {
-                fileHandle.write(data)
+            // Re-read the handle after potential trimming (trimLog replaces it)
+            let fileHandle: FileHandle?
+            switch category {
+            case .debug:
+                fileHandle = debugFileHandle
+            case .rag:
+                fileHandle = ragFileHandle
+            }
+
+            // Write log entry using the throwing API (write(_:) raises uncatchable NSExceptions)
+            if let data = logLine.data(using: .utf8), let fh = fileHandle {
+                try fh.write(contentsOf: data)
             }
         } catch {
             print("[FileLogger] Failed to write to \(category.rawValue) log: \(error)")
+            // Attempt to reopen the file handle
+            switch category {
+            case .debug:
+                try? debugFileHandle?.close()
+                debugFileHandle = openOrCreateLogFile(at: url)
+            case .rag:
+                try? ragFileHandle?.close()
+                ragFileHandle = openOrCreateLogFile(at: url)
+            }
         }
     }
 

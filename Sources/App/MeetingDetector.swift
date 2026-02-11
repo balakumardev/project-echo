@@ -123,7 +123,7 @@ public actor MeetingDetector {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "MeetingDetector")
+    private let logger = Logger(subsystem: AppConstants.loggerSubsystem, category: "MeetingDetector")
 
     private var configuration: Configuration
     private var currentState: State = .idle

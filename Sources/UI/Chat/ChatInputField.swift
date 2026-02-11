@@ -94,6 +94,13 @@ public struct ChatInputField: View {
                     handleSubmit()
                     return .handled
                 }
+                .onKeyPress(.escape) {
+                    if isGenerating {
+                        onStop()
+                        return .handled
+                    }
+                    return .ignored
+                }
                 .onChange(of: text) { _, newValue in
                     // Auto-resize based on content
                 }
@@ -211,63 +218,6 @@ extension ChatInputField {
         }
 
         return false
-    }
-}
-
-// MARK: - Expandable Text Editor
-
-/// A text editor that expands based on content
-@available(macOS 14.0, *)
-struct ExpandingTextEditor: View {
-    @Binding var text: String
-    let placeholder: String
-    let maxHeight: CGFloat
-    var onSubmit: () -> Void
-
-    @State private var textHeight: CGFloat = 36
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            // Hidden text to calculate height
-            Text(text.isEmpty ? " " : text)
-                .font(Theme.Typography.body)
-                .foregroundColor(.clear)
-                .padding(.horizontal, Theme.Spacing.sm)
-                .padding(.vertical, Theme.Spacing.sm)
-                .background(GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: TextHeightPreferenceKey.self,
-                        value: geometry.size.height
-                    )
-                })
-
-            // Placeholder
-            if text.isEmpty {
-                Text(placeholder)
-                    .font(Theme.Typography.body)
-                    .foregroundColor(Theme.Colors.textMuted)
-                    .padding(.horizontal, Theme.Spacing.sm)
-                    .padding(.vertical, Theme.Spacing.sm)
-            }
-
-            // Actual text editor
-            TextEditor(text: $text)
-                .font(Theme.Typography.body)
-                .foregroundColor(Theme.Colors.textPrimary)
-                .scrollContentBackground(.hidden)
-                .frame(height: min(textHeight, maxHeight))
-        }
-        .onPreferenceChange(TextHeightPreferenceKey.self) { height in
-            textHeight = height
-        }
-    }
-}
-
-struct TextHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 36
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 

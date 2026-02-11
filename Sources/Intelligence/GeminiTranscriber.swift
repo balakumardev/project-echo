@@ -136,9 +136,9 @@ public actor GeminiTranscriber {
 
     // MARK: - Audio Preparation
 
-    /// Extract the first audio track (microphone) from the .mov container as .m4a
-    /// The .mov files have two tracks: track 0 = mic (mono), track 1 = system audio (stereo, usually silent).
-    /// Gemini picks the wrong track when given the raw .mov, so we extract the mic track.
+    /// Mix all audio tracks (mic + system audio) from the .mov container into a single .m4a
+    /// The .mov files have two tracks: track 0 = mic (mono), track 1 = system audio (stereo).
+    /// Both tracks are needed so Gemini can hear all meeting participants for speaker diarization.
     private func prepareAudioFile(from url: URL) async throws -> (URL, Bool) {
         let asset = AVAsset(url: url)
 
@@ -148,28 +148,36 @@ public actor GeminiTranscriber {
             return (url, false)
         }
 
+        // If only one audio track, just extract it directly
+        if audioTracks.count == 1 {
+            fileRagLog("[Gemini] Single audio track, extracting as m4a")
+        } else {
+            fileRagLog("[Gemini] Found \(audioTracks.count) audio tracks, mixing all for speaker diarization")
+        }
+
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("engram_mic_\(UUID().uuidString).m4a")
+            .appendingPathComponent("engram_mixed_\(UUID().uuidString).m4a")
         try? FileManager.default.removeItem(at: outputURL)
 
-        // Use AVAssetExportSession with only the first audio track (microphone)
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+        let duration = try await asset.load(.duration)
+        let timeRange = CMTimeRange(start: .zero, duration: duration)
+        let composition = AVMutableComposition()
+
+        // Add all audio tracks to the composition so Gemini hears both mic and system audio
+        for (index, track) in audioTracks.enumerated() {
+            if let compTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                do {
+                    try compTrack.insertTimeRange(timeRange, of: track, at: .zero)
+                } catch {
+                    fileRagLog("[Gemini] Failed to add track \(index): \(error.localizedDescription)")
+                }
+            }
+        }
+
+        guard let compExport = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
             fileRagLog("[Gemini] Failed to create export session, sending raw file")
             return (url, false)
         }
-
-        exportSession.outputFileType = .m4a
-        exportSession.outputURL = outputURL
-
-        // Only include the first audio track (microphone)
-        let micTrack = audioTracks[0]
-        let timeRange = try await asset.load(.duration)
-        let composition = AVMutableComposition()
-        if let compTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-            try compTrack.insertTimeRange(CMTimeRange(start: .zero, duration: timeRange), of: micTrack, at: .zero)
-        }
-
-        let compExport = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A)!
         compExport.outputFileType = .m4a
         compExport.outputURL = outputURL
 
@@ -177,13 +185,13 @@ public actor GeminiTranscriber {
 
         guard compExport.status == .completed else {
             let errorMsg = compExport.error?.localizedDescription ?? "Unknown"
-            fileRagLog("[Gemini] Mic extraction failed: \(errorMsg), sending raw file")
+            fileRagLog("[Gemini] Audio mix failed: \(errorMsg), sending raw file")
             return (url, false)
         }
 
         let inputSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
         let outputSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int) ?? 0
-        fileRagLog("[Gemini] Extracted mic track: \(inputSize / 1024)KB -> \(outputSize / 1024)KB m4a")
+        fileRagLog("[Gemini] Mixed \(audioTracks.count) tracks: \(inputSize / 1024)KB -> \(outputSize / 1024)KB m4a")
 
         return (outputURL, true)
     }

@@ -36,6 +36,7 @@ public struct LibraryView: View {
 
     @StateObject private var viewModel = LibraryViewModel()
     @StateObject private var chatViewModel = ChatViewModel()
+    @StateObject private var aiService = AIServiceObservable()
     @State private var selectedRecording: Recording?
     @State private var searchText = ""
     @State private var selectedFilter: RecordingFilter = .all
@@ -88,6 +89,7 @@ public struct LibraryView: View {
                 .transition(.move(edge: .trailing))
             }
         }
+        .environmentObject(aiService)
         .animation(.easeInOut(duration: 0.2), value: showChatPanel)
         .background(Theme.Colors.background)
         .task {

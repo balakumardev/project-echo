@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import os.log
+import UI
 
 /// Handles macOS system events like sleep/wake for meeting detection
 @available(macOS 14.0, *)
@@ -17,7 +18,7 @@ public class SystemEventHandler {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "SystemEventHandler")
+    private let logger = Logger(subsystem: AppConstants.loggerSubsystem, category: "SystemEventHandler")
     private var observers: [NSObjectProtocol] = []
     private var eventContinuation: AsyncStream<SystemEvent>.Continuation?
 

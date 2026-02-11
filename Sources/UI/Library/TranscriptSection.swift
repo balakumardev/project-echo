@@ -10,7 +10,7 @@ struct TranscriptSection: View {
     let recording: Recording
     @ObservedObject var viewModel: RecordingDetailViewModel
     @AppStorage("aiEnabled") private var aiEnabled = true
-    @StateObject private var aiService = AIServiceObservable()
+    @EnvironmentObject private var aiService: AIServiceObservable
 
     // MARK: - AI Status Helpers
 
@@ -27,24 +27,6 @@ struct TranscriptSection: View {
     /// Whether AI is currently loading or downloading
     private var isAILoading: Bool {
         aiService.isLoading
-    }
-
-    /// User-friendly help text explaining why AI buttons might be disabled
-    private var aiStatusHelpText: String {
-        switch aiService.status {
-        case .notConfigured:
-            return "AI model not configured. Go to Settings to set up an AI model."
-        case .unloadedToSaveMemory(let name):
-            return "\(name) is sleeping to save memory. It will reload when you use AI features."
-        case .downloading(let progress, let name):
-            return "Downloading \(name)... \(Int(progress * 100))%. Please wait."
-        case .loading(let name):
-            return "Loading \(name)... Please wait a moment."
-        case .ready:
-            return "AI is ready"
-        case .error(let message):
-            return "AI error: \(message). Try restarting the app or check Settings."
-        }
     }
 
     /// Short status indicator text for the loading state
@@ -105,7 +87,7 @@ struct TranscriptSection: View {
                             ) {
                                 viewModel.generateSummary(for: recording)
                             }
-                            .help(canUseAI ? "Generate AI summary" : aiStatusHelpText)
+                            .help(canUseAI ? "Generate AI summary" : aiService.aiStatusHelpText)
                         }
 
                         // Action Items button - prominent style to encourage use
@@ -127,7 +109,7 @@ struct TranscriptSection: View {
                             ) {
                                 viewModel.generateActionItems(for: recording)
                             }
-                            .help(canUseAI ? "Extract action items" : aiStatusHelpText)
+                            .help(canUseAI ? "Extract action items" : aiService.aiStatusHelpText)
                         }
                     }
 

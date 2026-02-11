@@ -1,5 +1,6 @@
 import Foundation
 import os.log
+import UI
 
 /// Persistent crash and error logger that works in both debug and release builds.
 /// Logs are written to a file that can be shared for debugging.
@@ -11,7 +12,7 @@ public final class CrashLogger {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "CrashLogger")
+    private let logger = Logger(subsystem: AppConstants.loggerSubsystem, category: "CrashLogger")
     private let logFileURL: URL
     private let fileHandle: FileHandle?
     private let queue = DispatchQueue(label: "dev.balakumar.engram.crashlogger", qos: .utility)

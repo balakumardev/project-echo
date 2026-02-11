@@ -179,7 +179,7 @@ public struct MessageBubble: View {
 
     private var formattedTimestamp: String {
         if showFullTimestamp {
-            return fullDateFormatter.string(from: message.timestamp)
+            return Self.fullDateFormatter.string(from: message.timestamp)
         } else {
             return relativeTimestamp
         }
@@ -197,22 +197,22 @@ public struct MessageBubble: View {
             let hours = Int(interval / 3600)
             return "\(hours)h ago"
         } else {
-            return shortDateFormatter.string(from: message.timestamp)
+            return Self.shortDateFormatter.string(from: message.timestamp)
         }
     }
 
-    private var fullDateFormatter: DateFormatter {
+    private static let fullDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter
-    }
+    }()
 
-    private var shortDateFormatter: DateFormatter {
+    private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d"
         return formatter
-    }
+    }()
 }
 
 // MARK: - Citation Card

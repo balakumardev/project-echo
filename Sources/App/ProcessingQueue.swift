@@ -47,7 +47,7 @@ public actor ProcessingQueue {
 
     // MARK: - Properties
 
-    private let logger = Logger(subsystem: "dev.balakumar.engram", category: "ProcessingQueue")
+    private let logger = Logger(subsystem: AppConstants.loggerSubsystem, category: "ProcessingQueue")
 
     // Transcription queue
     private var transcriptionQueue: [QueuedTask] = []

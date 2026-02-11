@@ -6,7 +6,7 @@ import Intelligence
 /// Used in the sidebar header and other locations needing AI status display
 @available(macOS 14.0, *)
 public struct AIStatusIndicator: View {
-    @StateObject private var aiService = AIServiceObservable()
+    @EnvironmentObject private var aiService: AIServiceObservable
     @AppStorage("aiEnabled") private var aiEnabled = true
     @Environment(\.openURL) private var openURL
 
@@ -491,6 +491,7 @@ public struct AIStatusIndicator: View {
         AIStatusIndicator(style: .headerBar)
         AIStatusIndicator(style: .detailed)
     }
+    .environmentObject(AIServiceObservable())
     .padding()
     .background(Theme.Colors.background)
 }

@@ -5,248 +5,6 @@ import Database
 import Intelligence
 import Combine
 
-// MARK: - Recording Notifications
-
-/// Notification names for reactive UI updates
-public extension Notification.Name {
-    /// Posted when a new recording is saved to the database
-    /// userInfo: ["recordingId": Int64]
-    static let recordingDidSave = Notification.Name("Engram.recordingDidSave")
-
-    /// Posted when a recording is deleted
-    /// userInfo: ["recordingId": Int64]
-    static let recordingDidDelete = Notification.Name("Engram.recordingDidDelete")
-
-    /// Posted when recording content is updated (transcript, summary, action items)
-    /// userInfo: ["recordingId": Int64, "type": String] where type is "transcript", "summary", or "actionItems"
-    static let recordingContentDidUpdate = Notification.Name("Engram.recordingContentDidUpdate")
-
-    /// Posted when background processing starts
-    /// userInfo: ["recordingId": Int64, "type": String] where type is "transcription", "summary", or "actionItems"
-    static let processingDidStart = Notification.Name("Engram.processingDidStart")
-
-    /// Posted when background processing completes
-    /// userInfo: ["recordingId": Int64, "type": String]
-    static let processingDidComplete = Notification.Name("Engram.processingDidComplete")
-
-    /// Posted when the processing queue status changes
-    /// userInfo: ["transcriptionQueue": Int, "aiGenerationQueue": Int]
-    static let processingQueueDidChange = Notification.Name("Engram.processingQueueDidChange")
-
-    /// Posted to request opening a recording at a specific timestamp (e.g., from citation tap)
-    /// userInfo: ["recordingId": Int64, "timestamp": TimeInterval]
-    static let openRecordingAtTimestamp = Notification.Name("Engram.openRecordingAtTimestamp")
-
-    /// Posted by UI to request transcription through ProcessingQueue
-    /// userInfo: ["recordingId": Int64, "audioURL": URL]
-    static let transcriptionRequested = Notification.Name("Engram.transcriptionRequested")
-
-    /// Posted by UI to request current processing status for a recording
-    /// userInfo: ["recordingId": Int64]
-    static let processingStatusRequested = Notification.Name("Engram.processingStatusRequested")
-
-    /// Posted by ProcessingQueue in response to status request
-    /// userInfo: ["recordingId": Int64, "isTranscribing": Bool]
-    static let processingStatusResponse = Notification.Name("Engram.processingStatusResponse")
-}
-
-// MARK: - Processing Status Types
-
-/// Types of background processing that can occur
-public enum ProcessingType: String {
-    case transcription = "transcription"
-    case summary = "summary"
-    case actionItems = "actionItems"
-    case indexing = "indexing"
-
-    public var displayName: String {
-        switch self {
-        case .transcription: return "Transcribing"
-        case .summary: return "Summarizing"
-        case .actionItems: return "Extracting actions"
-        case .indexing: return "Indexing"
-        }
-    }
-}
-
-// MARK: - Processing Tracker (Shared State)
-
-/// Singleton that tracks which recordings have active processing.
-/// Observed by both sidebar rows and detail views for a single source of truth.
-@MainActor
-@available(macOS 14.0, *)
-public class ProcessingTracker: ObservableObject {
-    public static let shared = ProcessingTracker()
-
-    public struct ProcessingEntry: Hashable {
-        public let recordingId: Int64
-        public let type: ProcessingType
-    }
-
-    @Published public private(set) var activeProcessing: Set<ProcessingEntry> = []
-
-    private var cancellables = Set<AnyCancellable>()
-
-    private init() {
-        setupObservers()
-    }
-
-    private func setupObservers() {
-        NotificationCenter.default.publisher(for: .processingDidStart)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] notification in
-                guard let self = self,
-                      let recordingId = notification.userInfo?["recordingId"] as? Int64,
-                      let typeStr = notification.userInfo?["type"] as? String,
-                      let type = ProcessingType(rawValue: typeStr) else { return }
-                self.activeProcessing.insert(ProcessingEntry(recordingId: recordingId, type: type))
-            }
-            .store(in: &cancellables)
-
-        NotificationCenter.default.publisher(for: .processingDidComplete)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] notification in
-                guard let self = self,
-                      let recordingId = notification.userInfo?["recordingId"] as? Int64,
-                      let typeStr = notification.userInfo?["type"] as? String,
-                      let type = ProcessingType(rawValue: typeStr) else { return }
-                self.activeProcessing.remove(ProcessingEntry(recordingId: recordingId, type: type))
-            }
-            .store(in: &cancellables)
-    }
-
-    public func isProcessing(_ recordingId: Int64) -> Bool {
-        activeProcessing.contains { $0.recordingId == recordingId }
-    }
-
-    public func isProcessing(_ recordingId: Int64, type: ProcessingType) -> Bool {
-        activeProcessing.contains(ProcessingEntry(recordingId: recordingId, type: type))
-    }
-
-    public func processingTypes(for recordingId: Int64) -> Set<ProcessingType> {
-        Set(activeProcessing.filter { $0.recordingId == recordingId }.map { $0.type })
-    }
-}
-
-// MARK: - Library View Model
-
-@MainActor
-@available(macOS 14.0, *)
-class LibraryViewModel: ObservableObject {
-    @Published var recordings: [Recording] = []
-    @Published var isLoading = false
-
-    private var database: DatabaseManager?
-    private var cancellables = Set<AnyCancellable>()
-
-    init() {
-        // DatabaseManager will be initialized lazily in async context
-        setupNotificationObservers()
-    }
-
-    private func setupNotificationObservers() {
-        // Observe recording saved notifications
-        NotificationCenter.default.publisher(for: .recordingDidSave)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    await self?.loadRecordings()
-                }
-            }
-            .store(in: &cancellables)
-
-        // Observe recording deleted notifications
-        NotificationCenter.default.publisher(for: .recordingDidDelete)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    await self?.loadRecordings()
-                }
-            }
-            .store(in: &cancellables)
-
-        // Observe recording content updates (transcript, summary, action items)
-        // This updates the list to reflect new hasTranscript status or other metadata changes
-        NotificationCenter.default.publisher(for: .recordingContentDidUpdate)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    await self?.loadRecordings()
-                }
-            }
-            .store(in: &cancellables)
-    }
-    
-    private func getDatabase() async throws -> DatabaseManager {
-        if let db = database {
-            return db
-        }
-        let db = try await DatabaseManager.shared()
-        database = db
-        return db
-    }
-    
-    func loadRecordings() async {
-        isLoading = true
-        defer { isLoading = false }
-        
-        do {
-            let db = try await getDatabase()
-            recordings = try await db.getAllRecordings()
-        } catch {
-            print("Failed to load recordings: \(error)")
-        }
-    }
-    
-    func search(query: String) async {
-        guard !query.isEmpty else {
-            await loadRecordings()
-            return
-        }
-        
-        isLoading = true
-        defer { isLoading = false }
-        
-        do {
-            let db = try await getDatabase()
-            recordings = try await db.searchTranscripts(query: query)
-        } catch {
-            print("Search failed: \(error)")
-        }
-    }
-    
-    func deleteRecording(_ recording: Recording) async {
-        do {
-            let db = try await getDatabase()
-            try await db.deleteRecording(id: recording.id)
-            // Delete file
-            try? FileManager.default.removeItem(at: recording.fileURL)
-            await loadRecordings()
-        } catch {
-            print("Failed to delete recording: \(error)")
-        }
-    }
-    
-    func refresh() async {
-        await loadRecordings()
-    }
-    
-    func getTranscript(for recording: Recording) async -> Transcript? {
-        guard let db = try? await getDatabase() else { return nil }
-        return try? await db.getTranscript(forRecording: recording.id)
-    }
-
-    func toggleFavorite(for recording: Recording) async {
-        do {
-            let db = try await getDatabase()
-            _ = try await db.toggleFavorite(id: recording.id)
-            await loadRecordings()
-        } catch {
-            print("Failed to toggle favorite: \(error)")
-        }
-    }
-}
-
 // MARK: - Recording Detail View Model
 
 @MainActor
@@ -432,10 +190,10 @@ class RecordingDetailViewModel: ObservableObject {
                 }
             }
         } catch {
-            print("Failed to reload recording content: \(error)")
+            fileDebugLog("Failed to reload recording content: \(error)")
         }
     }
-    
+
     private func getDatabase() async throws -> DatabaseManager {
         if let db = database {
             return db
@@ -487,6 +245,9 @@ class RecordingDetailViewModel: ObservableObject {
     }
 
     func loadRecording(_ recording: Recording) async {
+        // Capture the previous recording ID before switching — needed for cancel notifications
+        let previousRecordingId = currentRecordingId
+
         // Track current recording for notification filtering
         currentRecordingId = recording.id
 
@@ -504,7 +265,7 @@ class RecordingDetailViewModel: ObservableObject {
         isLoadingMoreSegments = false
 
         // Reset summary state — notify tracker if cancelling active work
-        if isLoadingSummary, let prevId = currentRecordingId {
+        if isLoadingSummary, let prevId = previousRecordingId {
             NotificationCenter.default.post(
                 name: .processingDidComplete,
                 object: nil,
@@ -518,7 +279,7 @@ class RecordingDetailViewModel: ObservableObject {
         summaryError = nil
 
         // Reset action items state — notify tracker if cancelling active work
-        if isLoadingActionItems, let prevId = currentRecordingId {
+        if isLoadingActionItems, let prevId = previousRecordingId {
             NotificationCenter.default.post(
                 name: .processingDidComplete,
                 object: nil,
@@ -586,7 +347,7 @@ class RecordingDetailViewModel: ObservableObject {
             audioPlayer = try AVAudioPlayer(contentsOf: recording.fileURL)
             audioPlayer?.prepareToPlay()
         } catch {
-            print("Failed to setup audio player: \(error)")
+            fileDebugLog("Failed to setup audio player: \(error)")
         }
 
         // Always try to load transcript from database (the source of truth)
@@ -599,10 +360,10 @@ class RecordingDetailViewModel: ObservableObject {
             audioPlayer = try AVAudioPlayer(contentsOf: recording.fileURL)
             audioPlayer?.prepareToPlay()
         } catch {
-            print("Failed to setup audio player: \(error)")
+            fileDebugLog("Failed to setup audio player: \(error)")
         }
     }
-    
+
     func loadTranscript(for recording: Recording) async {
         isLoadingTranscript = true
         defer { isLoadingTranscript = false }
@@ -645,7 +406,7 @@ class RecordingDetailViewModel: ObservableObject {
                 currentSegmentOffset = segments.count
             }
         } catch {
-            print("Failed to load transcript: \(error)")
+            fileDebugLog("Failed to load transcript: \(error)")
         }
     }
 
@@ -683,7 +444,7 @@ class RecordingDetailViewModel: ObservableObject {
             segments.append(contentsOf: cleanedSegments)
             currentSegmentOffset += cleanedSegments.count
         } catch {
-            print("Failed to load more segments: \(error)")
+            fileDebugLog("Failed to load more segments: \(error)")
         }
     }
 
@@ -711,7 +472,7 @@ class RecordingDetailViewModel: ObservableObject {
 
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
     func generateTranscript(for recording: Recording) async {
         // Route through ProcessingQueue for unified state tracking
         // Post notification to request transcription - App module handles this
@@ -737,16 +498,16 @@ class RecordingDetailViewModel: ObservableObject {
         do {
             let db = try await getDatabase()
             guard let transcript = try await db.getTranscript(forRecording: recording.id) else {
-                print("No transcript found for recording \(recording.id), skipping indexing")
+                fileDebugLog("No transcript found for recording \(recording.id), skipping indexing")
                 return
             }
             let segments = try await db.getSegments(forTranscriptId: transcriptId)
 
             // Index using AIService
             try await AIService.shared.indexRecording(recording, transcript: transcript, segments: segments)
-            print("Auto-indexed transcript for recording \(recording.id)")
+            fileDebugLog("Auto-indexed transcript for recording \(recording.id)")
         } catch {
-            print("Auto-indexing failed for recording \(recording.id): \(error.localizedDescription)")
+            fileDebugLog("Auto-indexing failed for recording \(recording.id): \(error.localizedDescription)")
         }
     }
 
@@ -814,7 +575,7 @@ class RecordingDetailViewModel: ObservableObject {
                             userInfo: ["recordingId": recording.id, "type": "summary"]
                         )
                     } catch {
-                        print("Failed to save summary: \(error)")
+                        fileDebugLog("Failed to save summary: \(error)")
                     }
                 }
 
@@ -830,7 +591,7 @@ class RecordingDetailViewModel: ObservableObject {
                     object: nil,
                     userInfo: ["recordingId": recording.id, "type": ProcessingType.summary.rawValue]
                 )
-                print("Failed to generate summary: \(error)")
+                fileDebugLog("Failed to generate summary: \(error)")
             }
         }
     }
@@ -928,7 +689,7 @@ class RecordingDetailViewModel: ObservableObject {
                             userInfo: ["recordingId": recording.id, "type": "actionItems"]
                         )
                     } catch {
-                        print("Failed to save action items: \(error)")
+                        fileDebugLog("Failed to save action items: \(error)")
                     }
                 }
 
@@ -944,7 +705,7 @@ class RecordingDetailViewModel: ObservableObject {
                     object: nil,
                     userInfo: ["recordingId": recording.id, "type": ProcessingType.actionItems.rawValue]
                 )
-                print("Failed to generate action items: \(error)")
+                fileDebugLog("Failed to generate action items: \(error)")
             }
         }
     }
@@ -1048,7 +809,7 @@ class RecordingDetailViewModel: ObservableObject {
                             userInfo: ["recordingId": recording.id, "type": "title"]
                         )
                     } catch {
-                        print("Failed to save title: \(error)")
+                        fileDebugLog("Failed to save title: \(error)")
                     }
                 }
 
@@ -1058,7 +819,7 @@ class RecordingDetailViewModel: ObservableObject {
                     self.titleError = error.localizedDescription
                     self.isLoadingTitle = false
                 }
-                print("Failed to generate title: \(error)")
+                fileDebugLog("Failed to generate title: \(error)")
             }
         }
     }
@@ -1133,11 +894,7 @@ class RecordingDetailViewModel: ObservableObject {
                 try? FileManager.default.removeItem(at: videoURL)
             }
         } catch {
-            print("Failed to delete recording: \(error)")
+            fileDebugLog("Failed to delete recording: \(error)")
         }
     }
 }
-
-typealias Recording = DatabaseManager.Recording
-typealias Transcript = DatabaseManager.Transcript
-typealias TranscriptSegment = DatabaseManager.TranscriptSegment

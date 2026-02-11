@@ -13,6 +13,18 @@ struct UnifiedChatPanel: View {
     @AppStorage("showChatPanel_v2") private var showChatPanel = false
 
     @State private var isLoadingRecordings = false
+    @State private var userManuallySetScope = false
+
+    /// Custom binding for the scope Picker that tracks manual user changes
+    private var scopeBinding: Binding<Int64?> {
+        Binding(
+            get: { chatViewModel.recordingFilter },
+            set: { newValue in
+                userManuallySetScope = true
+                chatViewModel.recordingFilter = newValue
+            }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,8 +39,8 @@ struct UnifiedChatPanel: View {
         }
         .background(Theme.Colors.surface)
         .onChange(of: selectedRecording?.id) { _, newId in
-            // When selected recording changes, auto-update scope to follow it
-            // Only if the current scope was the previous selected recording or nil
+            // New recording selected — reset manual flag and auto-follow
+            userManuallySetScope = false
             if let newId = newId {
                 chatViewModel.recordingFilter = newId
             } else {
@@ -82,7 +94,7 @@ struct UnifiedChatPanel: View {
                 .font(.system(size: 12))
                 .foregroundColor(Theme.Colors.textSecondary)
 
-            Picker("", selection: $chatViewModel.recordingFilter) {
+            Picker("", selection: scopeBinding) {
                 Text("All Recordings")
                     .tag(nil as Int64?)
 

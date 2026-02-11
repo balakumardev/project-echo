@@ -147,7 +147,14 @@ public class ChatViewModel: ObservableObject {
 
     /// Dynamic recording filter that can be changed at runtime
     /// When set, queries are scoped to this recording ID
-    @Published public var recordingFilter: Int64?
+    @Published public var recordingFilter: Int64? {
+        didSet {
+            // Save current messages for the previous filter
+            messagesByRecording[oldValue] = messages
+            // Load messages for the new filter (or empty if none)
+            messages = messagesByRecording[recordingFilter] ?? []
+        }
+    }
 
     /// Session ID for conversation context
     private let sessionId: String
@@ -157,6 +164,9 @@ public class ChatViewModel: ObservableObject {
 
     /// Pending citations from the current generation
     private var pendingCitations: [Citation] = []
+
+    /// Per-recording message storage - keyed by recording ID (nil = global)
+    private var messagesByRecording: [Int64?: [DisplayMessage]] = [:]
 
     // MARK: - Initialization
 
@@ -289,10 +299,19 @@ public class ChatViewModel: ObservableObject {
         pendingCitations = []
     }
 
-    /// Clear all conversation history
+    /// Clear conversation history for the current recording scope
     public func clearHistory() {
         stopGeneration()
         messages.removeAll()
+        messagesByRecording[recordingFilter] = nil
+        error = nil
+    }
+
+    /// Clear all conversation history across all recordings
+    public func clearAllHistory() {
+        stopGeneration()
+        messages.removeAll()
+        messagesByRecording.removeAll()
         error = nil
     }
 }

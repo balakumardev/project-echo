@@ -5,6 +5,9 @@ import SwiftUI
 /// Displayed when no recording is selected in the detail pane
 @available(macOS 14.0, *)
 public struct EmptyDetailView: View {
+    @AppStorage("showChatPanel_v2") private var showChatPanel = false
+    @AppStorage("aiEnabled") private var aiEnabled = true
+
     public init() {}
 
     public var body: some View {
@@ -38,10 +41,12 @@ public struct EmptyDetailView: View {
         .background(Theme.Colors.background)
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                Button {} label: {
-                    Image(systemName: "bubble.left.and.bubble.right")
+                if aiEnabled {
+                    Button { showChatPanel.toggle() } label: {
+                        Image(systemName: showChatPanel ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                    }
+                    .help("Toggle AI Chat")
                 }
-                .hidden()
             }
         }
     }
