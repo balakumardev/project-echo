@@ -166,7 +166,7 @@ public actor GeminiTranscriber {
         for i in 0..<inputCount {
             filterInputs += "[0:\(i)]"
         }
-        let filterComplex = "\(filterInputs)amix=inputs=\(inputCount):duration=longest"
+        let filterComplex = "\(filterInputs)amix=inputs=\(inputCount):duration=longest:normalize=0"
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")

@@ -92,7 +92,7 @@ public actor MediaMuxer {
                 filterInputs += "[1:\(i)]"
             }
             arguments += [
-                "-filter_complex", "\(filterInputs)amix=inputs=\(audioTrackCount):duration=longest",
+                "-filter_complex", "\(filterInputs)amix=inputs=\(audioTrackCount):duration=longest:normalize=0",
                 "-c:a", "aac", "-b:a", "192k",
             ]
         } else {
