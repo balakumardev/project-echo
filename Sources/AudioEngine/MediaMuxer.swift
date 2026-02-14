@@ -45,12 +45,9 @@ public actor MediaMuxer {
 
     // MARK: - Public Methods
 
-    /// Mux video and audio files into a single combined output file
-    /// - Parameters:
-    ///   - videoURL: URL to video-only MOV file (from ScreenRecorder)
-    ///   - audioURL: URL to audio-only MOV file (from AudioCaptureEngine)
-    ///   - outputURL: URL for the combined output file
-    /// - Returns: MuxResult with output file info
+    /// Mux video and audio files into a single combined output file.
+    /// Uses ffmpeg to mix multiple audio tracks (mic + system) into a single stereo stream,
+    /// preventing the garbled playback that occurs when AVPlayer plays separate tracks simultaneously.
     public func mux(
         videoURL: URL,
         audioURL: URL,
@@ -74,109 +71,77 @@ public actor MediaMuxer {
             try FileManager.default.removeItem(at: outputURL)
         }
 
-        // Load assets
-        let videoAsset = AVURLAsset(url: videoURL)
+        // Count audio tracks to decide filter
         let audioAsset = AVURLAsset(url: audioURL)
+        let audioTrackCount = (try? await audioAsset.loadTracks(withMediaType: .audio).count) ?? 1
 
-        // Create composition
-        let composition = AVMutableComposition()
+        // Build ffmpeg command:
+        // - Input 0: video file (copy video stream as-is)
+        // - Input 1: audio file (mix all audio tracks into single stereo stream)
+        var arguments = [
+            "-i", videoURL.path,
+            "-i", audioURL.path,
+            "-map", "0:v",       // Take video from input 0
+            "-c:v", "copy",      // Copy video without re-encoding
+        ]
 
-        // Add video track
-        let videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
-        guard let videoTrack = videoTracks.first else {
-            logger.error("No video track found in: \(videoURL.lastPathComponent)")
-            throw MuxerError.noVideoTrack
-        }
-
-        let videoDuration = try await videoAsset.load(.duration)
-
-        guard let compositionVideoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw MuxerError.exportFailed("Could not create video track in composition")
-        }
-
-        try compositionVideoTrack.insertTimeRange(
-            CMTimeRange(start: .zero, duration: videoDuration),
-            of: videoTrack,
-            at: .zero
-        )
-
-        // Add audio track(s) from audio file
-        let audioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
-        if audioTracks.isEmpty {
-            logger.warning("No audio tracks found in: \(audioURL.lastPathComponent)")
-            // Continue without audio - video will still be muxed
+        if audioTrackCount > 1 {
+            // Mix multiple audio tracks into one stereo stream
+            var filterInputs = ""
+            for i in 0..<audioTrackCount {
+                filterInputs += "[1:\(i)]"
+            }
+            arguments += [
+                "-filter_complex", "\(filterInputs)amix=inputs=\(audioTrackCount):duration=longest",
+                "-c:a", "aac", "-b:a", "192k",
+            ]
         } else {
-            // Add all audio tracks (mic + system audio if present)
-            for (index, audioTrack) in audioTracks.enumerated() {
-                guard let compositionAudioTrack = composition.addMutableTrack(
-                    withMediaType: .audio,
-                    preferredTrackID: kCMPersistentTrackID_Invalid
-                ) else {
-                    logger.warning("Could not create audio track \(index) in composition")
-                    continue
-                }
+            // Single audio track - just copy it
+            arguments += ["-map", "1:a", "-c:a", "copy"]
+        }
 
-                // Use video duration to sync - audio may be slightly longer/shorter
-                let audioTrackDuration = try await audioAsset.load(.duration)
-                let insertDuration = CMTimeMinimum(videoDuration, audioTrackDuration)
+        // Use shortest duration (match video length)
+        arguments += ["-shortest", "-y", outputURL.path]
 
-                do {
-                    try compositionAudioTrack.insertTimeRange(
-                        CMTimeRange(start: .zero, duration: insertDuration),
-                        of: audioTrack,
-                        at: .zero
-                    )
-                    logger.info("Added audio track \(index) to composition")
-                } catch {
-                    logger.warning("Failed to insert audio track \(index): \(error.localizedDescription)")
-                }
+        logger.info("Muxing with ffmpeg: \(audioTrackCount) audio track(s)")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        let exitStatus: Int32 = try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { proc in
+                continuation.resume(returning: proc.terminationStatus)
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
 
-        // Export the composition
-        guard let exportSession = AVAssetExportSession(
-            asset: composition,
-            presetName: AVAssetExportPresetPassthrough
-        ) else {
-            throw MuxerError.exportFailed("Could not create export session")
+        guard exitStatus == 0,
+              FileManager.default.fileExists(atPath: outputURL.path) else {
+            logger.error("ffmpeg mux failed with exit code \(exitStatus)")
+            throw MuxerError.exportFailed("ffmpeg exited with code \(exitStatus)")
         }
 
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mov
-        exportSession.shouldOptimizeForNetworkUse = false
+        let attrs = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+        let fileSize = (attrs[.size] as? Int64) ?? 0
 
-        logger.info("Starting export to: \(outputURL.lastPathComponent)")
+        // Get duration from output file
+        let outputAsset = AVURLAsset(url: outputURL)
+        let duration = (try? await outputAsset.load(.duration).seconds) ?? 0
 
-        await exportSession.export()
+        logger.info("Mux completed: \(outputURL.lastPathComponent), duration=\(String(format: "%.1f", duration))s, size=\(fileSize) bytes")
 
-        switch exportSession.status {
-        case .completed:
-            let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64) ?? 0
-            let duration = videoDuration.seconds
-
-            logger.info("Mux completed: \(outputURL.lastPathComponent), duration=\(duration)s, size=\(fileSize) bytes")
-
-            return MuxResult(
-                outputURL: outputURL,
-                duration: duration,
-                fileSize: fileSize
-            )
-
-        case .failed:
-            let errorMessage = exportSession.error?.localizedDescription ?? "Unknown error"
-            logger.error("Export failed: \(errorMessage)")
-            throw MuxerError.exportFailed(errorMessage)
-
-        case .cancelled:
-            logger.warning("Export was cancelled")
-            throw MuxerError.exportFailed("Export was cancelled")
-
-        default:
-            throw MuxerError.exportFailed("Unexpected export status: \(exportSession.status.rawValue)")
-        }
+        return MuxResult(
+            outputURL: outputURL,
+            duration: duration,
+            fileSize: fileSize
+        )
     }
 
     /// Convenience method that muxes and replaces the original video file

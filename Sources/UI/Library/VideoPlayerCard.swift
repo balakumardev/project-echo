@@ -14,8 +14,10 @@ final class VideoPlayerModel: ObservableObject {
     @Published var duration: TimeInterval = 0
     @Published var showPlaybackIndicator = false
     @Published var isFullscreen = false
+    @Published var isScrubbing = false
 
     private var timeObserver: Any?
+    private var wasPlayingBeforeScrub = false
     private var fullscreenWindow: NSWindow?
     private var windowDelegate: FullscreenWindowDelegate?
     let videoURL: URL
@@ -80,7 +82,21 @@ final class VideoPlayerModel: ObservableObject {
     func seek(to percentage: Double) {
         let newTime = percentage * duration
         let cmTime = CMTime(seconds: newTime, preferredTimescale: 600)
-        player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        player.seek(to: cmTime, toleranceBefore: CMTime(seconds: 0.1, preferredTimescale: 600),
+                     toleranceAfter: CMTime(seconds: 0.1, preferredTimescale: 600))
+    }
+
+    func beginScrubbing() {
+        isScrubbing = true
+        wasPlayingBeforeScrub = isPlaying
+        player.pause()
+    }
+
+    func endScrubbing() {
+        isScrubbing = false
+        if wasPlayingBeforeScrub {
+            player.play()
+        }
     }
 
     func toggleFullscreen() {
@@ -295,9 +311,13 @@ struct FullscreenVideoPlayer: View {
                             .gesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { value in
+                                        if !model.isScrubbing { model.beginScrubbing() }
                                         let percentage = min(max(0, value.location.x / geometry.size.width), 1)
                                         model.seek(to: Double(percentage))
                                         showControlsTemporarily()
+                                    }
+                                    .onEnded { _ in
+                                        model.endScrubbing()
                                     }
                             )
                         }
@@ -512,8 +532,12 @@ struct VideoPlayerCard: View {
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
+                                if !model.isScrubbing { model.beginScrubbing() }
                                 let percentage = min(max(0, value.location.x / geometry.size.width), 1)
                                 model.seek(to: Double(percentage))
+                            }
+                            .onEnded { _ in
+                                model.endScrubbing()
                             }
                     )
                 }

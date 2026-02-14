@@ -231,6 +231,8 @@ public actor TranscriptionEngine {
     }
 
     /// Transcribe using Gemini cloud API
+    /// Gemini handles speaker identification via its prompt — no need for FluidAudio diarization.
+    /// The GeminiTranscriber mixes all audio tracks with ffmpeg so Gemini hears both mic + system audio.
     private func transcribeWithGemini(audioURL: URL) async throws -> TranscriptionResult {
         guard !config.geminiAPIKey.isEmpty else {
             fileDebugLog("[TranscriptionEngine] Gemini API key is not configured")

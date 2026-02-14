@@ -136,62 +136,71 @@ public actor GeminiTranscriber {
 
     // MARK: - Audio Preparation
 
-    /// Mix all audio tracks (mic + system audio) from the .mov container into a single .m4a
-    /// The .mov files have two tracks: track 0 = mic (mono), track 1 = system audio (stereo).
-    /// Both tracks are needed so Gemini can hear all meeting participants for speaker diarization.
+    /// Mix all audio tracks from the .mov container into a single-stream M4A for Gemini.
+    /// Uses ffmpeg to properly downmix all tracks with normalization — AVFoundation's
+    /// AVAssetExportPresetAppleM4A does NOT mix tracks, it keeps them as separate streams.
     private func prepareAudioFile(from url: URL) async throws -> (URL, Bool) {
         let asset = AVAsset(url: url)
 
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         guard !audioTracks.isEmpty else {
-            // No audio tracks — just send the file as-is and let Gemini handle it
             return (url, false)
         }
 
-        // If only one audio track, just extract it directly
+        // Single track: use as-is (no re-encoding needed)
         if audioTracks.count == 1 {
-            fileRagLog("[Gemini] Single audio track, extracting as m4a")
-        } else {
-            fileRagLog("[Gemini] Found \(audioTracks.count) audio tracks, mixing all for speaker diarization")
+            fileRagLog("[Gemini] Single audio track, using as-is")
+            return (url, false)
         }
+
+        // Multiple tracks: use ffmpeg to properly mix into a single-stream M4A
+        fileRagLog("[Gemini] Found \(audioTracks.count) audio tracks, mixing with ffmpeg")
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram_mixed_\(UUID().uuidString).m4a")
         try? FileManager.default.removeItem(at: outputURL)
 
-        let duration = try await asset.load(.duration)
-        let timeRange = CMTimeRange(start: .zero, duration: duration)
-        let composition = AVMutableComposition()
+        // Build ffmpeg filter: mix all audio tracks into one
+        let inputCount = audioTracks.count
+        var filterInputs = ""
+        for i in 0..<inputCount {
+            filterInputs += "[0:\(i)]"
+        }
+        let filterComplex = "\(filterInputs)amix=inputs=\(inputCount):duration=longest"
 
-        // Add all audio tracks to the composition so Gemini hears both mic and system audio
-        for (index, track) in audioTracks.enumerated() {
-            if let compTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                do {
-                    try compTrack.insertTimeRange(timeRange, of: track, at: .zero)
-                } catch {
-                    fileRagLog("[Gemini] Failed to add track \(index): \(error.localizedDescription)")
-                }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+        process.arguments = [
+            "-i", url.path,
+            "-filter_complex", filterComplex,
+            "-c:a", "aac", "-b:a", "128k",
+            "-y", outputURL.path
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        // Use async termination handler instead of blocking waitUntilExit()
+        // which would block the Swift concurrency cooperative thread pool
+        let exitStatus: Int32 = try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { proc in
+                continuation.resume(returning: proc.terminationStatus)
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
 
-        guard let compExport = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
-            fileRagLog("[Gemini] Failed to create export session, sending raw file")
-            return (url, false)
-        }
-        compExport.outputFileType = .m4a
-        compExport.outputURL = outputURL
-
-        await compExport.export()
-
-        guard compExport.status == .completed else {
-            let errorMsg = compExport.error?.localizedDescription ?? "Unknown"
-            fileRagLog("[Gemini] Audio mix failed: \(errorMsg), sending raw file")
+        guard exitStatus == 0,
+              FileManager.default.fileExists(atPath: outputURL.path) else {
+            fileRagLog("[Gemini] ffmpeg mixing failed (exit \(exitStatus)), sending raw file")
             return (url, false)
         }
 
         let inputSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
         let outputSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int) ?? 0
-        fileRagLog("[Gemini] Mixed \(audioTracks.count) tracks: \(inputSize / 1024)KB -> \(outputSize / 1024)KB m4a")
+        fileRagLog("[Gemini] Mixed \(audioTracks.count) tracks with ffmpeg: \(inputSize / 1024)KB -> \(outputSize / 1024)KB m4a")
 
         return (outputURL, true)
     }
