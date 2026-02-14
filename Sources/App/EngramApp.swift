@@ -140,6 +140,8 @@ struct EngramApp: App {
             TabView {
                 GeneralSettingsView()
                     .tabItem { Label("General", systemImage: "gear") }
+                PermissionSetupView()
+                    .tabItem { Label("Permissions", systemImage: "lock.shield") }
                 TranscriptionSettingsView()
                     .tabItem { Label("Transcription", systemImage: "waveform") }
                 AISettingsView()
@@ -213,6 +215,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
     // Legacy (kept for migration)
     @AppStorage("monitoredApps") private var monitoredAppsRaw = "Zoom,Microsoft Teams,Google Chrome,FaceTime"
 
+    // Permissions
+    private let permissionManager = PermissionManager()
+    @AppStorage("hasCompletedPermissionSetup") private var hasCompletedPermissionSetup = false
+
     // State
     private var currentRecordingURL: URL?
     private var currentVideoRecordingURL: URL?
@@ -249,6 +255,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
             await setupProcessingQueueAsync()
 
             await initializeComponents()
+
+            // Check permissions on launch — open Settings to Permissions tab if needed
+            permissionManager.checkAll()
+            if !permissionManager.allRequiredGranted && !hasCompletedPermissionSetup {
+                // Short delay to let the menu bar and windows initialize
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
+            } else if permissionManager.allRequiredGranted {
+                hasCompletedPermissionSetup = true
+            }
         }
 
         // Register as transcription settings delegate (for UI → App module communication)
@@ -548,34 +564,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, MenuBarDelegate {
         }
     }
     
+    /// Opens the Settings window to the Permissions tab instead of the old NSAlert
     @MainActor
-    private func showPermissionAlert() {
-        let appPath = Bundle.main.bundlePath
-        
-        let alert = NSAlert()
-        alert.messageText = "Permissions Required"
-        alert.informativeText = """
-Engram needs Screen Recording and Microphone permissions.
-
-For ad-hoc signed apps, you must manually add them:
-
-1. Open System Settings → Privacy & Security
-2. Go to Screen Recording → Click '+' → Add this app
-3. Go to Microphone → Click '+' → Add this app
-4. Restart Engram
-
-App location: \(appPath)
-"""
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open Screen Recording Settings")
-        alert.addButton(withTitle: "Open Microphone Settings")
-        alert.addButton(withTitle: "Cancel")
-        
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-        } else if response == .alertSecondButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+    private func openPermissionSettings() {
+        logger.info("Opening Settings for permission setup")
+        if let action = WindowActions.openSettings {
+            action()
+        } else {
+            NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
         }
     }
     
@@ -592,14 +588,14 @@ App location: \(appPath)
             } catch AudioCaptureEngine.CaptureError.permissionDenied {
                 logger.error("Permission denied for recording")
                 menuBarController.setRecording(false)
-                await showPermissionAlert()
+                openPermissionSettings()
             } catch let error as NSError {
                 logger.error("Failed to start recording: \(error)")
                 menuBarController.setRecording(false)
 
                 // Check if it's a permission error
                 if error.code == -3801 || error.localizedDescription.contains("TCC") || error.localizedDescription.contains("declined") {
-                    await showPermissionAlert()
+                    openPermissionSettings()
                 } else {
                     await showErrorAlert(message: "Failed to start recording: \(error.localizedDescription)")
                 }

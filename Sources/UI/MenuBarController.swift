@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 
 /// Menu bar controller for quick recording access
 @MainActor
@@ -157,6 +158,17 @@ public class MenuBarController: NSObject {
         aiChatItem.target = self
         aiChatItem.isEnabled = UserDefaults.standard.object(forKey: "aiEnabled") as? Bool ?? true
         menu.addItem(aiChatItem)
+
+        // Permission warning (shown when required permissions are missing)
+        if !checkRequiredPermissions() {
+            let permItem = NSMenuItem(
+                title: "⚠️ Permissions Required",
+                action: #selector(openSettings),
+                keyEquivalent: ""
+            )
+            permItem.target = self
+            menu.addItem(permItem)
+        }
 
         let settingsItem = createMenuItem(
             title: "Settings",
@@ -434,6 +446,16 @@ public class MenuBarController: NSObject {
     private func stopRecordingTimer() {
         recordingTimer?.invalidate()
         recordingTimer = nil
+    }
+
+    // MARK: - Permission Check
+
+    /// Quick check if microphone and screen recording are authorized.
+    /// Used to show/hide the permission warning in the menu.
+    private func checkRequiredPermissions() -> Bool {
+        let micAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        let screenAuthorized = CGPreflightScreenCaptureAccess()
+        return micAuthorized && screenAuthorized
     }
 }
 
